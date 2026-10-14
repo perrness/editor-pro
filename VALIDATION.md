@@ -383,3 +383,138 @@ missing versus empty, endings, repetitions, worktrees, persistence failures,
 conflicts, restart, source-history preservation and bounded rendering.
 The extended terminal workflow and final performance results are recorded below
 when observed; this slice does not claim those new checks have run yet.
+
+## M4 final hardening, workflow and acceptance
+
+Final Linux x86_64 validation uses Rust/Cargo 1.99.0 and Git 2.43.0 with the
+verified offline cache and Cargo.lock. All **151 Rust tests** pass: 121 existing
+and 30 M4 regressions. The final code also passes the seven Python harness tests
+and **16 PTY sessions** (13 existing plus three review workflows).
+
+Hardening covers mode changes, strict store-schema validation, full worktree/base
+isolation, obsolete record revisions, monotonic review request generations,
+concurrent writers, failed annotations surviving a repository switch, and the
+32-path validation limit. Identical hunks in different files cannot borrow each
+other's displayed marks. Review-list commands require opening a comparison before
+annotating current content. File/hunk filtering builds progress once instead of
+repeatedly scanning every record for every changed path.
+
+| Final check | Observed result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 151 passed; none failed or ignored. |
+| `cargo build --locked` | Passed. |
+| `cargo build --locked --release --bin editor-pro` | Passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Seven passed; harness/test doubles only. |
+| `python3 tools/terminal_smoke.py` | All 16 sessions passed against the final debug binary. |
+| `cargo run --locked --release --example performance` | All eight grammars and the 10,000-file picker completed with assertions passing. |
+| `cargo run --locked --release --example git_performance` | Completed; worktree/index invariance assertions passed. |
+| `cargo run --locked --release --example review_performance` | Completed; progress, persistence/export and source/index invariance assertions passed. |
+| Release `--help` / `--version` with non-TTY stdin/stdout | Passed; help includes review/note/export commands, version 0.1.0. |
+| `git diff --check` | Passed, including final documentation. |
+
+The new PTY workflow inspects changes, marks a file and hunk, changes layouts and
+resizes to narrow widths, edits a Unicode/multiline note, quits, restarts and
+observes resumed fresh annotations. It changes source externally, explicitly
+reloads, observes STALE records, and exports escaped Markdown outside the
+worktree. A third session provokes a metadata-lock failure, keeps and saves the
+note draft after removing the test lock, and verifies export overwrite refusal.
+The harness waits for observable rendered or durable-store signals and retries
+idempotent commands until those signals, rather than assuming Git/I/O finishes
+within a sleep. Every session checks termios, alternate-screen exit and disabled
+bracketed paste. Source/index bytes are asserted unchanged by review operations;
+the deliberate external source edit is accounted for separately.
+
+Regression coverage includes file/hunk state transitions and independent counts;
+file/hunk/old/new notes; reload/restart and unsaved-content validation; explicit
+clear/revalidation/attachment correction; same-length edits with restored mtime;
+changes to either side, index and moving revision names; CRLF/final newline;
+empty versus absent; exact-byte undo/redo; repeated signatures; deleted files,
+renames and untracked files; cancelled/obsolete workers and record revisions;
+non-UTF-8/control-containing paths; bounded Unicode notes/context; corrupt,
+unknown-field, future-version, oversized, symlinked, read-only and
+locked metadata; independent/concurrent writers; deterministic escaped export,
+no-clobber destinations and queued-write shutdown durability. Note editing keeps
+source histories, registers, cursor and viewport intact. Layout/movement alone
+leave identical comparisons fresh.
+
+### Final M4 release measurements
+
+All numbers below are one final local-VM run, not thresholds or hard guarantees.
+The 120×32 TestBackend excludes real terminal transport. Existing synchronous
+source loading/saving/disk checks remain separate costs.
+
+| Language fixture | Initial ms | Edit+draw p95 / max ms | Scroll+draw p95 ms |
+| --- | ---: | ---: | ---: |
+| Rust, 51,000 bytes / 3,001 lines | 6.16 | 0.94 / 1.21 | 0.26 |
+| Java, 39,000 / 1,001 | 4.52 | 2.34 / 2.70 | 0.42 |
+| Kotlin, 33,000 / 1,001 | 6.74 | 1.18 / 1.41 | 0.47 |
+| C#, 39,000 / 1,001 | 6.59 | 1.06 / 1.49 | 0.42 |
+| JSON, 28,017 / 1,004 | 3.65 | 1.07 / 1.76 | 0.39 |
+| YAML, 22,000 / 2,001 | 4.92 | 1.53 / 1.73 | 0.25 |
+| TOML, 24,000 / 2,001 | 4.08 | 2.22 / 2.27 | 0.23 |
+| Markdown, 65,000 / 8,001 | 36.99 | 49.34 / 58.22 | 0.29 |
+
+No grammar entered fallback. The 10,000-file picker scan/rank took 18.64 ms;
+the query settled in 1.09 ms. Large Markdown remains the separate known latency
+limitation; review does not remove it.
+
+The unchanged Git fixture contains 2,501 tracked files, 100 staged, 100 unstaged,
+100 untracked and an active 3,001-line Rust buffer. Initial status/comparison:
+**191.61 ms**. Refresh after 150 coalesced edits: **191.01 ms**, including the
+75 ms debounce. Navigation key+tick+draw p95/max: **1.34/3.22 ms**; typing:
+**4.66/6.30 ms**. Setup, terminal transport, deliberate between-sample sleeps and
+the main loop's synchronous disk checks are excluded.
+
+Reproduce review measurements with
+`cargo run --locked --release --example review_performance`. It builds 24 tracked,
+changed files, each **45,844 bytes / 1,001 lines**, with two hunks per file. Initial
+metadata has **288 records**: 24 reviewed file marks, 24 attention hunks and 240
+Unicode/multiline notes. After saving one more note, the store is **801,971 bytes**.
+
+| Review measurement | Observed ms |
+| --- | ---: |
+| Initial metadata/Git load and 24-path validation | 678.64 |
+| Note submission, serialization, atomic persistence and completion polling | 10.85 |
+| Refresh of 24 annotated paths, spanning the navigation sample loop | 444.66 |
+| Markdown export and completion polling | 7.49 |
+| Note typing key+tick+draw p95 / maximum, 150 samples | 0.13 / 0.20 |
+| Diff navigation during refresh p95 / maximum, 150 samples | 0.87 / 0.97 |
+| SHA-256 of both 2 MiB sides, p95 / maximum, 40 samples | 2.36 / 2.58 |
+
+Load/refresh include debounce and 1 ms polling. Fixture creation and the initial
+source Document open are outside the timed region. Hash timing isolates content
+fingerprinting and excludes reads/Git/diff construction. I/O timings include queue
+submission, serialization/fsync or export and observable completion, not just
+in-memory mutation. Navigation/typing include handling, tick and draw, excluding
+deliberate waits. There are no remote-filesystem or monorepo latency claims.
+
+### Acceptance and remaining limits
+
+**Milestone 4 meets its automated Linux acceptance criteria:** changes can be
+reviewed, annotated, resumed later and exported entirely in the terminal, with no
+AI provider or language server. Tests verify that changed content cannot
+accidentally retain a fresh mark. The exact-byte undo policy is intentional and
+requires a newly accepted full comparison, never an old generation or row anchor.
+README contains the complete command reference and a review/resume/export walk-through.
+
+Validation is deliberately bounded to the current path plus 31 other annotated
+paths for the selected comparison; excess paths, other bases, errors and unsupported
+comparisons remain unavailable. File/hunk counts are explicit fresh marks, not a
+percentage asserting an entire repository is reviewed. A containing content/base
+change stales all its annotations; repeated/ambiguous locations require a file
+note or explicit correction. No M7 snapshots or automatic reanchoring are included.
+Git sampling is non-atomic, and clean loaded buffers intentionally remain distinct
+from externally modified disk. Metadata caps are 4 MiB/4,096 records/16 KiB per
+note/512-byte context. Locks are cooperative and abandoned locks require manual
+cleanup; arbitrary external writers and filesystem stalls remain limitations.
+Exports require a new path outside the worktree/Git metadata and open source paths.
+
+macOS, hosted CI, a minimum-Rust 1.88 build and physical-terminal appearance/comfort
+remain **unobserved**. Neither `intellij-server` nor `kotlin-lsp` is on PATH; no real
+Kotlin server was provisioned or run for M4. Its separate feasibility gate remains
+blocked by the missing executable; seven Python tests validate only the harness.
+No integrated LSP, AI, plugins, GUI or later-milestone snapshot engine was added.
+Implementation is recorded in logical local commits. `prompt.md` remains untracked
+and excluded from commits. No push was performed.

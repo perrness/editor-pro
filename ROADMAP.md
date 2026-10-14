@@ -1,7 +1,7 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Milestones 1, 2 and 3 are implemented
+not only code or an advertised server capability. Milestones 1, 2, 3 and 4 are implemented
 in this delivery. Editing modes remain independent of contextual views throughout.
 
 ## Milestone 1 — Minimal editor
@@ -79,7 +79,7 @@ unsaved buffers, deletion/rename/untracked cases, linked worktrees, cancellation
 errors and location/history preservation are covered. No Git process work runs in
 the input/render loop and no LSP is required. See [VALIDATION.md](VALIDATION.md)
 for exact final counts, measurements and limits. macOS and physical-terminal
-appearance remain unobserved. No M4 persistence, review marks or notes are included.
+appearance remain unobserved. The M3 delivery preceded the M4 persistence, review marks and notes described below.
 
 ## Milestone 4 — Code review
 
@@ -90,6 +90,24 @@ improved diff navigation. Use ordinary editing modes and contextual views.
 **Acceptance:** review an agent-generated change, resume later, and export useful
 feedback entirely in the terminal, without AI. Tests prove changed content cannot
 retain a fresh review mark accidentally.
+
+**Delivery status:** implemented. Full structured comparison/content identities,
+file/hunk states, persistent notes on files/hunks/old/new lines, explicit correction
+of stale attachments, filtered navigation and deterministic Markdown export are
+available. Note drafts reuse the ordinary editing engine; Git, source saves and
+review persistence remain separate. Metadata is private to the worktree's Git
+directory, bounded and versioned, with atomic writes and record-level conflicts.
+
+**Acceptance evidence:** Linux Rust regression tests and a 16-session PTY workflow
+exercise inspection, annotation, restart/resume, content-change staleness, useful
+export, failures and terminal restoration. `review_performance` measures hashing,
+progress refresh, notes, persistence and export. Exact final counts/timings are in
+[VALIDATION.md](VALIDATION.md). The automated M4 workflow is complete without AI
+or a language server. macOS, hosted CI, minimum-Rust and physical-terminal comfort
+remain unobserved; the separate real Kotlin probe remains blocked by its missing
+server executable. M7 immutable baselines and automatic reanchoring remain future
+work. Validation samples at most 32 annotated paths per refresh; excess paths and
+other bases are visibly unavailable, and stale annotations require explicit action.
 
 ## Milestone 5 — Language intelligence
 

@@ -1,16 +1,16 @@
 # editor-pro
 
-A terminal-native, Vim-inspired code editor in Rust. **Milestones 1–3 are implemented:**
+A terminal-native, Vim-inspired code editor in Rust. **Milestones 1–4 are implemented:**
 incremental highlighting for eight languages, Visual selections, composable
 motions/operators, search, multiple buffers, fuzzy file navigation, and three
 dark themes, plus asynchronous Git status, source gutters, changed-file navigation,
-and inline/paired diffs. Editing and file safety remain independent of terminal rendering.
+and inline/paired diffs, persistent content-based review marks, notes and Markdown feedback export. Editing and file safety remain independent of terminal rendering.
 
-**Validation:** formatting, Clippy, 121 Rust tests, seven Python probe tests,
-13 PTY sessions, debug/release builds and both release performance examples pass
-on Linux.
-macOS, physical-terminal visual inspection, and real Kotlin LSP feasibility remain
-open. See [VALIDATION.md](VALIDATION.md) for actual checks, measurements and scope.
+**Validation:** 151 Rust tests, seven Python harness tests, 16 PTY sessions,
+formatting, Clippy, debug/release builds and all three performance workloads pass
+on Linux, including review/resume, staleness and export. See [VALIDATION.md](VALIDATION.md)
+for exact counts, measurements and scope. macOS, hosted CI, a minimum-Rust build,
+physical-terminal comfort and real Kotlin LSP feasibility remain separate open gates.
 
 ## Build and run
 
@@ -154,6 +154,132 @@ repositories may show raw-content status differences. Snapshots sample Git state
 concurrent external writes can race and are corrected by later polling. Existing
 synchronous file loading/saving/disk checks remain separate.
 
+## Code review
+
+Review works entirely in the terminal, without LSP or AI. Use `:diff` to inspect
+an agent's changes; file/hunk marks and notes never save source or alter the index.
+
+| Command / diff key | Action |
+| --- | --- |
+| `:review file reviewed`, `F` | Mark the accepted file comparison reviewed |
+| `:review hunk reviewed`, `R` | Mark the selected hunk reviewed |
+| `:review hunk attention`, `A` | Mark the selected hunk needs-attention |
+| `:review file\|hunk unreviewed\|attention\|reviewed\|clear` | Set/change/clear a mark on the current exact content |
+| `:review list [all\|stale\|attention\|unreviewed\|notes]` | List stored records, stable IDs, attachment locations and freshness |
+| `:review clear ID` | Explicitly remove a stored record, including a stale one |
+| `:review revalidate ID file\|hunk` | Explicitly retie a mark to the currently accepted content/selection |
+| `:review next\|prev file\|hunk [unreviewed\|attention\|stale\|all]` | Navigate matching targets; default filter is unreviewed |
+| `:note file\|hunk\|old\|new` | Create a note on the file, selected hunk, or selected old/new diff line |
+| `:notes`, `:note next\|prev` | List or navigate notes |
+| `:note edit ID`, `:note remove ID` | Edit text or explicitly remove a note |
+| `:note attach ID file\|hunk\|old\|new` | Explicitly correct a note's attachment to current content |
+| `:review export /outside/worktree/new.md` | Export loaded progress/notes to a **new** Markdown file |
+| `:review reload`, `:review retry`, `:review help` | Reload shared metadata, retry a failed write, or show commands |
+
+In the review list, `j`/`k` select, Enter opens the record's comparison, `e` edits a
+note, and Escape returns. Press Enter to inspect before making a mark or adding
+a note from this list. File actions also work from source once its comparison
+is ready. Open a selected Changes row with `d` before annotating it; hunk and line
+actions require a diff. In paired layout, `old` and `new` select that pane's line.
+Deleted-only lines support old-side notes; absent sides are refused. Empty files
+and mode-only changes support file marks/notes. Renames retain both paths.
+
+Notes temporarily use the **same ordinary Normal/Insert/Visual/Search editing
+engine**, with independent note undo. Press `i`, enter Unicode/multiline text (or
+bracketed paste), Escape to Normal, then `:note save`. `:note cancel` discards the
+draft. Escape in Normal closes an unchanged note; a changed draft requires save
+or explicit cancellation. Source text, undo history, register, search, cursor and
+viewport are retained. Saving/cancelling returns to the context; Escape from the
+diff still restores the original source location, even after cycling files.
+While editing a note, source/file commands are guarded. A failed save keeps the
+draft; `:note save-new` can preserve a conflicting edit as a separate note.
+
+`F`/`H` counts are **fresh reviewed file/hunk marks**, counted separately. One or
+all reviewed hunks never implicitly review a file. `!`/attention counts remain
+visible even under a reviewed file mark: those hunks still need attention. `N`
+is the number of notes, including unresolved notes. Stale/unavailable records do
+not count as reviewed. The unreviewed navigation filter includes missing, stale
+or unavailable current marks and fresh needs-attention marks. Attention navigation
+also visits historical attention records. Use the stale record list for notes or
+hunks that no longer have any current location; they are not silently reattached.
+
+Freshness requires the same worktree root **and absolute Git directory**, comparison
+kind/requested base, full resolved commit and blob IDs, old/new paths and modes,
+and **SHA-256 of each side's exact bytes with separate presence flags**. This
+includes unsaved text, CRLF and final-newline differences; empty and absent files
+are different. Timestamps, file size alone, Git status, row numbers, abbreviated
+display IDs and approximate navigation anchors never establish freshness. Hunk
+and line signatures must be unique within the exact comparison; repeated
+signatures are refused with a suggestion to annotate the file. Any containing
+comparison change conservatively makes its marks and notes stale. No automatic
+reanchoring across changed content occurs. Explicit correction can move a record
+to a selected current location; otherwise the original annotation is retained.
+
+Known edits, buffer/base changes and pending refreshes immediately withhold fresh
+progress. **Undo back to identical bytes can restore freshness only after a new
+accepted comparison validates both sides and resolved identities.** Movement,
+scrolling, resizing and layout toggling do not invalidate content. A clean loaded
+buffer can still differ from disk: freshness describes the labeled compared
+buffer, not an assertion that disk matches it. External changes to unopened paths
+are read from disk. Git samples are not atomic against external writers; polling
+can only notice changes on subsequent samples.
+
+Refresh validates the current path plus up to **31 other annotated paths** for
+the selected comparison, in deterministic path order, sharing Git's five-second
+budget and existing content/row limits. Other bases, failed/unsupported comparisons
+and excess paths remain unavailable, with a visible validation-limit indication.
+Inspect a path to prioritize it. A first load/restart validates actual content;
+unsaved annotations are stale or unavailable unless that content really exists
+again. Metadata loading, hashing, serialization, persistence and export run in
+workers. Review actions are serialized; wait for completion before the next one.
+
+Moving/copying a repository changes its identity; stores are not automatically migrated.
+File navigation uses the existing disk/index/unsaved changed-file list; the record
+list also keeps annotations on files no longer present in that list.
+
+Progress lives in **`<absolute-git-dir>/editor-pro-review.json`**, outside tracked
+files and the index; linked worktrees have separate stores. Inspection alone does
+not create it. Version 1 stores fingerprints, marks, note text and at most 512
+bytes of context per record, never an automatic source snapshot. Limits: 4 MiB
+per store, 4,096 records and 16 KiB per note. New files are private on Unix.
+`Review pending`, `Review saved #ID` and errors report durability. Quit waits for
+you to resolve pending actions; a failed mark can be retried, discarded by an
+explicit reload, or abandoned with `:q!`. A note draft has its own save/cancel guard.
+
+Writes lock `editor-pro-review.json.lock`, reread the store, compare the expected
+record revision/content, merge unrelated records, then sync a temporary file,
+atomically replace the store and sync its directory. Concurrent edits to the same
+record (including duplicate new marks) fail visibly. Use `:review reload` to see
+the winner before choosing a new action. Locks are never stolen; after a crash,
+verify the recorded process is gone before manually removing its abandoned lock.
+Corrupt, future-version, oversized, symlinked, hard-linked or unwritable stores
+are preserved. Arbitrary external writers and filesystem failures can still race
+or make durability uncertain; network filesystems are not a supported guarantee.
+
+Export includes **all annotations loaded by this session**, including other bases,
+stale/unavailable notes, identities, sides, historical line hints, bounded excerpts
+and separate progress counts. Ordering is deterministic. Markdown/HTML punctuation
+and controls are escaped; non-UTF-8 path bytes use escaped byte notation. Exports
+must be outside the worktree/Git metadata and open source paths, with an existing
+parent directory; existing files and symlinks are never overwritten. Export never
+saves dirty source, stages files or sends data anywhere. Other instances' new
+annotations require `:review reload` before export.
+
+A terminal-only walkthrough (wait for comparison/loading and pending writes):
+
+```text
+:changes                         select a changed file, then d
+:review hunk attention
+:note hunk                       i, write feedback, Escape, :note save
+:review file reviewed
+:q                               or :q! to discard deliberately unsaved source
+# Restart editor-pro with the same file; progress loads and is revalidated.
+:diff
+:notes                           Enter inspects; e edits; Escape returns
+:review list stale               inspect unresolved progress after code changes
+:review export /tmp/feedback-1.md use a new path for every export
+```
+
 ## Commands and themes
 
 | Command | Action |
@@ -200,7 +326,7 @@ Large Markdown documents are slower; measured results are in the validation log.
 
 - This is a Vim-inspired subset: no dot-repeat, named/system-clipboard registers,
   block Visual selection, regex search, macros, general splits, configuration file,
-  integrated LSP, review, AI, plugins or GUI. Escape Visual mode before putting.
+  integrated LSP, AI, plugins or GUI. Escape Visual mode before putting.
   Counts are capped at 10,000.
 - UTF-8 only; NUL-containing files, non-regular files and files over 64 MiB are
   rejected. Existing BOMs, mixed LF/CRLF endings and final-newline presence are
@@ -233,6 +359,7 @@ python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
 python3 tools/terminal_smoke.py
 cargo run --locked --release --example performance
 cargo run --locked --release --example git_performance
+cargo run --locked --release --example review_performance
 ```
 
 `Cargo.lock` records resolved dependencies. CI is configured for Linux and macOS;

@@ -1,6 +1,6 @@
 # Architecture
 
-Decision record, 2026-10-14. Scope: Milestones 1–3 and an isolated Kotlin feasibility
+Decision record, 2026-10-14. Scope: Milestones 1–4 and an isolated Kotlin feasibility
 experiment. The product is one terminal editor for editing, navigation, Git review
 and eventual AI comprehension. There is no separate Review Mode.
 
@@ -24,6 +24,9 @@ git.rs       repository/status discovery, bounded CLI worker, comparison snapsho
 diff.rs      unified coordinates, deletion anchors, paired alignment and source mapping
 git_view.rs  changed-file/diff navigation over existing documents
 git_ui.rs    contextual Git lists, inline rows and synchronized paired panes
+review.rs    versioned records, full content identities and unique attachment keys
+review_store.rs bounded loading, record CAS, atomic persistence and Markdown worker
+review_view.rs  review commands, progress/navigation and contextual record list
 text.rs      shared grapheme/cell rules
 ui.rs        projects editor state into Ratatui; maintains derived state/viewport
 theme.rs     semantic colors and three selectable palettes
@@ -39,7 +42,7 @@ The unnamed register and last search are session-wide; the search cache is
 invalidated on every buffer switch.
 
 `Mode` (Normal, Insert, Visual, VisualLine, Command, Search) and `View` (Editing,
-Buffers, Files, Changes, Diff) are separate. Contextual views intercept their own keys and do not
+Buffers, Files, Changes, Diff, Review) are separate. Contextual views intercept their own keys and do not
 edit the underlying text. Closing a picker/list returns to the originating
 location. M3 adds only a paired diff projection, not a general window framework.
 
@@ -53,8 +56,9 @@ location. M3 adds only a paired diff projection, not a general window framework.
 | Files | `tempfile` supplies safe temporary-name creation and same-filesystem persistence. The editor supplies baseline checks, fsync and explicit error handling. [Persistence API](https://docs.rs/tempfile/latest/tempfile/struct.NamedTempFile.html#method.persist). |
 | Highlighting | Tree-sitter 0.26 with upstream grammar crates and queries for eight languages. The Markdown crate supplies its combined block/inline parser. Byte edit descriptions and old trees support incremental parsing. [Incremental parsing](https://tree-sitter.github.io/tree-sitter/using-parsers/3-advanced-parsing.html). |
 | File picker | Nucleo 0.5 supplies background fuzzy matching/ranking and immutable result snapshots. The `ignore` walker supplies ignore-file handling; a small discovery thread feeds Nucleo. [Nucleo](https://github.com/helix-editor/nucleo). |
-| External services, later | Tokio + `serde_json`/`lsp-types` when LSP/project processes become real requirements. No async runtime in M2. |
-| Git | Git CLI subprocesses with porcelain-v2 NUL status, immutable blob reads, and internally generated no-index diffs. One bounded worker owns cancellation/timeouts. No new Cargo dependencies. Project search remains future work. |
+| External services, later | Tokio and `lsp-types` when LSP/project processes become real requirements. No async runtime is needed for review. |
+| Git | Git CLI subprocesses with porcelain-v2 NUL status, immutable blob reads, and internally generated no-index diffs. One bounded worker owns cancellation/timeouts. M3 added no dependencies; M4 adds the review dependencies below. Project search remains future work. |
+| Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
 | Configuration, later | A small serde/TOML schema when users need settings. M2 selects among three semantic palette values at runtime; no configuration framework. |
 
 Helix's separation of core text/history from terminal concerns is useful prior
@@ -148,7 +152,7 @@ and one result slot. Each request carries a serial, absolute path, buffer ID,
 monotonic mutation generation, dirty flag, cheap Rope snapshot and comparison.
 The worker resolves repository identity as worktree root plus absolute Git dir,
 so linked worktrees stay distinct. Results carry that identity, the input request,
-comparison kind and resolved commit/blob IDs in side labels. Buffer replacement
+comparison kind, full structured commit/blob IDs, exact content fingerprints and separate display labels. Buffer replacement
 and save invalidate requests even when generation values might coincide. The UI
 checks request serials after first observing current buffer/base state; the worker
 also suppresses obsolete completions. No subprocess spawn, wait, object read or
@@ -205,13 +209,84 @@ selected hunk header), not by arbitrary display row. Deleted-only lines use the
 following surviving line, clamped at EOF. A deleted file without a dirty buffer
 has a historical view but no current source destination. Identical/empty and
 mode-only changes have no text hunks. Reanchoring after substantial external edits
-is approximate; no content-based review marks or persistent navigation are added.
+is approximate. Review identity is separate and never uses that reanchoring as evidence of freshness.
 
 Status is sampled before/after comparison to detect changes during inspection.
 This is not an atomic repository snapshot: concurrent external writes can still
 race, and later polling refreshes them. Stale/loading/error labels remain visible;
 stale gutters and source jumps are disabled. Neither polling nor refresh reloads
 an open document or alters its history, cursor or viewport.
+
+## Durable review without another editor
+
+`review.rs` owns version-1 identities and records. Repository identity includes
+both worktree root and absolute Git directory. Each identity records comparison
+kind/requested revision, full resolved base/old/new blob IDs, old/new paths/modes,
+and each side's SHA-256, byte length and presence flag. Raw Unix path bytes are
+serialized losslessly. Unsaved provenance is recorded for explanation but buffer
+IDs/generations are acceptance guards, not persistent identity. Missing versus
+empty, CRLF, final-newline and mode changes remain distinct. Exact matching after
+undo is allowed only after rehashing; old records never become fresh merely
+because a navigation anchor, size, timestamp or status letter matches.
+
+The Git worker calculates content and location fingerprints. Hunk signatures hash
+row kinds, complete row text and final-newline metadata, excluding header line
+numbers. Line signatures add an old/new side and a bounded neighboring-row window.
+Duplicate signatures are removed from the actionable location map. Stored
+coordinates/excerpts are display hints only. Freshness requires an exact containing
+identity plus an unambiguous attachment key; changed comparisons conservatively
+stale every attachment. No M7 snapshots or cross-content reanchoring are performed.
+
+Requests additionally hold an immutable `Arc<Store>` and cheap Rope snapshots of
+open documents. The request stamp covers a monotonic review generation and all captured
+buffer identities/generations. Acceptance observes current stamps before polling;
+review commands independently reject an obsolete comparison even before the next
+tick. Results validate the current file and at most 31 other annotated paths for
+the selected comparison, within the existing cooperative five-second Git budget.
+Per-record validation includes its revision, so an obsolete record/result cannot
+validate a newer edit. Unvalidated bases, unsupported/failed paths and work beyond
+the limit remain unavailable. The original main-comparison status sampling stays
+intact; auxiliary validations are further non-atomic samples. No filesystem-wide
+snapshot or protection from unobserved concurrent external writes is claimed.
+
+`review_store.rs` is a concrete worker with a bounded queue and one UI action in
+flight. Loads are read-only and capped at 4 MiB; absent metadata is an empty store.
+Records cap at 4,096, note text at 16 KiB, annotation context at 512 bytes. Parsing,
+validation, serialization, hashing and fsync run outside input/render. Metadata is
+`<absolute-git-dir>/editor-pro-review.json`; linked worktrees therefore separate
+stores, and each stored identity independently checks repository/base isolation.
+
+A create-new `editor-pro-review.json.lock` serializes cooperating writers. Under
+that lock, reread and validate the current store, compare the expected whole record
+and revision, merge independent changes, assign monotonically increasing IDs, sync
+a private temporary file, compare bytes again, rename and sync the directory.
+Duplicate mark creation and edits/removals of a changed record fail instead of
+losing another writer's annotations. Corruption, unsupported versions, bounds,
+symlinks, hard links and permissions fail without replacing data. No stale lock
+is stolen automatically: a crashed writer requires explicit operator cleanup.
+Arbitrary non-cooperating writers can race the final comparison/rename interval.
+Directory-sync failures report uncertain durability, not success. The UI retains
+failed actions/drafts for retry or explicit cancellation/reload. Pending actions
+block normal quit; worker Drop drains accepted work after terminal restoration.
+
+Notes swap an ephemeral `Document` into the same Editor, preserving the complete
+source document/history, viewport, view, register, search, pending motion state
+and origin. Ordinary modes, graphemes, paste, undo and search operate on the note.
+Source/file commands are guarded until note save/cancel; failed saves leave the
+draft intact. Unchanged notes can close with Escape; dirty notes require an
+explicit decision. Returning restores the source and invalidates Git for a new
+sample. The contextual record list navigates exact fresh attachments; stale or
+ambiguous notes open their comparison with an unresolved message, never jump to
+an approximate line. File and hunk reviewed counts remain independent; attention
+and stale/unavailable counts are shown separately.
+
+Export captures the loaded store and current validation results, then the worker
+writes deterministic Markdown with full identities, counts, sides, bounded context
+and every loaded annotation, including stale/unavailable bases. It states that
+scope explicitly. HTML entities escape punctuation; controls use visible escapes
+and unusual path bytes use byte notation. New-file persistence refuses all existing
+outputs and destinations in the current worktree, Git metadata or open source
+paths. Export never saves source, changes the index or transmits feedback.
 
 ## Persistence and terminal lifetime
 
@@ -242,9 +317,6 @@ restored too. Signals/job control require a separate future hardening change.
 
 ## Future boundaries, not current infrastructure
 
-- **M4:** Git diff data remains independent of language intelligence. Future review state
-  keys include base revision, path, and content fingerprints. A content change
-  invalidates a review mark; timestamps alone are insufficient.
 - **M5:** One language-server manager owns subprocess lifecycle and protocol I/O.
   Requests carry document version, buffer ID and request generation. Ignore stale
   results, support cancellation, bounded queues, stderr logs, timeouts and crash
@@ -266,5 +338,5 @@ restored too. Signals/job control require a separate future hardening change.
 | Project import and SDK mismatches | Isolated Kotlin test now; capability and real-project matrix before M5. Runtime JDK and project target JDK are separate. |
 | Server churn or proprietary protocol assumptions | Pin tested standalone versions, record capabilities, run standard-LSP probes. Kotlin feasibility is still unverified here. |
 | Stale async state | Picker snapshots must match the current query before selection. Git requests carry buffer/generation/base and serial identity, with stale results suppressed. Future protocol requests need the same discipline. |
-| Scope and architecture growth | Only M1–3 code in the binary; no LSP/review/AI stubs. Split modules only at concrete responsibilities. |
-| Platform and responsiveness evidence | Linux formatting, Clippy, Rust/Python tests, thirteen PTY sessions and release timing measurements pass. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |
+| Scope and architecture growth | Only M1–4 code in the binary; no LSP/AI stubs. Split modules only at concrete responsibilities. |
+| Platform and responsiveness evidence | Linux formatting, Clippy, Rust/Python tests, sixteen PTY sessions and release timing measurements pass. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |
