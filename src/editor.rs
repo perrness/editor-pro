@@ -4,6 +4,7 @@ use crate::{
     file::{Document, MAX_FILE_BYTES},
     input::Key,
     motion::{self, Motion, Selection},
+    search::Search,
     text::pop_grapheme,
 };
 
@@ -14,6 +15,7 @@ pub enum Mode {
     Visual,
     VisualLine,
     Command,
+    Search,
 }
 
 impl Mode {
@@ -24,6 +26,7 @@ impl Mode {
             Self::Visual => "VISUAL",
             Self::VisualLine => "V-LINE",
             Self::Command => "COMMAND",
+            Self::Search => "SEARCH",
         }
     }
 }
@@ -70,6 +73,9 @@ pub struct Editor {
     pub selection_anchor: Option<usize>,
     pub register: Register,
     last_find: Option<Motion>,
+    pub search: Search,
+    pub search_backward: bool,
+    search_mode: Mode,
 }
 
 impl Editor {
@@ -86,6 +92,9 @@ impl Editor {
             selection_anchor: None,
             register: Register::default(),
             last_find: None,
+            search: Search::default(),
+            search_backward: false,
+            search_mode: Mode::Normal,
         }
     }
 
@@ -98,12 +107,18 @@ impl Editor {
             Mode::Normal | Mode::Visual | Mode::VisualLine => self.normal_key(key),
             Mode::Insert => self.insert_key(key),
             Mode::Command => self.command_key(key),
+            Mode::Search => self.search_key(key),
         }
     }
 
     pub fn selection(&self) -> Option<Selection> {
         self.selection_anchor.map(|anchor| {
-            motion::visual(&self.document.buffer, anchor, self.mode == Mode::VisualLine)
+            motion::visual(
+                &self.document.buffer,
+                anchor,
+                self.mode == Mode::VisualLine
+                    || (self.mode == Mode::Search && self.search_mode == Mode::VisualLine),
+            )
         })
     }
 
@@ -315,6 +330,13 @@ impl Editor {
                 }
             }
             Key::Char('p' | 'P') => self.put(key == Key::Char('P'), count),
+            Key::Char('/' | '?') => {
+                self.search_mode = self.mode;
+                self.search_backward = key == Key::Char('?');
+                self.mode = Mode::Search;
+                self.command.clear();
+            }
+            Key::Char('n' | 'N') => self.find_next(key == Key::Char('N'), count),
             _ if self.selection_anchor.is_some() => {}
             Key::Ctrl('d') | Key::PageDown => {
                 buffer.move_vertical(((self.viewport.height / 2).max(1) * count) as isize, false)
@@ -541,6 +563,11 @@ impl Editor {
     }
 
     fn escape(&mut self) {
+        if self.mode == Mode::Search {
+            self.mode = self.search_mode;
+            self.command.clear();
+            return;
+        }
         if self.mode == Mode::Insert {
             self.document.buffer.commit();
             self.document.buffer.move_left(false);
@@ -625,6 +652,56 @@ impl Editor {
         self.document.buffer.commit();
     }
 
+    fn search_key(&mut self, key: Key) {
+        match key {
+            Key::Escape => self.escape(),
+            Key::Char(character) if !character.is_control() => self.command.push(character),
+            Key::Backspace => {
+                if self.command.is_empty() {
+                    self.escape();
+                } else {
+                    pop_grapheme(&mut self.command);
+                }
+            }
+            Key::Enter => {
+                let query = std::mem::take(&mut self.command);
+                self.mode = self.search_mode;
+                if !query.is_empty() {
+                    self.search.set(&query, self.search_backward);
+                } else {
+                    self.search.backward = self.search_backward;
+                }
+                self.find_next(false, 1);
+            }
+            _ => {}
+        }
+    }
+
+    fn find_next(&mut self, reverse: bool, count: usize) {
+        if self.search.query.is_empty() {
+            self.error("No previous search");
+            return;
+        }
+        if let Some((index, wrapped)) =
+            self.search
+                .navigate(&mut self.document.buffer, reverse, count)
+        {
+            self.info(&format!(
+                "Match {}/{}{}{}",
+                index + 1,
+                self.search.matches.len(),
+                if self.search.truncated {
+                    "+ (result limit)"
+                } else {
+                    ""
+                },
+                if wrapped { " (wrapped)" } else { "" }
+            ));
+        } else {
+            self.error("Pattern not found");
+        }
+    }
+
     fn command_key(&mut self, key: Key) {
         match key {
             Key::Escape => self.escape(),
@@ -680,11 +757,13 @@ impl Editor {
                 };
                 let document = Document::open(path)?;
                 self.document = document;
+                self.search.invalidate();
                 self.viewport = Viewport::default();
                 self.pending = Pending::default();
                 self.selection_anchor = None;
                 self.info("Opened");
             }
+            "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
                 "hjkl  0 $ gg G  i a I A o O  x  u  Ctrl-r  :w [path]  :e[!] [path]  :q[!]  :wq",
             ),

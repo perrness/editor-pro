@@ -10,6 +10,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     editor::{Editor, Mode},
+    search::SearchMatch,
     syntax::{HighlightSpan, highlight_at},
     text::{cell_width, display_column, display_grapheme, visible_text},
     theme::Theme,
@@ -17,6 +18,7 @@ use crate::{
 
 pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     editor.document.sync_syntax();
+    editor.search.refresh(&editor.document.buffer);
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -67,6 +69,11 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     });
     let styles = TextStyles {
         highlights: &highlights,
+        search: if editor.search.visible {
+            &editor.search.matches
+        } else {
+            &[]
+        },
         selection: selected_bytes,
         theme,
     };
@@ -133,8 +140,15 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     );
     if area.height >= 2 {
         let command_area = Rect::new(area.x, status_y + 1, area.width, 1);
-        if editor.mode == Mode::Command {
-            let command = format!(":{}", editor.command);
+        if matches!(editor.mode, Mode::Command | Mode::Search) {
+            let prefix = if editor.mode == Mode::Command {
+                ':'
+            } else if editor.search_backward {
+                '?'
+            } else {
+                '/'
+            };
+            let command = format!("{prefix}{}", editor.command);
             let cells = display_column(&command, command.chars().count());
             let offset = cells.saturating_sub(usize::from(area.width) - 1);
             frame.render_widget(
@@ -155,7 +169,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
     }
-    if editor.mode != Mode::Command && height > 0 && text_width > 0 {
+    if !matches!(editor.mode, Mode::Command | Mode::Search) && height > 0 && text_width > 0 {
         frame.set_cursor_position((
             area.x + gutter + (cursor_cell - editor.viewport.left) as u16,
             area.y + (cursor_line - editor.viewport.top) as u16,
@@ -165,6 +179,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
 
 struct TextStyles<'a> {
     highlights: &'a [HighlightSpan],
+    search: &'a [SearchMatch],
     selection: Option<Range<usize>>,
     theme: &'a Theme,
 }
@@ -199,6 +214,16 @@ fn styled_text(
             };
             let mut style = highlight_at(&highlights, byte_start + byte)
                 .map_or(base, |kind| base.fg(styles.theme.highlight(kind)));
+            let match_index = styles
+                .search
+                .partition_point(|m| m.bytes.end <= byte_start + byte);
+            if styles
+                .search
+                .get(match_index)
+                .is_some_and(|m| m.bytes.contains(&(byte_start + byte)))
+            {
+                style = style.bg(styles.theme.search);
+            }
             if styles
                 .selection
                 .as_ref()

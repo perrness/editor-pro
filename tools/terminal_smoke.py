@@ -106,6 +106,9 @@ def main():
         run_session(binary, path, [b"cwnew", b"\x1b", b"j0vly", b"G$p", b"u",
                                   b"\x12", b":wq\r"],
                     "new two three\r\n界e\u0301\r\nlast界e\u0301".encode())
+        path.write_bytes(b"one x one\r\none")
+        run_session(binary, path, [b"/one\r", b"nNcwT", b"\x1b", b":wq\r"],
+                    b"one x T\r\none")
     print("PASS: real terminal editing, undo/redo, saving, dirty quit guard, and restoration")
     return 0
 

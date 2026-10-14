@@ -57,3 +57,12 @@ operators, Unicode Visual selections, CRLF and EOF behavior, nested/quoted text
 objects, character/line registers, paste, find/repeat, and grouped change undo.
 A 2,000-action mixed modal regression checks grapheme boundaries after every key.
 The PTY test now exercises Visual yank/paste and change/undo/redo with CRLF text.
+
+## M2 slice 3 — Search
+
+Formatting, Clippy, all 68 Rust tests and the extended PTY smoke test passed.
+Search tests cover forward/backward counts and wraparound, literal matching,
+Unicode boundaries, cancellation, cache invalidation after edits/history,
+Visual selections and narrow prompt rendering. Search is case-sensitive and
+single-line, with at most 100,000 results; truncation is reported. `:noh` hides
+matches and `n`/`N` restores them.

@@ -93,3 +93,33 @@ fn visual_selection_colors_complete_wide_and_combining_graphemes() {
         .unwrap();
     assert_eq!(terminal.backend().buffer()[(20, 1)].bg, theme.selection);
 }
+
+#[test]
+fn search_highlight_and_prompt_preserve_selection_and_narrow_cursor() {
+    use editor_pro::input::Key;
+    let mut document = Document::default();
+    document.buffer = Buffer::new("one one\nnext");
+    let mut editor = Editor::new(document);
+    let theme = Theme::night();
+    for ch in "/one".chars() {
+        editor.handle_key(Key::Char(ch));
+    }
+    editor.handle_key(Key::Enter);
+    let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+    terminal
+        .draw(|f| ui::render(f, &mut editor, &theme))
+        .unwrap();
+    assert_eq!(terminal.backend().buffer()[(3, 0)].bg, theme.search);
+    editor.handle_key(Key::Char('V'));
+    editor.handle_key(Key::Char('/'));
+    assert!(editor.selection().unwrap().linewise);
+    for ch in "a very long query 界".chars() {
+        editor.handle_key(Key::Char(ch));
+    }
+    terminal.backend_mut().resize(8, 3);
+    terminal
+        .draw(|f| ui::render(f, &mut editor, &theme))
+        .unwrap();
+    let cursor = terminal.get_cursor_position().unwrap();
+    assert!(cursor.x < 8 && cursor.y == 2);
+}

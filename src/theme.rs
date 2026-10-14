@@ -23,6 +23,7 @@ pub struct Theme {
     pub type_name: Color,
     pub property: Color,
     pub selection: Color,
+    pub search: Color,
 }
 
 impl Theme {
@@ -46,6 +47,7 @@ impl Theme {
             type_name: Color::Rgb(42, 195, 222),
             property: Color::Rgb(125, 207, 255),
             selection: Color::Rgb(54, 74, 130),
+            search: Color::Rgb(96, 75, 48),
         }
     }
 
@@ -68,7 +70,7 @@ impl Theme {
             Mode::Normal => self.normal,
             Mode::Insert => self.insert,
             Mode::Visual | Mode::VisualLine => self.command,
-            Mode::Command => self.command,
+            Mode::Command | Mode::Search => self.command,
         }
     }
 }
