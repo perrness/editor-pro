@@ -1,7 +1,9 @@
 pub mod buffer;
 pub mod buffers;
+pub mod diff;
 pub mod editor;
 pub mod file;
+pub mod git;
 pub mod input;
 pub mod motion;
 pub mod picker;

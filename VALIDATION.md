@@ -196,3 +196,27 @@ feasibility gate is blocked by the missing server executable. Known product
 limits—including a Vim subset, lexical text objects, literal search, synchronous
 file/search work and no persistent configuration—are listed in the README. Git,
 integrated LSP, AI, plugins, GUI and splits remain outside this delivery.
+
+## Milestone 3 baseline and Git backend
+
+Revalidated the unchanged `07a326f` checkout on Linux with Rust/Cargo 1.99.0
+and Git 2.43.0: formatting, Clippy, all 92 Rust tests, seven Python probe tests,
+all ten PTY sessions, debug/release builds and the release performance example
+passed. Default Cargo attempted a crates.io refresh and failed DNS resolution.
+The existing registry was verified and reused offline through
+`CARGO_HOME=/tmp/editor-pro-m3-cargo` (a registry link to the previous cache,
+without its obsolete rustup command shims). No global toolchain repair was needed.
+
+Baseline edit/draw p95 milliseconds: Rust 0.93, Java 1.99, Kotlin 0.93, C# 1.03,
+JSON 0.76, YAML 1.48, TOML 1.94, Markdown 49.88 (max 53.93). Picker scan/rank:
+18.67 ms for 10,000 files; query 1.10 ms. These are observations, not guarantees.
+
+The first Git slice adds the bounded CLI worker and comparison/coordinate model.
+Formatting, Clippy and 13 new Git regression tests pass. Tests cover separate
+HEAD/index/revision/staged comparisons, unsaved Rope snapshots, unusual filenames,
+renames, additions/deletions/untracked/empty files, detached/unborn HEAD, linked
+worktrees, outside-repository discovery, binary/conflict/error states, CRLF,
+Unicode, missing final newlines, paired coordinates, stale requests, timeouts and
+shutdown process cleanup. Inspection tests assert unchanged worktree/index bytes.
+No language server was provisioned; `intellij-server` and `kotlin-lsp` remain
+missing. macOS and physical-terminal validation remain unobserved.
