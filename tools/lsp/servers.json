@@ -1,0 +1,28 @@
+{
+  "platform": "linux-x64",
+  "kotlin": {
+    "version": "263.6379.0",
+    "url": "https://download.jetbrains.com/language-server/kotlin-server/263.6379.0/kotlin-server-263.6379.0.tar.gz",
+    "sha256": "ab8ca4455dc2fc5fe1a24db2bccc46c104254d2c465155c4251ee65df8f3f7cc"
+  },
+  "jdtls": {
+    "version": "1.60.0-202606262232",
+    "url": "https://download.eclipse.org/jdtls/milestones/1.60.0/jdt-language-server-1.60.0-202606262232.tar.gz",
+    "sha256": "e94c303d8198f977930803582738771fd18c52c5492878410bf222b1aa81ef1d"
+  },
+  "dotnet": {
+    "version": "10.0.402",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.402/dotnet-sdk-10.0.402-linux-x64.tar.gz",
+    "sha512": "1904a98dda2db34ba78ba3c4fb1b224455329af91c341d83547843c1839e112b04ae699ee92fa2449a8f62249196a938723078c0c60b9f65c88539d5687729c2"
+  },
+  "csharp_ls": {
+    "version": "0.28.0",
+    "url": "https://api.nuget.org/v3-flatcontainer/csharp-ls/0.28.0/csharp-ls.0.28.0.nupkg",
+    "sha256": "8f815e4f22674106a8244beba07e4b4b062e31528e404aa8489312effb8c0e0c"
+  },
+  "gradle": {
+    "version": "9.1.0",
+    "url": "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip",
+    "sha256": "a17ddd85a26b6a7f5ddb71ff8b05fc5104c0202c6e64782429790c933686c806"
+  }
+}

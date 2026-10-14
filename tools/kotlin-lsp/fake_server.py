@@ -63,4 +63,6 @@ while True:
     elif method == "shutdown":
         send({"id": message["id"], "result": None})
     elif method == "exit":
+        if "--exit-on-eof" in sys.argv:
+            assert sys.stdin.buffer.read() == b""
         break

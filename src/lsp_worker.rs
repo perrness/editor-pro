@@ -23,6 +23,14 @@ use tokio::{
 const QUEUE: usize = 32;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
+fn settings(language: Language) -> Value {
+    match language {
+        // JDT LS advertises signature help even when its preference is off.
+        Language::Java => json!({"java":{"signatureHelp":{"enabled":true}}}),
+        _ => Value::Null,
+    }
+}
+
 pub enum Control {
     Request(Request),
     Restart(PathBuf),
@@ -415,7 +423,7 @@ async fn session_loop(
 
 struct Transport {
     child: Child,
-    input: ChildStdin,
+    input: Option<ChildStdin>,
     frames: mpsc::Receiver<io::Result<Value>>,
     reader: JoinHandle<()>,
     stderr: JoinHandle<()>,
@@ -483,7 +491,7 @@ impl Transport {
         });
         Ok(Self {
             child,
-            input,
+            input: Some(input),
             frames,
             reader,
             stderr,
@@ -496,12 +504,16 @@ impl Transport {
         if bytes.len() > MAX_MESSAGE_BYTES {
             return Err(io::Error::other("LSP outgoing message exceeds 8 MiB"));
         }
+        let input = self
+            .input
+            .as_mut()
+            .ok_or_else(|| io::Error::other("LSP stdin is closed"))?;
         timeout(WRITE_TIMEOUT, async {
-            self.input
+            input
                 .write_all(format!("Content-Length: {}\r\n\r\n", bytes.len()).as_bytes())
                 .await?;
-            self.input.write_all(&bytes).await?;
-            self.input.flush().await
+            input.write_all(&bytes).await?;
+            input.flush().await
         })
         .await
         .map_err(|_| io::Error::other("Language server stdin timed out"))?
@@ -542,6 +554,9 @@ impl Transport {
             self.notify("exit", Value::Null).await
         })
         .await;
+        // EOF lets stdio servers finish their transport loop after exit. Tokio's
+        // ChildStdin::shutdown does not close the pipe on Unix; drop it explicitly.
+        drop(self.input.take());
         let pid = self.child.id();
         let _ = timeout(Duration::from_millis(200), self.child.wait()).await;
         #[cfg(unix)]
@@ -615,15 +630,17 @@ async fn run(
     wire.request(1, "initialize", json!({
         "processId":std::process::id(),"clientInfo":{"name":"editor-pro","version":env!("CARGO_PKG_VERSION")},
         "rootUri":root,"workspaceFolders":[{"uri":root,"name":key.root.file_name().unwrap_or_default().to_string_lossy()}],
+        "initializationOptions":{"settings":settings(key.language)},
         "capabilities":{
             "general":{"positionEncodings":["utf-16"]},
             "window":{"workDoneProgress":true},
             "workspace":{"applyEdit":true,"workspaceFolders":true,"configuration":true,
+                "diagnostics":{"refreshSupport":true},
                 "workspaceEdit":{"documentChanges":true,"failureHandling":"abort","resourceOperations":[]}},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
                 "completion":{"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"],
-                    "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}}},
+                    "resolveSupport":{"properties":["documentation","detail","additionalTextEdits","command"]}}},
                 "hover":{"contentFormat":["plaintext","markdown"]},
                 "signatureHelp":{"signatureInformation":{"documentationFormat":["plaintext","markdown"],"parameterInformation":{"labelOffsetSupport":true}}},
                 "definition":{"linkSupport":true},
@@ -686,7 +703,11 @@ async fn run(
     let mut timer = tokio::time::interval(Duration::from_millis(50));
     loop {
         let snapshots = source.borrow_and_update().clone();
-        synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?;
+        if synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?
+            && capabilities["diagnosticProvider"]["interFileDependencies"] == true
+        {
+            pulled.clear();
+        }
         pulled.retain(|path, _| open.contains_key(path));
         let obsolete: Vec<_> = pending
             .iter()
@@ -747,7 +768,10 @@ async fn run(
                         awaiting_edit = None;
                         // The watch channel may have changed since the top of the loop.
                         let snapshots = source.borrow_and_update().clone();
-                        synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?;
+                        if synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?
+                            && capabilities["diagnosticProvider"]["interFileDependencies"] == true {
+                            pulled.clear();
+                        }
                         let error = if !supports(&capabilities, &request.method) {
                             Some(format!("Server does not support {}", request.method))
                         } else if !open.values().any(|d| d.snapshot.stamp == request.stamp && d.snapshot.path == request.path) {
@@ -798,7 +822,17 @@ async fn run(
                         awaiting_edit = Some(p.request.serial);
                     }
                     server_message(wire,key,epoch,&frame,&open,action.as_ref(),events).await?;
-                    if frame["method"] == "workspace/diagnostic/refresh" { pulled.clear(); }
+                    if frame["method"] == "workspace/diagnostic/refresh" {
+                        // A refresh can supersede an in-flight report even when all
+                        // document versions are unchanged (for example after indexing).
+                        let ids: Vec<_> = pending.iter().filter(|(_, p)| p.request.method == "textDocument/diagnostic")
+                            .map(|(id, _)| *id).collect();
+                        for id in ids {
+                            wire.notify("$/cancelRequest", json!({"id":id})).await?;
+                            pending.remove(&id);
+                        }
+                        pulled.clear();
+                    }
                 } else if let Some(id) = frame["id"].as_u64() && let Some(p) = pending.remove(&id) {
                     if !documents_match(&p.documents, &open) { continue; }
                     let result = frame.get("error").map_or_else(|| Ok(frame["result"].clone()), |e| Err(format!("LSP error: {e}")));
@@ -806,7 +840,9 @@ async fn run(
                         if let (Ok(value), Some(document)) = (result, open.get(&p.request.path))
                             && value["kind"] == "full" {
                             let items = diagnostics(&value["items"])?;
-                            emit(events, Event::Diagnostics { key:key.clone(),epoch,document:document.clone(),versioned:true,items }).await?;
+                            let dependencies = (capabilities["diagnosticProvider"]["interFileDependencies"] == true)
+                                .then(|| p.documents.iter().map(|d| (d.snapshot.path.clone(), d.snapshot.stamp.clone())).collect());
+                            emit(events, Event::Diagnostics { key:key.clone(),epoch,document:document.clone(),dependencies,versioned:true,items }).await?;
                         }
                     } else {
                         emit(events, Event::Response { key:key.clone(),epoch,request:p.request,documents:p.documents,result }).await?;
@@ -839,7 +875,12 @@ async fn synchronize(
     open: &mut BTreeMap<PathBuf, Versioned>,
     snapshots: Vec<Snapshot>,
     version: &mut i32,
-) -> io::Result<()> {
+) -> io::Result<bool> {
+    let changed = snapshots.len() != open.len()
+        || snapshots.iter().any(|snapshot| {
+            open.get(&snapshot.path)
+                .is_none_or(|d| !d.snapshot.same_document(snapshot))
+        });
     let sync = &capabilities["textDocumentSync"];
     let kind = sync
         .as_u64()
@@ -878,13 +919,17 @@ async fn synchronize(
             )
             .await?;
         }
+        // Versions belong to a document. Keep a session high-water mark only
+        // for new/reopened paths so delayed reports cannot match a later open.
+        let document_version;
         if previous.is_none() || replacement {
-            *version = version
+            document_version = previous
+                .map_or(*version, |p| p.version)
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("LSP version exhausted; restart server"))?;
             if open_close {
                 wire.notify("textDocument/didOpen",json!({"textDocument":{
-                    "uri":snapshot.uri()?,"languageId":snapshot.language.id(),"version":version,"text":snapshot.text.to_string()
+                    "uri":snapshot.uri()?,"languageId":snapshot.language.id(),"version":document_version,"text":snapshot.text.to_string()
                 }})).await?;
             }
         } else if let Some(previous) = previous
@@ -895,7 +940,8 @@ async fn synchronize(
                     "Server cannot synchronize unsaved changes (sync kind None)",
                 ));
             }
-            *version = version
+            document_version = previous
+                .version
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("LSP version exhausted"))?;
             let content = if kind == 1 {
@@ -903,7 +949,7 @@ async fn synchronize(
             } else {
                 change(&previous.snapshot.text, &snapshot.text)?
             };
-            wire.notify("textDocument/didChange",json!({"textDocument":{"uri":snapshot.uri()?,"version":version},"contentChanges":[content]})).await?;
+            wire.notify("textDocument/didChange",json!({"textDocument":{"uri":snapshot.uri()?,"version":document_version},"contentChanges":[content]})).await?;
         } else {
             if let Some(previous) = previous
                 && previous.snapshot.saved != snapshot.saved
@@ -920,9 +966,10 @@ async fn synchronize(
             }
             continue;
         }
+        *version = (*version).max(document_version);
         let document = Versioned {
             snapshot,
-            version: *version,
+            version: document_version,
         };
         if saved_changed && (sync["save"] == true || sync["save"].is_object()) {
             let mut params = json!({"textDocument":{"uri":document.snapshot.uri()?}});
@@ -933,7 +980,7 @@ async fn synchronize(
         }
         open.insert(document.snapshot.path.clone(), document);
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn diagnostics(value: &Value) -> io::Result<Vec<lsp_types::Diagnostic>> {
@@ -965,7 +1012,18 @@ async fn server_message(
                     .as_array()
                     .unwrap_or(&Vec::new())
                     .iter()
-                    .map(|_| Value::Null)
+                    .map(|item| {
+                        let settings = settings(key.language);
+                        item["section"]
+                            .as_str()
+                            .filter(|section| !section.is_empty())
+                            .map_or(settings.clone(), |section| {
+                                section
+                                    .split('.')
+                                    .fold(&settings, |value, name| &value[name])
+                                    .clone()
+                            })
+                    })
                     .collect::<Vec<_>>()
             ),
             "workspace/workspaceFolders" => {
@@ -993,7 +1051,7 @@ async fn server_message(
                     .await?;
                     return Ok(());
                 }
-                json!({"applied":false,"failureReason":"No current user-selected code action; unsolicited edits are refused"})
+                json!({"applied":false,"failureReason":"No current user-selected action or completion command; unsolicited edits are refused"})
             }
             _ => {
                 wire.send(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("Unsupported client method: {method}")}})).await?;
@@ -1018,6 +1076,7 @@ async fn server_message(
                         key: key.clone(),
                         epoch,
                         document: document.clone(),
+                        dependencies: None,
                         versioned: report_version.is_some(),
                         items: diagnostics(&params["diagnostics"])?,
                     },

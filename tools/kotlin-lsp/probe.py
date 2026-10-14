@@ -247,6 +247,7 @@ def probe(client, root, timeout, report):
     client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
     client.request("shutdown", None, min(deadline, time.monotonic() + 10))
     client.notify("exit")
+    client.process.stdin.close()
     return_code = client.process.wait(timeout=5)
     if return_code != 0:
         raise RuntimeError(f"Server exited with status {return_code}")

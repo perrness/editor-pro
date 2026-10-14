@@ -1,5 +1,9 @@
 # Delivery validation — 2026-10-14
 
+Entries below retain the evidence from each delivery. The latest
+[M5 real-server acceptance follow-up](#m5-real-server-acceptance-follow-up)
+supersedes earlier missing-server blockers and test counts.
+
 ## Foundation revalidation before Milestone 2
 
 Starting commit: `864f6ab`. Linux x86_64, Rust/Cargo 1.99.0, Python 3,
@@ -519,7 +523,7 @@ No integrated LSP, AI, plugins, GUI or later-milestone snapshot engine was added
 Implementation is recorded in logical local commits. `prompt.md` remains untracked
 and excluded from commits. No push was performed.
 
-## M5 language client implementation and validation
+## M5 initial language client implementation and validation
 
 Inspected the actual M1–4 modules and tests before selecting M5. At the start of
 implementation, no `AGENTS.md` existed in this checkout or its ancestors. The
@@ -600,3 +604,127 @@ synchronized by the requesting server. Unopened unversioned targets are guarded
 from proposal preparation onward, not before the response. JDT workspace data
 is temporary. Existing performance examples compile as all-target checks, but
 their timing workloads were not rerun and no new real-server latency claim is made.
+
+## M5 real-server acceptance follow-up
+
+The next incomplete milestone was M5 acceptance, not M6. Inspection confirmed
+that the client and 27 LSP regressions already existed, while the real-server
+gate was still open. All 178 starting Rust tests passed. This follow-up adds
+real-project acceptance and fixes the interoperability failures it exposed;
+no later-milestone features or dependencies were introduced.
+
+Incremental fixes and regression coverage:
+
+- Advertise pull-diagnostic refresh support, cancel superseded in-flight pulls,
+  and repull after indexing notifications. Inter-file dependency reports retain
+  all captured document stamps and invalidate when another document changes.
+- Advance versions independently for each document while seeding newly opened
+  paths above the session maximum. The tested Kotlin server returned consecutive
+  document versions; the previous global counter skipped versions when another
+  file opened. Version checks and buffer-instance guards remain strict.
+- Support advertised completion commands, including commands supplied during
+  resolution. The first preview requires approval before execution; subsequent
+  `workspace/applyEdit` edits require a separate guarded preview. Cancellation,
+  unadvertised commands, undo and unchanged disk bytes have regressions.
+- Enable JDT signature help through initialization and workspace configuration.
+  Its advertised capability alone was insufficient with the default preference.
+- Close stdin after shutdown/exit so stdio servers can finish their transport
+  loops. Both clients have EOF regressions; the editor retains bounded kill/reap
+  fallback. The independent real Kotlin probe now exits cleanly.
+
+Under concurrent import load, the existing PTY buffer workflow sometimes sent a
+command before Escape had been processed, leaving command text in Insert mode.
+That sequence now waits for observable Normal/buffer-list/source transitions
+instead of relying on a fixed delay to separate Escape from the next command.
+
+### Final automated checks
+
+Linux x86_64, Rust/Cargo 1.99.0, Python 3. Cargo checks used the existing temporary
+cache with `CARGO_NET_OFFLINE=true`. Network access was used separately for pinned
+server/SDK downloads and language-server dependency imports.
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt` and `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | **186 passed**, none failed; **six opt-in real-server tests ignored**. Includes 35 LSP regressions. |
+| `cargo build --locked` and release binary build | Passed. |
+| Python probe unittest discovery | **Eight passed**; protocol-double/harness evidence only. |
+| `python3 tools/terminal_smoke.py` | **18 sessions passed**, including completion-command cancellation, both approvals, undo, save and terminal restoration. |
+| `cargo test --locked --test lsp_real LANGUAGE_ -- --ignored --nocapture --test-threads=1` | **Six passed** across the Kotlin, Java and C# filters, using actual servers. |
+| Standalone official Kotlin probe | **Passed**, exit 0, 63.052 seconds; diagnostics version 2 after an unsaved edit and clean process exit. |
+| `git diff --check` | Passed. |
+
+The ordinary suite downloads nothing and requires no installed language server.
+The opt-in tests exercise the ordinary Rust `Editor`, background worker, contextual
+views and edit approval path. They copy source/build fixtures to temporary roots,
+wait for actual diagnostics, and fail on missing prerequisites, timeouts or failed
+features. A failed real feature is never recorded as a successful empty result.
+
+### Pinned real environments and results
+
+[servers.json](tools/lsp/servers.json) records archive URLs and verified hashes.
+Kotlin, JDT LS and Gradle SHA-256 values were checked against published files;
+the .NET SDK SHA-512 comes from Microsoft release metadata. The csharp-ls SHA-256
+records the installed NuGet package. Reproduction and cache isolation instructions
+are in [tools/lsp/README.md](tools/lsp/README.md).
+
+| Server | Observed runtime | Fixture targets |
+| --- | --- | --- |
+| Official Kotlin 263.6379.0 | Bundled JBR 25.0.4.1+1-b601.61 | Kotlin 2.3.0, JVM 21; Maven and two-module Gradle 9.1.0 with JDK 21 toolchain |
+| JDT LS 1.60.0-202606262232 | OpenJDK 25.0.4.1; server reports `1.60.0-SNAPSHOT` | Java 21; Maven compiler plugin 3.14.1 and two-module Gradle 9.1.0 with JDK 21 toolchain |
+| csharp-ls 0.28.0 | .NET SDK 10.0.402 | `net10.0`; project-only and app/library solution |
+
+All six fixtures passed diagnostics, hover, signature help, definition jumps,
+references, document symbols, quick-fix previews, completion documentation and
+application, unsaved diagnostic changes, formatting/apply/undo, multi-file rename,
+cancel/apply/undo, dirty quit protection and restart/resynchronization. Original
+source/build bytes remained unchanged on disk. The type-error fixes were Kotlin
+and Java's change-declared-type action and C#'s explicit-cast action. Kotlin's
+completion exercised the command-driven two-preview path. With snippets disabled,
+the tested Java completion can insert a method name without adding parentheses.
+
+The fresh-project and restart samples below use cached Maven/Gradle/NuGet
+dependencies. Every test starts from a new copied project, and JDT workspace
+indexes are temporary on both launches. Times are observed readiness samples,
+not cold-download benchmarks or guarantees; CPU contention affects them.
+
+| Fixture | Result | First diagnostics (s) | Unsaved restart/resync (s) | Diagnostics |
+| --- | --- | ---: | ---: | --- |
+| kotlin-maven | Passed | 36.37 | 5.89 | Version-verified |
+| kotlin-gradle | Passed | 59.09 | 6.04 | Version-verified |
+| java-maven | Passed | 11.96 | 8.58 | Versionless push |
+| java-gradle | Passed | 14.30 | 16.58 | Versionless push |
+| csharp-project | Passed | 4.56 | 4.15 | Version-verified |
+| csharp-solution | Passed | 4.62 | 5.52 | Version-verified |
+
+The standalone probe report is `/tmp/editor-pro-m5-real-kotlin.json`; editor
+reports are `/tmp/editor-pro-m5-real-final/*.json`. They contain fixture hashes,
+commands, capabilities, bounded logs, per-check results/timings and failure phases.
+Re-running with `EDITOR_PRO_LSP_REPORT_DIR` writes fresh reports. Source fixtures
+and pinned downloads are retained in the repository; downloaded binaries/caches
+and raw reports are temporary environment artifacts.
+
+### Limits and manual checks
+
+A cold JDT Maven import timed out an early references request at the normal
+15-second deadline; cached retries passed. The client remains usable and reports
+the error. Further cold-download, large-project and peak-memory measurements are
+still needed. csharp-ls logs a null-configuration warning and uses defaults;
+all tested features worked. JDT's push diagnostics were versionless, so their
+freshness remains explicitly unverified; Kotlin/C# reports were version-verified.
+
+Real-server restart with unsaved text is covered. Missing-server, malformed
+protocol, timeout, crash/retry and out-of-order races are covered by deterministic
+doubles; real crash injection remains a manual check. The small Gradle fixtures
+prove app/library import and cross-module navigation, not large or mixed-language
+build compatibility. Android, KMP, Razor, older .NET targets, macOS, minimum Rust
+1.88, hosted CI and physical-terminal comfort remain unobserved.
+
+Manually inspect `:Doctor`, import progress and `:LspLog` on your projects; try
+completion/diagnostics/navigation, quick fixes, formatting and multi-file rename.
+Cancel and apply proposals, undo in each buffer, check dirty quit protection,
+and restart or terminate the server with unsaved text. Inspect narrow/normal
+layouts and terminal restoration on Linux and macOS. Snippets, virtual documents,
+watched-file registration and resource/annotated edits remain unsupported.
+No editing/Git/review performance workload was rerun in this follow-up.

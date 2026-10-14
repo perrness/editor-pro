@@ -106,7 +106,7 @@ def run_session(binary, path, commands, expected, environment=None):
                 reaped = True
                 assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors="replace")
                 break
-        assert reaped, "Editor did not exit"
+        assert reaped, f"Editor did not exit: {output[-4000:]!r}"
         assert termios.tcgetattr(slave) == original, "Terminal settings were not restored"
         assert b"\x1b[?1049l" in output, "Alternate screen was not left"
         assert b"\x1b[?2004l" in output, "Bracketed paste was not disabled"
@@ -143,9 +143,10 @@ def main():
         second = Path(directory) / "second.kt"
         path.write_bytes(b"alpha\r\n")
         second.write_bytes(b"beta\n")
-        run_session(binary, path, [b"iA", b"\x1b", f":e {second}\r".encode(),
-                                  b"iB", b"\x1b", b":q\r", b":w\r", b":q\r",
-                                  b":ls\r", b"\x1b", b":bp\r", b":wq\r"],
+        run_session(binary, path, [b"iA", b"\x1b", (b"NORMAL", 10), f":e {second}\r".encode(),
+                                  b"iB", b"\x1b", (b"NORMAL", 10), b":q\r", b":w\r", b":q\r",
+                                  b":ls\r", (b"Buffers", 10), b"\x1b", (b"beta", 10),
+                                  b":bp\r", b":wq\r"],
                     b"Aalpha\r\n")
         assert second.read_bytes() == b"Bbeta\n"
         run_session(binary, path, [f":files {directory}\r".encode(), b"secondkt", b"\r",
@@ -286,7 +287,24 @@ def main():
         ], b"good value\n", environment)
         assert '"method": "shutdown"' in log.read_text()
         assert '"method": "exit"' in log.read_text()
-    print("PASS: 17 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP hover/format/preview/undo/save/shutdown, and restoration")
+        language_source.write_text("bad value\n")
+        log = lsp_root / "completion.jsonl"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+            sys.executable, str(fake.resolve()), "--log", str(log),
+            "--scenario", "completion-command",
+        ])}
+        output = run_session(binary, language_source, [
+            (server_ready, 10), b":Complete\r", (b"detail", 10),
+            b"\r", (b"fake.fix", 10), b"\x1b",
+            b":Complete\r", (b"detail", 10), b"\r",
+            (b"fake.fix", 10), b"\r", (b"good", 10),
+            b"\r", (b"unsaved", 10), b"u", b":Format\r", (b"Enter applies", 10),
+            b"\r", b":wq\r",
+        ], b"good value\n", environment)
+        messages = [json.loads(line) for line in log.read_text().splitlines()]
+        assert sum(m.get("method") == "workspace/executeCommand" for m in messages) == 1
+        assert any(m.get("id") == 777 and m.get("result", {}).get("applied") for m in messages)
+    print("PASS: 18 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP completion commands/hover/format/preview/undo/save/shutdown, and restoration")
     return 0
 
 

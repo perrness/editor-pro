@@ -39,6 +39,7 @@ pub struct ServerInfo {
 }
 pub struct DiagnosticSet {
     pub stamp: Stamp,
+    dependencies: Option<BTreeMap<PathBuf, Stamp>>,
     pub versioned: bool,
     pub items: Vec<Diagnostic>,
 }
@@ -225,9 +226,17 @@ impl Editor {
             .iter()
             .map(|s| (s.path.clone(), s.stamp.clone()))
             .collect();
-        self.lsp
-            .diagnostics
-            .retain(|path, d| stamps.get(path) == Some(&d.stamp));
+        self.lsp.diagnostics.retain(|path, d| {
+            stamps.get(path) == Some(&d.stamp)
+                && self.lsp.routes.get(path).is_some_and(|key| {
+                    diagnostic_dependencies_current(
+                        &d.dependencies,
+                        key,
+                        &self.lsp.snapshots,
+                        &self.lsp.routes,
+                    )
+                })
+        });
         for _ in 0..128 {
             let Some(event) = self.lsp.worker.as_mut().and_then(Worker::poll) else {
                 break;
@@ -318,6 +327,7 @@ impl Editor {
                 key,
                 epoch,
                 document,
+                dependencies,
                 versioned,
                 items,
             } => {
@@ -325,11 +335,18 @@ impl Editor {
                     && self.lsp.snapshots.iter().any(|s| {
                         s.path == document.snapshot.path && s.stamp == document.snapshot.stamp
                     })
+                    && diagnostic_dependencies_current(
+                        &dependencies,
+                        &key,
+                        &self.lsp.snapshots,
+                        &self.lsp.routes,
+                    )
                 {
                     self.lsp.diagnostics.insert(
                         document.snapshot.path,
                         DiagnosticSet {
                             stamp: document.snapshot.stamp,
+                            dependencies,
                             versioned,
                             items,
                         },
@@ -767,11 +784,7 @@ impl Editor {
                 "Server returned a snippet despite snippetSupport=false",
             ));
         }
-        if value.get("command").is_some_and(|v| !v.is_null()) {
-            return Err(error(
-                "Completion commands are unsupported; choose a plain completion",
-            ));
-        }
+        let command = value.get("command").filter(|v| !v.is_null()).cloned();
         let main = if let Some(edit) = value.get("textEdit") {
             let range = edit
                 .get("range")
@@ -796,7 +809,7 @@ impl Editor {
             edits.extend(extra.iter().cloned());
         }
         let edit = json!({"changes":{lsp::file_uri(&context.path)?.as_str():edits}});
-        self.stage_lsp_edit(&edit, context, versions, None)
+        self.stage_lsp_edit(&edit, context, versions, command)
     }
     fn select_action(
         &mut self,
@@ -842,6 +855,19 @@ impl Editor {
         versions: Vec<Versioned>,
         continuation: Option<Value>,
     ) -> io::Result<()> {
+        if let Some(command) = &continuation {
+            let advertised =
+                &self.lsp.servers[&context.key].capabilities["executeCommandProvider"]["commands"];
+            if !command["command"].is_string()
+                || !advertised
+                    .as_array()
+                    .is_some_and(|items| items.contains(&command["command"]))
+            {
+                return Err(error(
+                    "Server did not advertise this completion/action command",
+                ));
+            }
+        }
         let plan = self.prepare_lsp_edit(edit, &context.key.root, &versions, &context.guards)?;
         let mut panel = Panel::text(
             &format!(
@@ -885,6 +911,16 @@ impl Editor {
             }
         }
         panel.return_mode = context.mode;
+        if let Some(command) = &continuation {
+            panel.rows.push(Row {
+                label: format!(
+                    "Then run server command: {}",
+                    command["command"].as_str().unwrap_or("")
+                ),
+                detail: "Any further text edits require another preview".into(),
+                action: Item::Text,
+            });
+        }
         panel.context = Some(context);
         panel.versions = versions;
         panel.plan = Some(plan);
@@ -1224,6 +1260,22 @@ impl Editor {
         self.document.buffer.set_cursor(target, false);
         Ok(())
     }
+}
+
+fn diagnostic_dependencies_current(
+    dependencies: &Option<BTreeMap<PathBuf, Stamp>>,
+    key: &ServerKey,
+    snapshots: &[Snapshot],
+    routes: &BTreeMap<PathBuf, ServerKey>,
+) -> bool {
+    let Some(dependencies) = dependencies else {
+        return true;
+    };
+    let mut current = snapshots
+        .iter()
+        .filter(|s| routes.get(&s.path) == Some(key));
+    current.clone().count() == dependencies.len()
+        && current.all(|s| dependencies.get(&s.path) == Some(&s.stamp))
 }
 
 fn error(message: &str) -> io::Error {

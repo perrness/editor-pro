@@ -1,16 +1,17 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Milestones 1, 2, 3 and 4 are implemented
-in this delivery. M5 client functionality is implemented; its real-server acceptance
-gate remains incomplete. Editing modes remain independent of contextual views throughout.
+not only code or an advertised server capability. Milestones 1–5 are implemented;
+M5 now has pinned real-server acceptance evidence on Linux. Platform and broader
+project limits remain explicit below. Editing modes remain independent of
+contextual views throughout. M6 has not been started.
 
 ## Milestone 1 — Minimal editor
 
 **Status:** foundation build, formatting, Clippy, 34 Rust tests and the Linux PTY
 smoke test passed before M2 work. Later PTY checks also exercised real resize
-events, wide text and external-write conflicts. macOS/physical visual checks and
-the real Kotlin feasibility gate remain open.
+events, wide text and external-write conflicts. macOS/physical visual checks
+remain open; M5 subsequently passed the real Kotlin feasibility probe.
 
 - Terminal startup/restoration, open/new UTF-8 file, render/scroll text.
 - Basic Vim navigation; Normal and Insert; insert/delete; grouped undo/redo.
@@ -25,8 +26,8 @@ undo/redo, dirty quit refusal and terminal restoration. Manually resize, inspect
 wide text and provoke an external-write conflict. Record a real Kotlin probe run
 or keep its feasibility gate explicitly open.
 
-**Remaining validation:** macOS/physical visual checks and a real standalone
-Kotlin probe. See [VALIDATION.md](VALIDATION.md).
+**Remaining validation:** macOS/physical visual checks. The standalone Kotlin
+probe result is recorded in [VALIDATION.md](VALIDATION.md).
 
 ## Milestone 2 — Modern editing
 
@@ -51,11 +52,11 @@ example checks typing/scrolling across all eight grammars and a 10,000-file pick
 workloads. Large Markdown is slower than the other languages; the measured limits
 are recorded in [VALIDATION.md](VALIDATION.md). Full platform/interactive comfort
 sign-off remains open until macOS and physical-terminal use are observed. The
-missing Kotlin server executable keeps the separate feasibility gate open.
+separate Kotlin feasibility gate was subsequently exercised in M5.
 
 **Remaining validation:** close those platform/physical-terminal gaps before a
-broader release. Milestone 3 is implemented below; it does not close the separate
-real Kotlin feasibility gate.
+broader release. Milestone 3 is implemented below; real Kotlin evidence appears
+in the M5 follow-up.
 
 ## Milestone 3 — Git-aware editing
 
@@ -105,15 +106,16 @@ export, failures and terminal restoration. `review_performance` measures hashing
 progress refresh, notes, persistence and export. Exact final counts/timings are in
 [VALIDATION.md](VALIDATION.md). The automated M4 workflow is complete without AI
 or a language server. macOS, hosted CI, minimum-Rust and physical-terminal comfort
-remain unobserved; the separate real Kotlin probe remains blocked by its missing
-server executable. M7 immutable baselines and automatic reanchoring remain future
+remain unobserved; M5 now supplies the separate real Kotlin probe result.
+M7 immutable baselines and automatic reanchoring remain future
 work. Validation samples at most 32 annotated paths per refresh; excess paths and
 other bases are visibly unavailable, and stale annotations require explicit action.
 
 ## Milestone 5 — Language intelligence
 
-**Status:** client implementation complete; real-server/project acceptance open.
-This is the next milestone to validate, not a claim that M5 has passed acceptance.
+**Status:** implemented, with Linux acceptance passing against pinned real servers
+on six disposable project fixtures. This closes the missing-server gate; it does
+not establish support for every project, framework or platform.
 
 Robust LSP lifecycle/synchronization with Kotlin (official JetBrains), Java
 (JDT LS), and C# (Roslyn-based). SDK/root/server discovery, asynchronous import,
@@ -142,22 +144,38 @@ views. `:LspInfo`, `:LspLog`, `:LspRestart` and `:Doctor` expose state.
 Edits require a preview, validate all affected documents before applying, retain
 unopened targets as dirty buffers, preserve per-buffer undo, and never auto-save.
 
-**Evidence:** 27 Rust LSP regressions exercise framed stdio subprocesses,
+Real-server testing corrected document-local version progression, indexing-driven
+diagnostic refresh and dependency invalidation, command-driven completion approval,
+JDT signature-help configuration and stdin closure during shutdown. Completion
+commands share the existing guarded code-action/edit path; their further edits
+require a separate preview. No general configuration or backend framework was added.
+
+**Evidence:** 35 Rust LSP regressions exercise framed stdio subprocesses,
 all three language IDs and separate roots, delayed/stale responses, versioned
 diagnostics, missing servers, malformed protocols, unsupported capabilities,
 timeouts, crash/restart/resync, UTF-16/CRLF, full/incremental synchronization,
 multi-file edits and source/note isolation. These are labelled test doubles.
-Final full-suite and terminal results are recorded in [VALIDATION.md](VALIDATION.md).
+Final full-suite and terminal results are recorded in [VALIDATION.md](VALIDATION.md):
+186 deterministic Rust tests, eight Python probe tests and 18 PTY sessions pass.
+Six additional opt-in tests drive the actual editor against official Kotlin
+263.6379.0 and JDT LS 1.60.0 on Maven and multi-module Gradle projects, and
+Roslyn-based `csharp-ls` 0.28.0 on `.csproj` and multi-project `.sln` fixtures.
+They exercise import, diagnostics, completion resolution/application, hover,
+signature help, definitions/references, symbols, quick-fix previews, formatting,
+multi-file rename, cancellation, undo, unsaved restart/resync and unchanged disk
+bytes. The independent Kotlin probe also passes, including clean shutdown/exit.
+Pinned archives, checksums and reproduction instructions live in
+[tools/lsp](tools/lsp/README.md).
 
-**Remaining acceptance:** provision/pin official Kotlin, JDT LS and Roslyn-based
-`csharp-ls` and test representative Gradle, Maven, `.sln` and `.csproj` projects,
-cold/warm indexing, project SDK selection and real feature behavior. The isolated
-Kotlin probe still returns blocked because its executable is absent; JDT LS,
-`csharp-ls` and dotnet are also absent here. macOS and physical-terminal checks
-remain unobserved. Do not advance to M6 on the strength of mock-server results.
+**Remaining validation:** macOS and physical-terminal comfort, larger production
+projects, mixed Kotlin/Java, real-server crash injection and memory profiling.
+Fresh-project and restart timings use cached build dependencies; initial downloads
+can exceed feature deadlines. A cold JDT import did so before a cached retry
+passed. SDK targets and the tested runtime versions are recorded in VALIDATION.md.
+KMP, Android, Razor and older .NET framework targeting remain untested.
 
 **Known scope limits:** manual completion, plain documentation, static capabilities,
-no snippets/completion commands, virtual documents, file resource operations,
+no snippets, virtual documents, file resource operations,
 annotated edits or watched-file registration. Versionless push diagnostics are
 visibly unverified. Limits: eight sessions, 2 MiB documents, 8 MiB messages and
 32-file/4,096-replacement proposals; undo remains per buffer. Unopened unversioned

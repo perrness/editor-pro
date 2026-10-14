@@ -1,17 +1,18 @@
 # Language-server feasibility
 
-Investigated 2026-10-14 using upstream documentation. The Rust editor now implements
-a standard stdio LSP client for M5. Client tests use a labelled protocol double;
-real Kotlin/JDT/Roslyn acceptance is still unverified. The independent Kotlin
-experiment remains in `tools/kotlin-lsp/`. See README for client setup/commands.
+Investigated and tested 2026-10-14. The Rust editor implements a standard stdio LSP
+client for M5. Six opt-in tests now pass against pinned Kotlin/JDT/Roslyn servers
+on Linux, separately from the deterministic protocol-double tests. The independent
+Kotlin experiment also passes. See README for client setup/commands and
+[tools/lsp](../tools/lsp/README.md) for exact distributions and reproduction.
 
-## Initial choices
+## Selected servers
 
 | Language | Candidate | Requirements and limits | Decision |
 | --- | --- | --- | --- |
-| Kotlin | Official JetBrains Kotlin LSP | IntelliJ-based; alpha and partially closed-source. JVM Gradle/Maven support, experimental Android; KMP is still described as future work. Standalone releases exist. | Preferred; must pass the isolated probe and representative-project testing before promising support. |
-| Java | Eclipse JDT LS | Java 21+ to run; its documented compiler support spans Java 8–25. Maven, Gradle and standalone Java support. Separate workspace data directory and launch configuration need management. | Preferred, mature starting point. Validate actual project JDK/toolchain requirements separately. |
-| C# | `csharp-ls` | Community Roslyn-based server, MIT licensed; current install requires .NET SDK 10+. Can target older frameworks, subject to their SDK/reference assemblies and project support. | Initial candidate; install as a .NET tool and test real `.sln`/`.csproj` workspaces before M5. |
+| Kotlin | Official JetBrains Kotlin LSP | IntelliJ-based; alpha and partially closed-source. JVM Gradle/Maven support, experimental Android; KMP is still described as future work. Standalone releases exist. | 263.6379.0 passed the isolated Maven probe and editor Maven/multi-module Gradle fixtures. |
+| Java | Eclipse JDT LS | Java 21+ to run; its documented compiler support spans Java 8–25. Maven, Gradle and standalone Java support. Separate workspace data directory and launch configuration need management. | 1.60.0 passed Maven/multi-module Gradle editor fixtures; project targets and Gradle toolchains were Java 21. |
+| C# | `csharp-ls` | Community Roslyn-based server, MIT licensed; current install requires .NET SDK 10+. Can target older frameworks, subject to their SDK/reference assemblies and project support. | 0.28.0 with SDK 10.0.402 passed `.csproj` and multi-project `.sln` editor fixtures targeting `net10.0`. |
 
 Sources: [Kotlin upstream README](https://github.com/Kotlin/kotlin-lsp/blob/main/README.md),
 [JDT LS README](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/main/README.md),
@@ -49,11 +50,11 @@ legacy launcher. The current maintained Neovim configuration uses
 [Release history](https://github.com/Kotlin/kotlin-lsp/blob/main/RELEASES.md),
 [current Neovim launcher configuration](https://github.com/neovim/nvim-lspconfig/blob/master/lsp/kotlin_lsp.lua).
 
-The inference from these sources is that a standard stdio LSP client is feasible,
-but project import, runtime packaging, capability details and cross-language
-behavior remain empirical questions. A JVM smoke test says nothing about KMP,
-Android, a large multi-module Gradle build or Java/Kotlin coordination. Alpha
-status and partial source availability increase upgrade/debugging risk.
+The pinned runtime has now demonstrated standard stdio interoperability and
+essential features on small Maven and two-module Gradle JVM fixtures. These
+observations do not establish KMP, Android, large Gradle builds or Java/Kotlin
+coordination. Alpha status and partial source availability increase upgrade and
+debugging risk; rerun acceptance when changing server versions.
 
 ## Isolated executable probe
 
@@ -98,45 +99,48 @@ The current probe expects push diagnostics. A pull-only server requires adapting
 the experiment before drawing a product conclusion. Older diagnostic versions
 are ignored; versionless reports are accepted but explicitly recorded as not
 version-verified. This does not prove production stale-response correctness.
-The fixture tests Maven only; Gradle validation remains a separate gate.
+The fixture tests Maven only; the separate Rust editor suite exercises Gradle.
 
-## Observed result in this environment
+## Observed Linux results
 
-- OpenJDK **25.0.4.1** and Maven **3.8.7** are available; JDK 21 is also installed.
-- Neither `intellij-server` nor `kotlin-lsp` is installed/on PATH.
-- During foundation revalidation, authorized network access worked for Rust
-  installation. No standalone Kotlin server archive/launcher is installed, and
-  none was downloaded or executed. The precise probe blocker is the missing
-  server executable; JDK 25 and Maven are present.
-- Running the probe returned **blocked**, exit 2, with reason “Kotlin LSP
-  executable is not installed or not on PATH.” No capability or functional result
-  was obtained from a real server.
-- Seven Python tests pass, including a deliberately labelled protocol test
-  double, fragmented messages, server-initiated configuration, stale diagnostics,
-  missing executable and timeout cleanup. These validate the harness only.
+The earlier missing-executable blocker is resolved. Servers and SDKs were
+provisioned under temporary directories with verified distribution hashes,
+isolated caches and explicit argv overrides. They are not installed by the editor
+or added to its ordinary test prerequisites. See [servers.json](../tools/lsp/servers.json).
 
-**Conclusion:** no fundamental incompatibility was identified in upstream
-documentation; actual Kotlin runtime feasibility is **unverified**. Keep this
-gate open. Do not describe mock-server success as Kotlin support.
+- Official Kotlin **263.6379.0** uses its bundled **JBR 25.0.4.1+1-b601.61**.
+  The standalone probe passed in **63.052 seconds**, including version-2
+  diagnostics after an unsaved edit and clean exit. Explicitly closing stdin after
+  `exit` was necessary for its transport loop to finish. Eight Python tests cover
+  the harness independently, including this EOF behavior.
+- JDT LS **1.60.0-202606262232** ran with OpenJDK **25.0.4.1**; the archive reports
+  server version `1.60.0-SNAPSHOT`. Signature help must be explicitly enabled
+  despite the advertised capability; the client now supplies that setting.
+- `csharp-ls` **0.28.0** ran with **.NET SDK 10.0.402** and `net10.0` projects.
+  Its null-configuration warning falls back to defaults and did not prevent any
+  tested feature. Java/Kotlin fixtures target JVM 21; Gradle **9.1.0** fixtures
+  explicitly select the installed JDK 21 toolchain. Maven **3.8.7** is available.
 
-## Required real-project follow-up
+The six editor tests exercise actual project discovery/import, diagnostics,
+completion resolution/application, hover, signature help, cross-file definition
+and references, document symbols, quick-fix previews, formatting, multi-file
+rename, cancellation/undo, dirty quit protection and unsaved restart/resync.
+Original source/build files stay byte-for-byte unchanged. Kotlin and C# supplied
+version-verified diagnostics; JDT push reports were versionless and remain visibly
+unverified. [VALIDATION.md](../VALIDATION.md) records timings and validation commands.
 
-The M5 implementation did not provision server binaries. Re-running the isolated
-Kotlin probe still returned blocked (exit 2, missing executable). Neither `jdtls`
-nor `csharp-ls` nor `dotnet` is installed/on PATH in this environment. The new
-`tools/lsp/fake_server.py` validates client lifecycle, synchronization, commands
-and failure handling only. Three language IDs in a protocol test do not establish
-the capabilities or SDK compatibility of three real server distributions.
+## Remaining validation
 
-Run and retain the probe report with the exact archive version/checksum, OS,
-architecture, runtime JDK and server log. Then test a representative Gradle JVM
-project (including wrapper/toolchain discovery and multi-module import) and a
-Maven project with real dependencies. Measure cold/warm indexing and memory;
-exercise unsaved changes, definition/references, completion resolution, formatting,
-rename/code actions, crash/restart and diagnostics after out-of-order edits.
+The measured fresh-project/restart runs use cached dependencies. A first JDT
+Maven import exceeded the normal 15-second references deadline; a cached retry
+passed. More representative cold imports, peak memory, larger production builds,
+mixed Kotlin/Java navigation and real-server crash injection still need observation.
+Protocol doubles cover missing servers, deadlines, crashes and asynchronous races;
+they do not replace these real workload checks.
 
-For Java, provision JDT LS and an isolated workspace data directory; check Gradle,
-Maven and mixed Kotlin/Java navigation. For C#, install a pinned `csharp-ls`, load
-both solution and project-only examples, restore dependencies, and test multiple
-solutions/framework targeting. Record supported, unsupported, failed and untested
-methods separately; do not turn missing capability into a silent no-op.
+macOS and physical-terminal appearance remain unobserved. Android, KMP, Razor,
+older .NET targets and multiple-solution selection are not established by these
+fixtures. JDT indexes remain temporary per session. The client still excludes
+snippets, virtual documents, watched-file registration and file resource operations.
+Use the manual workflow in README on your projects before relying on those
+environments; record unsupported and failed behavior separately from passes.

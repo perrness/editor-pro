@@ -316,6 +316,57 @@ fn sync_open_edit_save_reload_save_as_close_and_full_sync() {
 }
 
 #[test]
+fn document_versions_advance_independently_and_do_not_repeat_after_reopening() {
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.wait_log("textDocument/didOpen", 1);
+    let main = f.directory.path().join("Main.kt");
+    let main_uri = lsp::file_uri(&main).unwrap();
+    let first = f
+        .log()
+        .into_iter()
+        .find(|m| m["method"] == "textDocument/didOpen")
+        .unwrap();
+    let first_version = first["params"]["textDocument"]["version"].as_i64().unwrap();
+    f.editor
+        .open_buffer(&f.directory.path().join("Other.kt"))
+        .unwrap();
+    f.wait_log("textDocument/didOpen", 2);
+    f.editor.switch_buffer(1).unwrap();
+    f.editor.document.buffer.insert("changed ");
+    f.editor.document.buffer.commit();
+    f.wait_log("textDocument/didChange", 1);
+    let changed = f
+        .log()
+        .into_iter()
+        .find(|m| m["method"] == "textDocument/didChange")
+        .unwrap();
+    assert_eq!(
+        changed["params"]["textDocument"]["version"],
+        first_version + 1
+    );
+    f.editor.close_buffer(true).unwrap();
+    f.wait_log("textDocument/didClose", 1);
+    f.editor.open_buffer(&main).unwrap();
+    f.wait_log("textDocument/didOpen", 3);
+    let reopened = f
+        .log()
+        .into_iter()
+        .rev()
+        .find(|m| {
+            m["method"] == "textDocument/didOpen"
+                && m["params"]["textDocument"]["uri"] == main_uri.as_str()
+        })
+        .unwrap();
+    assert!(
+        reopened["params"]["textDocument"]["version"]
+            .as_i64()
+            .unwrap()
+            > first_version + 1
+    );
+}
+
+#[test]
 fn diagnostics_reject_old_versions_and_invalidate_immediately_on_edits() {
     let mut f = Fixture::new("normal");
     f.ready();
@@ -346,6 +397,59 @@ fn pull_and_unversioned_diagnostics_have_explicit_provenance() {
         f.editor.handle_key(Key::Enter);
         assert_eq!(f.editor.view, View::Editing);
     }
+}
+
+#[test]
+fn pull_diagnostics_refresh_after_indexing_without_a_document_edit() {
+    let mut f = Fixture::new("pull-refresh");
+    f.ready();
+    until(&mut f.editor, |e| {
+        e.current_diagnostics()
+            .is_some_and(|d| d.versioned && d.items.iter().any(|d| d.message == "pull diagnostic"))
+    });
+    f.wait_log("textDocument/diagnostic", 2);
+    assert!(
+        f.log()
+            .iter()
+            .any(|m| { m["id"] == "diagnostic-refresh" && m.get("result") == Some(&Value::Null) })
+    );
+    assert!(!f.editor.document.buffer.is_modified());
+}
+
+#[test]
+fn diagnostic_refresh_discards_in_flight_reports_for_unchanged_documents() {
+    let mut f = Fixture::new("pull-refresh-race");
+    f.ready();
+    until(&mut f.editor, |e| e.current_diagnostics().is_some());
+    settle(&mut f.editor);
+    let items = &f.editor.current_diagnostics().unwrap().items;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].message, "pull diagnostic");
+    assert!(f.log().iter().any(|m| m["method"] == "$/cancelRequest"));
+}
+
+#[test]
+fn pull_diagnostics_with_dependencies_refresh_when_another_document_changes() {
+    let mut f = Fixture::new("pull-dependencies");
+    f.editor
+        .open_buffer(&f.directory.path().join("Other.kt"))
+        .unwrap();
+    f.editor.switch_buffer(1).unwrap();
+    f.ready();
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+    });
+    let generation = f.editor.document.buffer.generation();
+    f.editor.switch_buffer(2).unwrap();
+    f.editor.document.buffer.insert("fixed");
+    f.editor.document.buffer.commit();
+    f.editor.switch_buffer(1).unwrap();
+    f.editor.tick();
+    assert!(f.editor.current_diagnostics().is_none());
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| d.items.is_empty())
+    });
+    assert_eq!(f.editor.document.buffer.generation(), generation);
 }
 
 #[test]
@@ -438,6 +542,86 @@ fn completion_resolves_documentation_and_applies_undoable_preview_in_insert() {
         fs::read_to_string(f.directory.path().join("Main.kt"))
             .unwrap()
             .starts_with("bad")
+    );
+}
+
+#[test]
+fn completion_commands_require_selection_approval_and_a_separate_server_edit_preview() {
+    let mut f = Fixture::new("completion-command");
+    f.ready();
+    let before = f.editor.document.buffer.text().to_string();
+    for apply_command in [false, true] {
+        f.command("Complete");
+        f.editor.handle_key(Key::Enter);
+        until(&mut f.editor, |e| {
+            e.lsp
+                .panel
+                .as_ref()
+                .is_some_and(|p| p.title.starts_with("Apply"))
+        });
+        assert!(
+            f.editor
+                .lsp
+                .panel
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .any(|r| r.label.contains("Then run server command: fake.fix"))
+        );
+        assert!(
+            !f.log()
+                .iter()
+                .any(|m| m["method"] == "workspace/executeCommand")
+        );
+        if !apply_command {
+            escape(&mut f.editor);
+            continue;
+        }
+        f.editor.handle_key(Key::Enter);
+        until(&mut f.editor, |e| {
+            e.lsp
+                .panel
+                .as_ref()
+                .is_some_and(|p| p.title.starts_with("Apply"))
+        });
+        assert_eq!(f.editor.document.buffer.text().to_string(), before);
+        f.editor.handle_key(Key::Enter);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert!(
+            f.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .starts_with("good")
+        );
+        assert!(f.editor.document.buffer.undo());
+        assert_eq!(f.editor.document.buffer.text().to_string(), before);
+    }
+    assert_eq!(
+        fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn unadvertised_completion_commands_are_rejected_before_any_edit() {
+    let mut f = Fixture::new("completion-command-unadvertised");
+    f.ready();
+    f.command("Complete");
+    f.editor.handle_key(Key::Enter);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(
+        f.editor.message.contains("did not advertise"),
+        "{}",
+        f.editor.message
+    );
+    assert!(!f.editor.document.buffer.is_modified());
+    assert!(
+        !f.log()
+            .iter()
+            .any(|m| m["method"] == "workspace/executeCommand")
     );
 }
 
@@ -889,6 +1073,51 @@ fn shutdown_is_graceful_and_reaps_server_even_with_outstanding_request() {
     let log = fs::read_to_string(path).unwrap();
     assert!(log.contains("\"method\": \"shutdown\""));
     assert!(log.contains("\"method\": \"exit\""));
+}
+
+#[test]
+fn shutdown_closes_stdin_so_servers_can_finish_their_transport_loop() {
+    let mut f = Fixture::new("exit-eof");
+    f.ready();
+    let directory = f.directory;
+    drop(f.editor);
+    let log = fs::read_to_string(directory.path().join("protocol.jsonl")).unwrap();
+    assert!(
+        log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|v| v["event"] == "stdin-closed")
+    );
+}
+
+#[test]
+fn java_signature_help_is_enabled_in_initialization_and_workspace_settings() {
+    let mut f = Fixture::new("java-settings");
+    let path = f.directory.path().join("Main.java");
+    fs::write(&path, "class Main {}\n").unwrap();
+    f.editor.document = Document::open(&path).unwrap();
+    let command = f.editor.lsp.config.commands[&Language::Kotlin].clone();
+    f.editor.lsp.config.commands.insert(Language::Java, command);
+    f.ready();
+    f.command("Signature");
+    let configuration = f
+        .log()
+        .into_iter()
+        .find(|m| m["id"] == "java-config")
+        .unwrap();
+    assert_eq!(
+        configuration["result"],
+        json!([{"signatureHelp":{"enabled":true}},true,null])
+    );
+    assert!(
+        f.editor
+            .lsp
+            .panel
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|r| r.label.contains("greet"))
+    );
 }
 
 #[test]

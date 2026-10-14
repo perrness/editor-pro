@@ -5,15 +5,17 @@ incremental highlighting for eight languages, Visual selections, composable
 motions/operators, search, multiple buffers, fuzzy file navigation, and three
 dark themes, plus asynchronous Git status, source gutters, changed-file navigation,
 and inline/paired diffs, persistent content-based review marks, notes and Markdown feedback export.
-The **M5 language client is implemented**, with real Kotlin/JDT/Roslyn acceptance
-still open. Editing and file safety remain independent of terminal rendering.
+The **M5 language client is implemented and tested on Linux** against pinned
+Kotlin/JDT/Roslyn servers on six Maven, Gradle and .NET project fixtures. Editing
+and file safety remain independent of terminal rendering.
 
-**Validation:** 178 Rust tests (including 27 LSP regressions), seven Python harness
+**Validation:** 186 Rust tests (including 35 LSP regressions), eight Python harness
 tests, formatting, Clippy and debug/release builds pass on Linux. The terminal harness
-covers 17 sessions, including LSP preview/undo/save/shutdown. See
+covers 18 sessions, including LSP completion commands/preview/undo/save/shutdown.
+Six opt-in real-server tests and the independent Kotlin feasibility probe also pass. See
 [VALIDATION.md](VALIDATION.md) for build results, earlier performance measurements
 and exact scope. macOS, hosted CI, a minimum-Rust build, physical-terminal comfort
-and real Kotlin/JDT/Roslyn project validation remain separate open gates.
+and larger or mixed-language projects remain separate validation limits.
 
 ## Build and run
 
@@ -335,8 +337,11 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 Results use a contextual view: `j/k` or arrows select, Page Up/Down scroll,
 `h/l` scroll horizontally, and Escape returns without changing source location.
 Documentation is displayed as plain text, including Markdown source.
-Completion is requested manually; snippet expansion and completion commands are
-unsupported. Only negotiated features can be requested.
+Completion is requested manually; snippet expansion is unsupported. Advertised
+completion commands appear in the initial preview and run after approval. Any
+further text edits from that command require a second preview. Only negotiated
+features can be requested. JDT LS signature help is explicitly enabled during
+initialization and configuration.
 
 **Server edits open a preview. Enter applies; Escape cancels.** This includes
 completion, rename, formatting and quick fixes. All targets are validated before
@@ -352,8 +357,10 @@ Diagnostics mark the source gutter and appear in the statusline. Old versioned
 reports and stale request results are discarded. A `?` marks versionless push
 diagnostics as **unverified**: their server-side text version is unknowable.
 Known edits immediately invalidate diagnostics. Pull diagnostics carry captured
-document versions. Server progress, request errors and restart status remain
-inspectable without blocking editing.
+document versions and refresh after server indexing notifications. When a server
+declares inter-file dependencies, changes to another synchronized document also
+invalidate and refresh those reports. Server progress, request errors and restart
+status remain inspectable without blocking editing.
 
 Limits: eight project/language sessions, 2 MiB per synchronized document, 8 MiB
 protocol messages, 32-file/4,096-replacement edit proposals. Previews show the
@@ -372,7 +379,11 @@ before that point cannot be proven absent. Subsequent disk/buffer changes reject
 the entire proposal. Server-specific import extensions and framework support
 require real-project validation; mock tests do not establish them.
 
-Manually verify with pinned real servers: open representative Gradle, Maven,
+The [opt-in acceptance suite](tools/lsp/README.md) records pinned server versions
+and exercises disposable Gradle, Maven, `.sln` and `.csproj` fixtures through the
+actual editor. See [VALIDATION.md](VALIDATION.md) for observed results and limits.
+
+Manually verify your projects with pinned real servers: open Gradle, Maven,
 `.sln` and `.csproj` projects; inspect `:Doctor` and import progress; edit without
 saving and try completion, diagnostics, hover, definitions/references, rename,
 actions, formatting and symbols. Preview a multi-file edit, cancel/apply it,
@@ -463,9 +474,9 @@ cargo run --locked --release --example review_performance
 ```
 
 `Cargo.lock` records resolved dependencies. CI is configured for Linux and macOS;
-no hosted CI run has been observed here. The isolated Kotlin probe and its test
-double remain outside the editor; the missing server executable blocks a real
-run, not ordinary editing.
+no hosted CI run has been observed here. Real-server acceptance is opt-in and
+requires the [pinned distributions and SDKs](tools/lsp/README.md). The isolated
+Kotlin probe and its test double remain independent of the editor.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the
 [language-server feasibility report](docs/LANGUAGE_SERVERS.md).

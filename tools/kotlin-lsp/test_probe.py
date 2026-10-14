@@ -66,6 +66,12 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(report["status"], "blocked")
         self.assertNotIn("initialize", report)
 
+    def test_exit_closes_stdin_for_servers_waiting_for_transport_eof(self):
+        command = shlex.join([sys.executable, str(HERE / "fake_server.py"), "--exit-on-eof"])
+        process, report = self.run_probe(command)
+        self.assertEqual(process.returncode, 0, report)
+        self.assertEqual(report["status"], "passed")
+
     def test_hung_server_times_out_and_is_reaped(self):
         command = shlex.join([sys.executable, str(HERE / "fake_server.py"), "--hang"])
         process, report = self.run_probe(command, timeout=0.2)

@@ -20,6 +20,8 @@ executing = None
 starts = Path(args.log + ".starts")
 count = int(starts.read_text()) + 1 if starts.exists() else 1
 starts.write_text(str(count))
+diagnostic_pulls = 0
+refresh_supported = False
 
 
 def record(message):
@@ -108,6 +110,14 @@ while True:
     ident = message.get("id")
     if method == "initialize":
         root = p["rootUri"]
+        if args.scenario.startswith("completion-command"):
+            assert "command" in p["capabilities"]["textDocument"]["completion"]["completionItem"]["resolveSupport"]["properties"]
+        if args.scenario == "java-settings":
+            assert p["initializationOptions"]["settings"]["java"]["signatureHelp"]["enabled"]
+            send({"id": "java-config", "method": "workspace/configuration", "params": {"items": [
+                {"section": "java"}, {"section": "java.signatureHelp.enabled"}, {"section": "unknown"}
+            ]}})
+        refresh_supported = p["capabilities"]["workspace"].get("diagnostics", {}).get("refreshSupport", False)
         if args.scenario == "initialize-timeout":
             continue
         if args.scenario == "malformed":
@@ -124,8 +134,8 @@ while True:
                 "executeCommandProvider": {"commands": ["fake.fix"]}}
         if args.scenario == "unsupported":
             caps = {"textDocumentSync": 2}
-        if args.scenario == "pull":
-            caps["diagnosticProvider"] = {"interFileDependencies": False, "workspaceDiagnostics": False}
+        if args.scenario.startswith("pull"):
+            caps["diagnosticProvider"] = {"interFileDependencies": args.scenario == "pull-dependencies", "workspaceDiagnostics": False}
         if args.scenario == "encoding":
             caps["positionEncoding"] = "utf-8"
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "fake"}]}})
@@ -134,7 +144,7 @@ while True:
     elif method == "textDocument/didOpen":
         doc = p["textDocument"]
         documents[doc["uri"]] = {"text": doc["text"], "version": doc["version"]}
-        if args.scenario != "pull":
+        if not args.scenario.startswith("pull"):
             diagnostics(doc["uri"], doc["version"])
         send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "end"}}})
         send({"method": "window/logMessage", "params": {"type": 3, "message": "fake import ready"}})
@@ -154,7 +164,7 @@ while True:
                 old["text"] = change["text"]
         old["version"] = doc["version"]
         record({"event": "content", "uri": doc["uri"], **old})
-        if args.scenario != "pull":
+        if not args.scenario.startswith("pull"):
             diagnostics(doc["uri"], doc["version"])
     elif method == "textDocument/didClose":
         documents.pop(p["textDocument"]["uri"], None)
@@ -169,15 +179,39 @@ while True:
         else:
             send({"id": ident, "result": result})
     elif method == "textDocument/diagnostic":
-        send({"id": ident, "result": {"kind": "full", "items": [
+        diagnostic_pulls += 1
+        if args.scenario == "pull-refresh-race" and diagnostic_pulls == 1:
+            send({"id": "diagnostic-refresh", "method": "workspace/diagnostic/refresh"})
+            later({"id": ident, "result": {"kind": "full", "items": [
+                {"range": span(), "message": "OBSOLETE before refresh", "severity": 1}
+            ]}})
+            continue
+        if args.scenario == "pull-refresh" and diagnostic_pulls == 1:
+            send({"id": ident, "result": {"kind": "full", "items": []}})
+            if refresh_supported:
+                later({"id": "diagnostic-refresh", "method": "workspace/diagnostic/refresh"})
+            continue
+        dependent_fixed = args.scenario == "pull-dependencies" and any(d["text"].startswith("fixed") for d in documents.values())
+        report = {"id": ident, "result": {"kind": "full", "items": [
             {"range": span(), "message": "pull diagnostic", "severity": 2}
-        ] if documents[p["textDocument"]["uri"]]["text"].startswith("bad") else []}})
+        ] if documents[p["textDocument"]["uri"]]["text"].startswith("bad") and not dependent_fixed else []}}
+        if dependent_fixed:
+            later(report)
+        else:
+            send(report)
     elif method == "textDocument/completion":
+        item = {"label": "good", "detail": "completion detail", "insertText": "good", "data": 42}
+        if args.scenario.startswith("completion-command"):
+            item["textEdit"] = {"range": span(0, 0), "newText": ""}
+            item["data"] = {"title": "Apply completion", "command": "fake.fix" if args.scenario == "completion-command" else "fake.unadvertised", "arguments": [p["textDocument"]["uri"]]}
         send({"id": ident, "result": {"isIncomplete": False, "items": [
-            {"label": "good", "detail": "completion detail", "insertText": "good", "data": 42}
+            item
         ]}})
     elif method == "completionItem/resolve":
-        send({"id": ident, "result": {**p, "documentation": "Resolved completion documentation"}})
+        item = {**p, "documentation": "Resolved completion documentation"}
+        if args.scenario.startswith("completion-command"):
+            item["command"] = p["data"]
+        send({"id": ident, "result": item})
     elif method == "textDocument/signatureHelp":
         send({"id": ident, "result": {"activeSignature": 0, "activeParameter": 1,
               "signatures": [{"label": "greet(name, count)", "documentation": "Signature documentation"}]}})
@@ -212,4 +246,7 @@ while True:
     elif method == "shutdown":
         send({"id": ident, "result": None})
     elif method == "exit":
+        if args.scenario == "exit-eof":
+            assert sys.stdin.buffer.read() == b""
+            record({"event": "stdin-closed"})
         break

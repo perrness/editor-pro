@@ -1,7 +1,7 @@
 # Architecture
 
-Decision record, 2026-10-14. Scope: Milestones 1–4, the M5 LSP client and an isolated
-Kotlin feasibility experiment. Real-server M5 acceptance remains open.
+Decision record, 2026-10-14. Scope: Milestones 1–4, the M5 LSP client, pinned
+real-server acceptance fixtures and an isolated Kotlin feasibility experiment.
 The product is one terminal editor for editing, navigation, Git review
 and eventual AI comprehension. There is no separate Review Mode.
 
@@ -340,6 +340,9 @@ Gradle settings, the nearest Maven POM, or a containing C# solution/project,
 stopping at a Git boundary. Ambiguous solutions fail explicitly; a root override
 plus server arguments can select a solution. Each JDT session has private temporary
 workspace data, removed at shutdown; it does not persist warm indexes between runs.
+JDT initialization/configuration explicitly enables signature help, which its
+default preferences disable despite advertising the capability. These concrete
+server settings do not introduce a general configuration framework.
 
 The [LSP 3.17 protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
 uses UTF-16 positions here. Surrogate splits, CRLF interiors and out-of-range edits
@@ -349,6 +352,10 @@ the syntax edit queue. A monotonic buffer instance ID distinguishes reloads with
 equal buffer-slot IDs/generations; a document save counter drives didSave.
 Reload/save-as/close produce the appropriate close/open events. Review notes keep
 synchronizing their retained source, never the note draft.
+Versions advance by one for each synchronized change to a document. A session
+maximum seeds newly opened paths above prior versions, including closed paths;
+versions remain checked alongside instance/generation guards. This avoids
+cross-document version jumps rejected by the tested Kotlin server.
 
 Initialization negotiates static capabilities and has a 180-second deadline;
 feature requests default to 15 seconds. Cancelled/obsolete requests are removed,
@@ -358,7 +365,8 @@ preview awaits user input. UI acceptance checks the active buffer, path, cursor,
 context and all captured open-document stamps before displaying or applying work.
 Crash recovery retries twice, reopening current unsaved snapshots; explicit
 restart resets the session. Shutdown closes documents, sends shutdown/exit,
-then kills/reaps remaining processes (and the Unix process group). The manager
+closes stdin so stdio transport loops can finish, then kills/reaps remaining
+processes (and the Unix process group). The manager
 joins at editor destruction after terminal restoration.
 
 Headers cap at 8 KiB and messages at 8 MiB; command/frame queues have 32 slots,
@@ -367,12 +375,19 @@ characters per session. Queue saturation and timeouts fail visibly. Pull
 diagnostics are tied to captured versions; push diagnostics with old versions are
 discarded. Versionless push diagnostics have no protocol freshness proof and are
 explicitly labelled unverified and invalidated on known edits.
+The client advertises diagnostic refresh support, cancels superseded pulls and
+requests fresh reports after indexing refreshes. Servers declaring inter-file
+dependencies also trigger repulls after other synchronized documents change;
+those reports retain the captured session document stamps through UI acceptance
+and display invalidation.
 No dynamic capability registration, watched-file registration,
 semantic tokens or virtual/decompiled documents are advertised.
 
 Language results use one contextual list with source-preserving scroll/selection.
-Completion resolution supplies documentation and additional edits; snippets and
-completion commands are refused. Hover/signatures, definitions/references,
+Completion resolution supplies documentation and additional edits; snippets are
+refused. Advertised completion commands are shown in the initial edit preview
+and run only after approval. Their subsequent server edits require another
+guarded preview, reusing the code-action continuation path. Hover/signatures, definitions/references,
 document symbols and diagnostic navigation operate on the ordinary documents.
 No M6 workspace-symbol browser, call hierarchy, project search or navigation
 history was introduced.
@@ -391,16 +406,18 @@ are refused. Limits are 32 files/4,096 replacements and 2 MiB per resulting file
 Previews show up to 128 replacements per file with bounded text; truncation is
 labelled. Multi-file undo remains per buffer, without a new transaction engine.
 
-Only a selected, advertised code-action command can authorize a server
+Only a selected, advertised code-action command or a preview-approved completion
+command can authorize a server
 workspace/applyEdit request, and it still requires a preview. Unsolicited, stale
 or concurrent server edit requests receive applied=false. Applying a proposal
 invalidates Git/review derived state through the established paths.
 
 ## Future boundaries, not current infrastructure
 
-- **M5 acceptance:** Provision pinned real servers and validate representative
-  Gradle/Maven/solution/project workspaces. Protocol test doubles establish client
-  behavior, not Kotlin/JDT/Roslyn compatibility. See the feasibility report.
+- **M5 acceptance:** Opt-in tests run the ordinary editor against pinned real
+  Kotlin/JDT/Roslyn servers on disposable Gradle/Maven/solution/project fixtures.
+  Protocol doubles remain separate evidence. Broader workloads, platforms and
+  physical-terminal comfort require additional observations. See the server report.
 - **M6–7:** Navigation history records buffer, cursor and viewport. Review
   snapshots record immutable content without altering the working tree.
 - **M8:** Context collection and provider integration stay independent of editing
@@ -413,8 +430,8 @@ invalidates Git/review derived state through the established paths.
 | --- | --- |
 | Unicode boundary and screen-width errors | Core tests for combining characters, emoji, CJK, CRLF and mixed edits; real-terminal checks on both OSes. |
 | Lost work | Conflict tests, failed-save tests, dirty quit guards; document remaining race, metadata and crash-recovery limits. |
-| Project import and SDK mismatches | Client capability tests pass; a real-project/server matrix is required for M5 acceptance. Runtime JDK and project target JDK are separate. |
-| Server churn or proprietary protocol assumptions | Pin tested standalone versions, record capabilities, run standard-LSP probes. Kotlin feasibility is still unverified here. |
+| Project import and SDK mismatches | Real fixture checks supplement protocol tests; SDK targets and server runtimes are recorded separately. Larger/mixed projects still need validation. |
+| Server churn or proprietary protocol assumptions | Pinned standalone versions/checksums and opt-in editor checks expose compatibility failures; upgrades must rerun them. |
 | Stale async state | Picker queries, Git generations, and LSP session/request/document stamps guard acceptance. Versionless diagnostics remain explicitly unverified. |
 | Scope and architecture growth | M1–5 client code only; no AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
-| Platform and responsiveness evidence | Linux formatting, Clippy, 178 Rust tests, Python tests and seventeen PTY sessions pass. Earlier M2–4 timings remain in VALIDATION.md; no real-server latency claim. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |
+| Platform and responsiveness evidence | Linux check counts, real fixture results and import/restart timings are recorded in VALIDATION.md. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |

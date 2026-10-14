@@ -143,6 +143,7 @@ pub enum Event {
         key: ServerKey,
         epoch: u64,
         document: Versioned,
+        dependencies: Option<BTreeMap<PathBuf, Stamp>>,
         versioned: bool,
         items: Vec<lsp_types::Diagnostic>,
     },
