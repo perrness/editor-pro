@@ -354,3 +354,32 @@ can fetch the unchanged lockfile dependencies through Cargo's usual registry.
 
 Implementation was saved in logical local commits; `prompt.md` was left untracked
 and excluded. No push was performed.
+
+## Milestone 4 baseline and first review slice
+
+Revalidated `cef231e` without resetting the checkout. Rust/Cargo 1.99.0,
+rustfmt 1.10.0, Clippy 0.1.99 and Git 2.43.0 are available globally. The complete
+M3 baseline passed on Linux: formatting, Clippy, 121 Rust tests, seven Python
+probe tests, 13 PTY sessions, debug/release builds, both release performance
+examples, release help/version without a TTY, and `git diff --check`.
+Baseline Git measurement: 224.58 ms initial comparison, 190.48 ms after the
+150-edit burst, navigation p95/max 1.03/2.66 ms and typing 4.78/6.32 ms.
+Baseline Markdown edit/draw p95/max was 53.64/74.33 ms. These are local observations.
+
+The verified `/tmp/editor-pro-m3-cargo` registry link remains usable. Sandbox
+registry DNS failed; authorized Cargo network access fetched the new SHA-256
+implementation. `serde`/`serde_json` were already in the cache/lockfile;
+`sha2` 0.10.9 and its dependencies were added to Cargo.lock. Subsequent checks use
+`CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true` and `--locked`.
+These temporary cache paths are not product prerequisites.
+
+The first M4 slice passes formatting, all-target Clippy, and all **139 Rust tests**
+(121 existing plus 18 review regressions). It implements structured full identities,
+SHA-256 content fingerprints, unique hunk/line signatures, marks, durable notes,
+record-level conflict checks, explicit Markdown export, contextual navigation,
+and background validation of the current file plus up to 31 annotated paths.
+Tests cover exact-byte undo, restored timestamps, both sides/index/moving refs,
+missing versus empty, endings, repetitions, worktrees, persistence failures,
+conflicts, restart, source-history preservation and bounded rendering.
+The extended terminal workflow and final performance results are recorded below
+when observed; this slice does not claim those new checks have run yet.

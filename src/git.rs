@@ -2,6 +2,7 @@
 //! subprocesses never run in input dispatch or rendering.
 use crate::diff::Diff;
 use ropey::Rope;
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
@@ -18,7 +19,7 @@ use std::{
 
 pub const CONTENT_LIMIT: usize = 2 * 1024 * 1024;
 const OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Comparison {
     #[default]
     Head,
@@ -57,10 +58,14 @@ pub struct Request {
     pub buffer: Option<BufferVersion>,
     pub comparison: Comparison,
     pub inspect: bool,
+    pub review: Option<Arc<crate::review::Store>>,
+    pub review_buffers: Vec<(PathBuf, BufferVersion)>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repository {
+    #[serde(with = "crate::review::path_bytes")]
     pub root: PathBuf,
+    #[serde(with = "crate::review::path_bytes")]
     pub git_dir: PathBuf,
 }
 #[derive(Clone, Debug)]
@@ -85,6 +90,8 @@ pub struct Snapshot {
     pub entries: Vec<Entry>,
     pub comparison: Comparison,
     pub diff: Result<Diff, String>,
+    pub review_freshness: std::collections::BTreeMap<u64, crate::review::Freshness>,
+    pub review_limited: bool,
 }
 impl Snapshot {
     pub fn summary(&self) -> String {
@@ -495,6 +502,8 @@ fn inspect_with(runner: &Runner<'_>, request: &Request) -> Result<Option<Snapsho
         entries,
         comparison: request.comparison.clone(),
         diff: Ok(Diff::default()),
+        review_freshness: Default::default(),
+        review_limited: false,
     };
     if request.inspect {
         snapshot.diff = comparison(&runner, request, &snapshot);
@@ -503,7 +512,71 @@ fn inspect_with(runner: &Runner<'_>, request: &Request) -> Result<Option<Snapsho
     if raw != runner.git(&snapshot.repository.root, &refs(&status_args))? {
         return Err("Git changed during inspection; refresh pending (r / :gitrefresh)".into());
     }
+    validate_reviews(&runner, request, &mut snapshot);
     Ok(Some(snapshot))
+}
+
+fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snapshot) {
+    use crate::review::Freshness;
+    let Some(store) = &request.review else {
+        return;
+    };
+    if store.repository != snapshot.repository {
+        return;
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for r in &store.records {
+        snapshot
+            .review_freshness
+            .insert(r.id, Freshness::Unavailable);
+        if r.identity.comparison == request.comparison {
+            paths.insert(snapshot.repository.root.join(&r.identity.new_path));
+        }
+    }
+    // The active comparison is always covered, even after the bounded auxiliary
+    // validation budget. Other annotated files are sampled in deterministic order.
+    for r in &store.records {
+        if snapshot.repository.root.join(&r.identity.new_path) == request.path
+            && r.identity.comparison == request.comparison
+        {
+            snapshot
+                .review_freshness
+                .insert(r.id, r.freshness(snapshot.diff.as_ref().ok()));
+        }
+    }
+    paths.remove(&request.path);
+    for (n, path) in paths.into_iter().enumerate() {
+        if n >= 31
+            || runner.deadline.saturating_duration_since(Instant::now())
+                < Duration::from_millis(150)
+        {
+            snapshot.review_limited = true;
+            break;
+        }
+        let buffer = request
+            .review_buffers
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, b)| b.clone());
+        let other = Request {
+            path: path.clone(),
+            buffer,
+            comparison: request.comparison.clone(),
+            inspect: true,
+            review: None,
+            review_buffers: Vec::new(),
+        };
+        let diff = comparison(runner, &other, snapshot);
+        for r in &store.records {
+            if snapshot.repository.root.join(&r.identity.new_path) == path
+                && r.identity.comparison == request.comparison
+            {
+                snapshot
+                    .review_freshness
+                    .insert(r.id, r.freshness(diff.as_ref().ok()));
+            }
+        }
+    }
 }
 fn parse_status(raw: &[u8]) -> Result<(String, Option<String>, Vec<Entry>), String> {
     let mut records = raw.split(|b| *b == 0).filter(|r| !r.is_empty());
@@ -579,7 +652,7 @@ fn parse_status(raw: &[u8]) -> Result<(String, Option<String>, Vec<Entry>), Stri
 }
 struct Content {
     bytes: Vec<u8>,
-    identity: String,
+    oid: Option<String>,
 }
 fn blob(
     runner: &Runner<'_>,
@@ -626,7 +699,7 @@ fn blob(
     let Some(oid) = object else {
         return Ok(Content {
             bytes: Vec::new(),
-            identity: "absent".into(),
+            oid: None,
         });
     };
     let size = runner.git(&repo.root, &refs(&args(&["cat-file", "-s", &oid])))?;
@@ -640,7 +713,7 @@ fn blob(
     let bytes = runner.git(&repo.root, &refs(&args(&["cat-file", "blob", &oid])))?;
     Ok(Content {
         bytes,
-        identity: oid,
+        oid: Some(oid),
     })
 }
 fn working(request: &Request) -> Result<(Vec<u8>, String, bool), String> {
@@ -792,15 +865,23 @@ fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Re
     } else {
         Content {
             bytes: Vec::new(),
-            identity: "empty (unborn HEAD)".into(),
+            oid: None,
         }
     };
     let (work, work_label, available) = working(request)?;
-    let (new, right) = if request.comparison == Comparison::Staged {
+    let (new, right, new_oid, new_present) = if request.comparison == Comparison::Staged {
         let content = blob(runner, repo, None, relative)?;
-        (content.bytes, format!("index@{}", short(&content.identity)))
+        (
+            content.bytes,
+            format!(
+                "index@{}",
+                short(content.oid.as_deref().unwrap_or("absent"))
+            ),
+            content.oid.clone(),
+            content.oid.is_some(),
+        )
     } else {
-        (work.clone(), work_label)
+        (work.clone(), work_label, None, available)
     };
     let mut diff = compare_bytes(runner, &old.bytes, &new)?;
     let base = match &request.comparison {
@@ -812,12 +893,25 @@ fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Re
         revision
             .as_deref()
             .map(short)
-            .unwrap_or_else(|| short(&old.identity)),
+            .unwrap_or_else(|| short(old.oid.as_deref().unwrap_or("absent"))),
         display_path(&old_path),
-        short(&old.identity)
+        short(old.oid.as_deref().unwrap_or("absent"))
     );
     diff.right_label = format!("{right}:{}", display_path(relative));
     diff.source_available = available;
+    diff.identity = Some(crate::review::Identity {
+        repository: repo.clone(),
+        comparison: request.comparison.clone(),
+        resolved_base: revision.clone(),
+        old_path,
+        new_path: relative.into(),
+        old: crate::review::ContentId::new(&old.bytes, old.oid.is_some()),
+        new: crate::review::ContentId::new(&new, new_present),
+        old_blob: old.oid,
+        new_blob: new_oid,
+    });
+    diff.identify_locations();
+    runner.check()?;
     if request.comparison == Comparison::Staged {
         let mapping = compare_bytes(runner, &new, &work)?;
         for row in &mut diff.rows {

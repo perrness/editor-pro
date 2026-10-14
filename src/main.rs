@@ -37,7 +37,7 @@ Files: Ctrl-p or :files [directory]; :e path, :enew, :bn/:bp, :b ID, :ls
 Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh, :help
 Git: :changes, :diff HEAD|index|REV|staged, :gitbase REV, :gitrefresh, :gnext/:gprev
 Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refresh
-Themes: :theme tokyo-night|catppuccin|gruvbox
+Review: :review help, :review file|hunk reviewed|attention|unreviewed, :notes\nNotes: :note file|hunk|old|new; :note save or :note cancel; :review export PATH\nThemes: :theme tokyo-night|catppuccin|gruvbox
 
 Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
 Use -- before a filename starting with -. See README.md for the full reference.";
@@ -134,7 +134,7 @@ fn event_loop(
             terminal.draw(|frame| ui::render(frame, editor, &theme))?;
             redraw = false;
         }
-        let poll_ms = if editor.view == View::Files || editor.git.loading {
+        let poll_ms = if editor.view == View::Files || editor.git.loading || editor.review.busy {
             16
         } else {
             200

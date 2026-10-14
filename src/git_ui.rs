@@ -49,7 +49,11 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 frame,
                 body,
                 2,
-                &crate::git::display_path(&snapshot.repository.root),
+                &format!(
+                    "{} | {}",
+                    editor.review_summary(),
+                    crate::git::display_path(&snapshot.repository.root)
+                ),
                 style.fg(theme.muted),
             );
         }
@@ -61,11 +65,22 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 frame,
                 body,
                 (index - top + 3) as u16,
-                &file.label,
+                &format!("[{}] {}", editor.review_file_label(&file.path), file.label),
                 if index == editor.git.selected {
                     style.bg(theme.selection)
                 } else {
-                    style
+                    style.fg(
+                        if editor.review_file_label(&file.path).starts_with("reviewed") {
+                            theme.diff_added
+                        } else if editor
+                            .review_file_label(&file.path)
+                            .contains("needs-attention")
+                        {
+                            theme.error
+                        } else {
+                            theme.foreground
+                        },
+                    )
                 },
             );
         }
@@ -90,7 +105,9 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         } else {
             "inline"
         };
-        format!("DIFF {layout} — j/k scroll  ]/[ hunks  Tab layout  Enter source  Esc return")
+        format!(
+            "DIFF {layout} — ]/[ hunks  Tab layout  F file reviewed  R hunk reviewed  A attention  :review help  Esc return"
+        )
     };
     if area.height > 1 {
         line(
@@ -117,13 +134,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             area.bottom() - 1,
         ));
     } else {
-        let help = if editor.message_is_error {
-            editor.message.as_str()
-        } else if editor.view == View::Diff {
-            "1 HEAD  2 index  3 staged  :diff REV  n/p files  r refresh  h/l horizontal"
-        } else {
-            "Disk/index status excludes unsaved text; Enter on a deleted file opens its history"
-        };
+        let help = editor.message.as_str();
         line(
             frame,
             area,
@@ -153,6 +164,53 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
         &state,
         style.fg(if editor.git.ready() {
             theme.muted
+        } else {
+            theme.modified
+        }),
+    );
+    let review = editor
+        .git
+        .diff_view
+        .as_ref()
+        .map(|v| editor.review_file_label(&v.path))
+        .unwrap_or_default();
+    let selected_hunk = editor
+        .git
+        .diff_view
+        .as_ref()
+        .and_then(|v| {
+            editor
+                .git
+                .diff()
+                .and_then(|d| d.attachment(v.selected, "hunk").ok())
+        })
+        .map(|(a, _)| {
+            editor
+                .review
+                .store
+                .as_ref()
+                .and_then(|s| {
+                    s.records.iter().find(|r| {
+                        r.attachment == a
+                            && r.state.is_some()
+                            && editor.review_freshness(r) == crate::review::Freshness::Fresh
+                    })
+                })
+                .and_then(|r| r.state)
+                .unwrap_or(crate::review::State::Unreviewed)
+                .label()
+        })
+        .unwrap_or("no unique hunk");
+    line(
+        frame,
+        area,
+        3,
+        &format!(
+            "File {review} | Hunk {selected_hunk} | {}",
+            editor.review.status
+        ),
+        style.fg(if review.starts_with("reviewed") {
+            theme.diff_added
         } else {
             theme.modified
         }),
@@ -208,12 +266,12 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
     let paired = view.paired && area.width >= 100;
     let layout_changed = view.effective_paired != paired;
     view.effective_paired = paired;
-    view.height = area.height.saturating_sub(3) as usize;
+    view.height = area.height.saturating_sub(4) as usize;
     if diff.rows.is_empty() {
         line(
             frame,
             area,
-            3,
+            4,
             "No textual changes (empty files and mode-only changes have no hunks)",
             style.fg(theme.muted),
         );
@@ -234,7 +292,7 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
     }
     for row in 0..view.height {
         let index = view.top + row;
-        let rect = Rect::new(area.x, area.y + 3 + row as u16, area.width, 1);
+        let rect = Rect::new(area.x, area.y + 4 + row as u16, area.width, 1);
         let base = if index == selected {
             style.bg(theme.selection)
         } else {

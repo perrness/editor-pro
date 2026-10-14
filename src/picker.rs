@@ -193,7 +193,8 @@ impl Editor {
     }
     pub fn tick(&mut self) -> bool {
         let picker = self.picker.as_mut().is_some_and(FilePicker::tick);
-        self.tick_git() || picker
+        let git = self.tick_git();
+        self.tick_review() || git || picker
     }
     pub(crate) fn picker_key(&mut self, key: Key) {
         if matches!(key, Key::Escape | Key::Ctrl('c' | '[')) {

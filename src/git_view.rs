@@ -35,6 +35,30 @@ struct Stamp {
     buffer: Option<(usize, u64, bool)>,
     comparison: Comparison,
     inspect: bool,
+    review: usize,
+    review_buffers: Vec<(PathBuf, usize, u64, bool)>,
+}
+impl Stamp {
+    fn new(request: &Request) -> Self {
+        Self {
+            path: request.path.clone(),
+            buffer: request
+                .buffer
+                .as_ref()
+                .map(|b| (b.id, b.generation, b.dirty)),
+            comparison: request.comparison.clone(),
+            inspect: request.inspect,
+            review: request
+                .review
+                .as_ref()
+                .map_or(0, |s| std::sync::Arc::as_ptr(s) as usize),
+            review_buffers: request
+                .review_buffers
+                .iter()
+                .map(|(p, b)| (p.clone(), b.id, b.generation, b.dirty))
+                .collect(),
+        }
+    }
 }
 pub struct GitState {
     pub comparison: Comparison,
@@ -159,9 +183,81 @@ impl Editor {
             buffer,
             comparison: self.git.comparison.clone(),
             inspect,
+            review: self.review.store.clone(),
+            review_buffers: std::iter::once((self.active_buffer_id, &self.document))
+                .chain(self.buffers.iter().map(|(id, s)| (*id, &s.document)))
+                .filter_map(|(id, d)| {
+                    d.path().map(|p| {
+                        (
+                            p.to_path_buf(),
+                            BufferVersion {
+                                id,
+                                generation: d.buffer.generation(),
+                                dirty: d.buffer.is_modified(),
+                                text: d.buffer.text().clone(),
+                            },
+                        )
+                    })
+                })
+                .collect(),
         })
     }
+    pub fn git_current(&self) -> bool {
+        if self.note_edit.is_some() || !self.git.ready() {
+            return false;
+        }
+        let Some(stamp) = &self.git.stamp else {
+            return false;
+        };
+        let path = self
+            .git
+            .diff_view
+            .as_ref()
+            .map(|v| v.path.as_path())
+            .or(self.document.path());
+        if path.is_some_and(|p| p != stamp.path)
+            || path.is_some() != stamp.inspect
+            || stamp.comparison != self.git.comparison
+            || stamp.review
+                != self
+                    .review
+                    .store
+                    .as_ref()
+                    .map_or(0, |s| std::sync::Arc::as_ptr(s) as usize)
+        {
+            return false;
+        }
+        let documents = || {
+            std::iter::once((self.active_buffer_id, &self.document))
+                .chain(self.buffers.iter().map(|(id, s)| (*id, &s.document)))
+        };
+        let buffer = documents()
+            .find(|(_, d)| d.path() == Some(stamp.path.as_path()))
+            .map(|(id, d)| (id, d.buffer.generation(), d.buffer.is_modified()));
+        if buffer != stamp.buffer {
+            return false;
+        }
+        let current = documents().filter_map(|(id, d)| {
+            d.path()
+                .map(|p| (p, id, d.buffer.generation(), d.buffer.is_modified()))
+        });
+        stamp
+            .review_buffers
+            .iter()
+            .map(|(p, id, g, dirty)| (p.as_path(), *id, *g, *dirty))
+            .eq(current)
+    }
+    pub(crate) fn git_compared_unsaved(&self) -> bool {
+        self.git
+            .stamp
+            .as_ref()
+            .and_then(|s| s.buffer)
+            .is_some_and(|(_, _, dirty)| dirty)
+    }
     pub(crate) fn tick_git(&mut self) -> bool {
+        if self.note_edit.is_some() {
+            return false;
+        }
         let Some(request) = self.git_request() else {
             if self.git.stamp.is_some() || self.git.loading {
                 self.git.invalidate();
@@ -172,15 +268,7 @@ impl Editor {
             }
             return false;
         };
-        let stamp = Stamp {
-            path: request.path.clone(),
-            buffer: request
-                .buffer
-                .as_ref()
-                .map(|b| (b.id, b.generation, b.dirty)),
-            comparison: request.comparison.clone(),
-            inspect: request.inspect,
-        };
+        let stamp = Stamp::new(&request);
         let changed = self.git.stamp.as_ref() != Some(&stamp);
         let periodic = !self.git.loading && self.git.refreshed.elapsed() >= Duration::from_secs(2);
         let mut redraw = false;
@@ -471,6 +559,20 @@ impl Editor {
         })
     }
     pub(crate) fn git_key(&mut self, key: Key) {
+        if self.view == View::Diff {
+            let command = match key {
+                Key::Char('F') => Some("file reviewed"),
+                Key::Char('R') => Some("hunk reviewed"),
+                Key::Char('A') => Some("hunk attention"),
+                _ => None,
+            };
+            if let Some(command) = command {
+                if let Err(e) = self.review_command(command) {
+                    self.error(&e.to_string());
+                }
+                return;
+            }
+        }
         if key == Key::Char(':') {
             self.mode = Mode::Command;
             self.command.clear();

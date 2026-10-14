@@ -44,6 +44,8 @@ impl Repo {
             buffer: None,
             comparison,
             inspect: true,
+            review: None,
+            review_buffers: Vec::new(),
         }
     }
     fn inspect(&self, name: &str, comparison: Comparison) -> Snapshot {
@@ -212,6 +214,8 @@ fn detached_linked_worktrees_and_outside_repository() {
         buffer: None,
         comparison: Comparison::Head,
         inspect: true,
+        review: None,
+        review_buffers: Vec::new(),
     };
     let s = git::inspect(&req, &Config::default()).unwrap().unwrap();
     assert_eq!(s.repository.root, linked);
@@ -880,6 +884,8 @@ fn literal_pathspecs_and_non_utf8_names_are_not_reinterpreted() {
         buffer: None,
         comparison: Comparison::Index,
         inspect: true,
+        review: None,
+        review_buffers: Vec::new(),
     };
     let s = git::inspect(&req, &Config::default()).unwrap().unwrap();
     assert!(s.entries.iter().any(|e| r.0.path().join(&e.path) == raw));

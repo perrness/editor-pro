@@ -32,6 +32,8 @@ pub enum Mark {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Diff {
+    pub identity: Option<crate::review::Identity>,
+    pub locations: crate::review::Locations,
     pub left_label: String,
     pub right_label: String,
     pub rows: Vec<Row>,

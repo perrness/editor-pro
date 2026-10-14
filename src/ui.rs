@@ -27,6 +27,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         crate::git_ui::render(frame, editor, theme);
         return;
     }
+    if editor.view == View::Review {
+        crate::review_view::render(frame, editor, theme);
+        return;
+    }
     editor.document.sync_syntax();
     editor.search.refresh(&editor.document.buffer);
     let height = area.height.saturating_sub(2);
@@ -193,6 +197,21 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 command_area,
             );
         }
+    }
+    if editor.note_edit.is_some() && area.height > 1 {
+        frame.render_widget(
+            Paragraph::new(crate::text::visible_text(
+                &format!(
+                    "NOTE {} — :note save / :note cancel | {}",
+                    editor.mode.label(),
+                    editor.review.status
+                ),
+                0,
+                area.width as usize,
+            ))
+            .style(base.fg(theme.command).bg(theme.status)),
+            Rect::new(area.x, status_y, area.width, 1),
+        );
     }
     if editor.view == View::Editing
         && !matches!(editor.mode, Mode::Command | Mode::Search)

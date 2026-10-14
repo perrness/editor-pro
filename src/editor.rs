@@ -74,6 +74,7 @@ pub enum View {
     Files,
     Changes,
     Diff,
+    Review,
 }
 
 pub struct Editor {
@@ -84,6 +85,8 @@ pub struct Editor {
     pub view: View,
     pub picker: Option<FilePicker>,
     pub git: crate::git_view::GitState,
+    pub review: crate::review_view::ReviewState,
+    pub note_edit: Option<Box<NoteEdit>>,
     pub theme: ThemeName,
     pub mode: Mode,
     pub viewport: Viewport,
@@ -110,6 +113,8 @@ impl Editor {
             view: View::Editing,
             picker: None,
             git: crate::git_view::GitState::default(),
+            review: crate::review_view::ReviewState::default(),
+            note_edit: None,
             theme: ThemeName::default(),
             mode: Mode::Normal,
             viewport: Viewport::default(),
@@ -128,6 +133,14 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.note_edit.is_some() && (self.review.saving_note() || key == Key::Ctrl('p')) {
+            self.error("Note draft: wait for saving; :note save or :note cancel returns");
+            return;
+        }
+        if self.view == View::Review && self.mode != Mode::Command {
+            self.review_key(key);
+            return;
+        }
         if matches!(self.view, View::Changes | View::Diff) && self.mode != Mode::Command {
             self.git_key(key);
             return;
@@ -695,9 +708,13 @@ impl Editor {
             .text()
             .len_bytes()
             .saturating_add(bytes) as u64
-            > MAX_FILE_BYTES
+            > if self.note_edit.is_some() {
+                crate::review::MAX_NOTE as u64
+            } else {
+                MAX_FILE_BYTES
+            }
         {
-            self.error("Supports buffers up to 64 MiB");
+            self.error("Size limit: notes 16 KiB; source buffers 64 MiB");
             false
         } else {
             true
@@ -808,7 +825,16 @@ impl Editor {
         let (name, argument) = command
             .split_once(char::is_whitespace)
             .map_or((command, ""), |(name, argument)| (name, argument.trim()));
-        if self.view == View::Diff && matches!(name, "w" | "wq") {
+        if self.note_edit.is_some() {
+            return if name == "note" {
+                self.note_command(argument)
+            } else {
+                Err(io::Error::other(
+                    "Note draft: :note save, :note save-new, or :note cancel; ordinary editing/search keys work",
+                ))
+            };
+        }
+        if matches!(self.view, View::Diff | View::Review) && matches!(name, "w" | "wq") {
             return Err(io::Error::other(
                 "Diff is read-only; Enter jumps to source, Escape returns",
             ));
@@ -824,11 +850,13 @@ impl Editor {
                 self.info("Written");
                 if name == "wq" {
                     self.ensure_all_saved(false)?;
+                    self.review.ensure_quit(false)?;
                     self.quit = true;
                 }
             }
             "q" | "q!" if argument.is_empty() => {
                 self.ensure_all_saved(name == "q!")?;
+                self.review.ensure_quit(name == "q!")?;
                 self.quit = true;
             }
             "e" | "e!" => self.edit_command(argument, name == "e!")?,
@@ -840,6 +868,9 @@ impl Editor {
                 };
                 self.open_picker(&root)?;
             }
+            "review" => self.review_command(argument)?,
+            "note" => self.note_command(argument)?,
+            "notes" if argument.is_empty() => self.open_review_list("notes")?,
             "changes" if argument.is_empty() => self.open_changes(),
             "diff" => {
                 let path = self.git.diff_view.as_ref().map(|v| v.path.clone()).or_else(|| self.document.path().map(Path::to_path_buf)).ok_or_else(|| io::Error::other("Name a file before comparing"))?;
@@ -889,7 +920,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "i insert  v/V select  d/c/y + motion  p paste  u undo  / search  n/N  Ctrl-p files  :ls buffers  :changes  :diff HEAD|index|REV|staged  :w save  :q quit; README.md has all keys",
+                "i insert  v/V select  d/c/y + motion  p paste  u undo  / search  n/N  Ctrl-p files  :ls buffers  :changes  :diff HEAD|index|REV|staged  :review help  :note file  :notes  :w save  :q quit; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),
@@ -929,5 +960,70 @@ impl Editor {
     pub(crate) fn error(&mut self, message: &str) {
         self.message = message.into();
         self.message_is_error = true;
+    }
+}
+
+/// A note is an ephemeral Document handled by this same editor. Keep every
+/// source editing field intact, including the register and search history.
+pub struct NoteEdit {
+    pub(crate) source: Document,
+    pub(crate) record: crate::review::Record,
+    pub(crate) expected: Option<crate::review::Record>,
+    viewport: Viewport,
+    view: View,
+    mode: Mode,
+    register: Register,
+    search: Search,
+    selection_anchor: Option<usize>,
+    pending: Pending,
+    last_find: Option<Motion>,
+    search_backward: bool,
+    search_mode: Mode,
+}
+impl Editor {
+    pub(crate) fn start_note(
+        &mut self,
+        record: crate::review::Record,
+        expected: Option<crate::review::Record>,
+    ) {
+        let mut document = Document::default();
+        document.buffer = crate::buffer::Buffer::new(record.note.as_deref().unwrap_or_default());
+        let source = std::mem::replace(&mut self.document, document);
+        self.note_edit = Some(Box::new(NoteEdit {
+            source,
+            record,
+            expected,
+            viewport: std::mem::take(&mut self.viewport),
+            view: std::mem::replace(&mut self.view, View::Editing),
+            mode: self.mode,
+            register: std::mem::take(&mut self.register),
+            search: std::mem::take(&mut self.search),
+            selection_anchor: self.selection_anchor.take(),
+            pending: std::mem::take(&mut self.pending),
+            last_find: self.last_find.take(),
+            search_backward: self.search_backward,
+            search_mode: self.search_mode,
+        }));
+        self.mode = Mode::Normal;
+        self.info(
+            "NOTE draft — i to write; :note save stores it; :note cancel returns. Source retained.",
+        );
+    }
+    pub(crate) fn finish_note(&mut self) {
+        if let Some(edit) = self.note_edit.take() {
+            self.document = edit.source;
+            self.viewport = edit.viewport;
+            self.view = edit.view;
+            self.mode = edit.mode;
+            self.register = edit.register;
+            self.search = edit.search;
+            self.selection_anchor = edit.selection_anchor;
+            self.pending = edit.pending;
+            self.last_find = edit.last_find;
+            self.search_backward = edit.search_backward;
+            self.search_mode = edit.search_mode;
+            self.command.clear();
+            self.refresh_git();
+        }
     }
 }
