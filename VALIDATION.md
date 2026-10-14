@@ -119,3 +119,80 @@ external-write conflict recovered with save-as. Every session checks saved bytes
 process lifetime, restored termios, alternate-screen exit and disabled bracketed
 paste. Physical-terminal appearance and injected panic/error cleanup have not
 been manually exercised; the latter retains the existing scope guard/panic hook.
+
+## Final command results
+
+All commands below were run on this Linux VM with Rust/Cargo 1.99.0. Cargo used
+the fetched lockfile/cache in offline mode (`CARGO_HOME=/tmp/editor-pro-cargo`);
+ordinary reproduction commands are shown without that environment-specific path.
+The globally installed `cargo`/`rustc` resolve through `/usr/local/bin` to the
+persistent toolchain, and both report 1.99.0. The manifest's minimum Rust 1.88 was
+not separately tested.
+
+| Command | Observed result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed, no warnings. |
+| `cargo test --locked --all-targets` | 92 tests passed, none failed or ignored. |
+| `cargo build --locked` | Passed. |
+| `cargo build --locked --release --bin editor-pro` | Passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | All 7 tests passed; test-double results are not real server evidence. |
+| `python3 tools/terminal_smoke.py` | All 10 Linux PTY sessions passed against the debug binary. |
+| `cargo run --locked --release --example performance` | Completed all eight languages and the 10,000-file picker with assertions passing. |
+| `target/release/editor-pro --help` and `--version` | Passed without a TTY; updated M2 usage and version 0.1.0 displayed. |
+| `git diff --check` | Passed. |
+
+No macOS run, hosted CI result, physical-terminal visual inspection, minimum-Rust
+build, live Kotlin language-server result, or full real-world project benchmark
+is claimed. No push was performed.
+
+## Release performance smoke measurements
+
+Reproduce with `cargo run --locked --release --example performance`. These are
+one final run's Linux x86_64 measurements, not timing gates or general guarantees.
+The example uses a 120×32 Ratatui TestBackend, repeats each fixture 1,000 times,
+and samples 50 single-character edits at varying line ends, with undo between
+samples. Edit timing includes insertion, commit, incremental parsing and drawing;
+scroll timing measures drawing after moving the cursor. Initial timing includes
+parsing/drawing after grammar/query setup. Loading, terminal output transport and
+human-perceived input latency are not included.
+
+| Language | Bytes / lines | Initial ms | Edit+draw p95 ms | Edit+draw max ms | Scroll+draw p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Rust | 51,000 / 3,001 | 6.31 | 0.90 | 1.05 | 0.35 |
+| Java | 39,000 / 1,001 | 4.43 | 1.80 | 1.99 | 0.42 |
+| Kotlin | 33,000 / 1,001 | 5.96 | 0.92 | 0.95 | 0.43 |
+| C# | 39,000 / 1,001 | 6.32 | 0.99 | 1.24 | 0.40 |
+| JSON | 28,017 / 1,004 | 3.66 | 0.77 | 0.99 | 0.33 |
+| YAML | 22,000 / 2,001 | 5.08 | 1.47 | 1.53 | 0.24 |
+| TOML | 24,000 / 2,001 | 3.75 | 1.93 | 2.17 | 0.22 |
+| Markdown | 65,000 / 8,001 | 35.62 | 47.04 | 49.84 | 0.33 |
+
+No language entered fallback during the final edits or undos. Markdown visits
+many inline trees and remains the slowest case; typing on larger or more complex
+Markdown can be noticeably slower. Above 2 MiB syntax is disabled. The parser's
+cooperative cancellation budget does not promise a hard latency ceiling.
+
+The picker discovered/ranked **10,000 files in 18.74 ms** and settled the fuzzy
+query `file04200` in **1.08 ms**, selecting `file_04200.rs`. Fixture creation was
+outside the timed region. Discovery and matching were polled at 1 ms intervals;
+the actual editor uses a 16 ms event-poll interval while the picker is open.
+Remote filesystems and heavily loaded machines will behave differently.
+
+## Milestone 2 acceptance assessment
+
+| Criterion | Evidence / status |
+| --- | --- |
+| Everyday editing and code reading | All six requested slices implemented. Tests and PTY sessions cover the documented workflow; subjective comfort still needs physical-terminal use. |
+| Unicode/multiline selections and operators | Passing grapheme, emoji, combining-mark, nested-object, CRLF, history and mixed-action regressions; real PTY Visual/change/save workflow passes. |
+| Responsive highlighting while typing/scrolling | Incremental/fresh equivalence and viewport tests pass for the supported grammar fixtures; the release workload completes with the timings above and no fallback. Large Markdown remains a documented limit. |
+| Buffer switching preserves edits and location | Independent histories, cursor/viewport, path aliases, inactive conflicts, failed opens and all-buffer quit guards pass; multi-file PTY workflow passes. |
+| Navigation and presentation | Nucleo ranking/ignore/cancellation/stale-query tests, tiny-terminal rendering and all three RGB palette checks pass. |
+
+**M2 is implemented and meets the automated Linux acceptance checks for the
+measured workloads. Full platform/interactive acceptance is not claimed:** macOS
+and physical-terminal comfort remain unobserved, and the separate real Kotlin
+feasibility gate is blocked by the missing server executable. Known product
+limits—including a Vim subset, lexical text objects, literal search, synchronous
+file/search work and no persistent configuration—are listed in the README. Git,
+integrated LSP, AI, plugins, GUI and splits remain outside this delivery.

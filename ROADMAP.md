@@ -1,14 +1,15 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Only Milestone 1 is implemented
+not only code or an advertised server capability. Milestones 1 and 2 are implemented
 in this delivery. Editing modes remain independent of contextual views throughout.
 
 ## Milestone 1 — Minimal editor
 
 **Status:** foundation build, formatting, Clippy, 34 Rust tests and the Linux PTY
-smoke test passed during M2 revalidation. macOS/visual checks and the real Kotlin
-feasibility gate remain open.
+smoke test passed before M2 work. Later PTY checks also exercised real resize
+events, wide text and external-write conflicts. macOS/physical visual checks and
+the real Kotlin feasibility gate remain open.
 
 - Terminal startup/restoration, open/new UTF-8 file, render/scroll text.
 - Basic Vim navigation; Normal and Insert; insert/delete; grouped undo/redo.
@@ -23,8 +24,8 @@ undo/redo, dirty quit refusal and terminal restoration. Manually resize, inspect
 wide text and provoke an external-write conflict. Record a real Kotlin probe run
 or keep its feasibility gate explicitly open.
 
-**Remaining validation:** macOS/visual checks and a real standalone Kotlin probe. See
-[VALIDATION.md](VALIDATION.md).
+**Remaining validation:** macOS/physical visual checks and a real standalone
+Kotlin probe. See [VALIDATION.md](VALIDATION.md).
 
 ## Milestone 2 — Modern editing
 
@@ -38,9 +39,21 @@ splits only when a concrete workflow needs them.
 and operators work on Unicode/multiline text; highlighting remains responsive
 while typing and scrolling; switching buffers preserves edits and location.
 
-**Smallest next product slice:** Tree-sitter highlighting for Rust first, including
-incremental edits and a graceful plain-text fallback, then the remaining grammars.
-Keep this separate from buffer switching and Visual/operator work.
+**Delivery status:** all six M2 slices are implemented in local commits. The
+Linux automated evidence covers Unicode/multiline operators, incremental syntax
+versus fresh parses, search, dirty-buffer preservation, fuzzy navigation and all
+three themes. All 92 Rust tests, seven Python probe tests, ten PTY sessions,
+formatting and Clippy pass; debug and release builds succeed. The release timing
+example checks typing/scrolling across all eight grammars and a 10,000-file picker.
+
+**Acceptance:** implemented and supported by Linux automated checks and measured
+workloads. Large Markdown is slower than the other languages; the measured limits
+are recorded in [VALIDATION.md](VALIDATION.md). Full platform/interactive comfort
+sign-off remains open until macOS and physical-terminal use are observed. The
+missing Kotlin server executable keeps the separate feasibility gate open.
+
+**Next work:** close those validation gaps before a broader release. Milestone 3
+is the next product scope; none of its Git functionality is implemented here.
 
 ## Milestone 3 — Git-aware editing
 
