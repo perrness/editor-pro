@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ops::Range;
 
 use ropey::Rope;
 use unicode_segmentation::UnicodeSegmentation;
@@ -6,6 +7,18 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::text::{char_at_display_column, display_column};
 
 const HISTORY_LIMIT: usize = 1_000;
+
+/// Byte/point coordinates at a text mutation boundary. Points count LF rows
+/// and UTF-8 bytes, never terminal cells or Unicode scalar columns.
+#[derive(Clone, Debug)]
+pub struct TextEdit {
+    pub start_byte: usize,
+    pub old_end_byte: usize,
+    pub new_end_byte: usize,
+    pub start_position: (usize, usize),
+    pub old_end_position: (usize, usize),
+    pub new_end_position: (usize, usize),
+}
 
 #[derive(Clone)]
 struct Snapshot {
@@ -26,6 +39,8 @@ pub struct Buffer {
     saved_revision: u64,
     next_revision: u64,
     newline: &'static str,
+    edits: Vec<TextEdit>,
+    generation: u64,
 }
 
 impl Buffer {
@@ -49,6 +64,8 @@ impl Buffer {
             saved_revision: 0,
             next_revision: 1,
             newline,
+            edits: Vec::new(),
+            generation: 0,
         }
     }
 
@@ -58,6 +75,33 @@ impl Buffer {
 
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn take_edits(&mut self) -> Vec<TextEdit> {
+        std::mem::take(&mut self.edits)
+    }
+
+    fn splice(&mut self, range: Range<usize>, text: &str) {
+        let start_byte = self.text.char_to_byte(range.start);
+        let old_end_byte = self.text.char_to_byte(range.end);
+        let start_position = point(&self.text, start_byte);
+        let old_end_position = point(&self.text, old_end_byte);
+        self.text.remove(range.clone());
+        self.text.insert(range.start, text);
+        let new_end_byte = start_byte + text.len();
+        self.edits.push(TextEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position,
+            old_end_position,
+            new_end_position: point(&self.text, new_end_byte),
+        });
+        self.generation += 1;
     }
 
     pub fn line_count(&self) -> usize {
@@ -133,7 +177,7 @@ impl Buffer {
             return;
         }
         self.begin();
-        self.text.insert(self.cursor, text);
+        self.splice(self.cursor..self.cursor, text);
         self.cursor += text.chars().count();
         self.changed();
         // Inserting a ZWJ or combining mark can join text on either side.
@@ -155,7 +199,7 @@ impl Buffer {
             self.text.line_to_char(line_index) + previous_boundary(&self.line(line_index), column)
         };
         self.begin();
-        self.text.remove(start..self.cursor);
+        self.splice(start..self.cursor, "");
         self.cursor = start;
         self.changed();
         self.clamp_cursor(true);
@@ -174,7 +218,7 @@ impl Buffer {
             return;
         };
         self.begin();
-        self.text.remove(self.cursor..end);
+        self.splice(self.cursor..end, "");
         self.changed();
         self.clamp_cursor(join_lines);
     }
@@ -287,6 +331,15 @@ impl Buffer {
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
+        self.edits.push(TextEdit {
+            start_byte: 0,
+            old_end_byte: self.text.len_bytes(),
+            new_end_byte: snapshot.text.len_bytes(),
+            start_position: (0, 0),
+            old_end_position: point(&self.text, self.text.len_bytes()),
+            new_end_position: point(&snapshot.text, snapshot.text.len_bytes()),
+        });
+        self.generation += 1;
         self.text = snapshot.text;
         self.cursor = snapshot.cursor;
         self.revision = snapshot.revision;
@@ -315,6 +368,11 @@ impl Buffer {
             false
         }
     }
+}
+
+fn point(text: &Rope, byte: usize) -> (usize, usize) {
+    let row = text.byte_to_line(byte);
+    (row, byte - text.line_to_byte(row))
 }
 
 fn previous_boundary(line: &str, column: usize) -> usize {

@@ -9,11 +9,13 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     editor::{Editor, Mode},
-    text::{cell_width, display_column, visible_text},
+    syntax::{HighlightSpan, highlight_at},
+    text::{cell_width, display_column, display_grapheme, visible_text},
     theme::Theme,
 };
 
 pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
+    editor.document.sync_syntax();
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -47,6 +49,17 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         editor.viewport.left = cursor_cell + cursor_width - text_width;
     }
 
+    let first_byte = buffer.text().line_to_byte(editor.viewport.top);
+    let end_line = (editor.viewport.top + usize::from(height)).min(buffer.line_count());
+    let last_byte = if end_line == buffer.line_count() {
+        buffer.text().len_bytes()
+    } else {
+        buffer.text().line_to_byte(end_line)
+    };
+    let highlights = editor
+        .document
+        .syntax
+        .highlights(buffer.text(), first_byte..last_byte);
     for row in 0..height {
         let line_index = editor.viewport.top + usize::from(row);
         let rect = Rect::new(area.x, area.y + row, area.width, 1);
@@ -76,7 +89,15 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 Rect::new(area.x, area.y + row, gutter, 1),
             );
         }
-        let text = visible_text(&buffer.line(line_index), editor.viewport.left, text_width);
+        let text = styled_text(
+            &buffer.line(line_index),
+            buffer.text().line_to_byte(line_index),
+            editor.viewport.left,
+            text_width,
+            &highlights,
+            style,
+            theme,
+        );
         frame.render_widget(
             Paragraph::new(text).style(style),
             Rect::new(area.x + gutter, area.y + row, text_width as u16, 1),
@@ -120,6 +141,43 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             area.y + (cursor_line - editor.viewport.top) as u16,
         ));
     }
+}
+
+fn styled_text(
+    line: &str,
+    byte_start: usize,
+    left: usize,
+    width: usize,
+    highlights: &[HighlightSpan],
+    base: Style,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut column = 0;
+    let right = left.saturating_add(width);
+    let highlights: Vec<_> = highlights
+        .iter()
+        .filter(|h| h.bytes.end > byte_start && h.bytes.start < byte_start + line.len())
+        .cloned()
+        .collect();
+    for (byte, grapheme) in line.grapheme_indices(true) {
+        if column >= right {
+            break;
+        }
+        let end = column + cell_width(grapheme, column);
+        if end > left {
+            let text = if column >= left && end <= right {
+                display_grapheme(grapheme, column)
+            } else {
+                " ".repeat(end.min(right) - column.max(left))
+            };
+            let style = highlight_at(&highlights, byte_start + byte)
+                .map_or(base, |kind| base.fg(theme.highlight(kind)));
+            spans.push(Span::styled(text, style));
+        }
+        column = end;
+    }
+    Line::from(spans)
 }
 
 fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Rect) {

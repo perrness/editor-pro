@@ -10,6 +10,8 @@ publish = false
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 tempfile = "3.23"
+tree-sitter = "0.25.10"
+tree-sitter-rust = "0.24.0"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 

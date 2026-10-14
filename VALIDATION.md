@@ -31,3 +31,10 @@ capabilities or functional behavior were observed. See
 
 macOS, hosted CI, and interactive visual inspection in a physical terminal have
 not been run here. These remain platform/visual validation limits.
+
+## M2 slice 1a — Rust highlighting
+
+Formatting and Clippy passed; all 38 Rust tests and the PTY smoke test passed.
+Regression checks compare incremental trees/captures against fresh parses after
+Unicode/CRLF edits and undo/redo, verify multiline viewport captures, and verify
+unknown/oversized-file fallback. Cursor movement reuses the existing tree.

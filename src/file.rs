@@ -8,6 +8,7 @@ use std::{
 use tempfile::Builder;
 
 use crate::buffer::Buffer;
+use crate::syntax::Syntax;
 
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -16,6 +17,7 @@ pub struct Document {
     path: Option<PathBuf>,
     baseline: Option<Vec<u8>>,
     pub external_changed: bool,
+    pub syntax: Syntax,
 }
 
 impl Default for Document {
@@ -25,6 +27,7 @@ impl Default for Document {
             path: None,
             baseline: None,
             external_changed: false,
+            syntax: Syntax::for_path(None),
         }
     }
 }
@@ -42,6 +45,7 @@ impl Document {
         }
         Ok(Self {
             buffer: Buffer::new(text),
+            syntax: Syntax::for_path(Some(&path)),
             path: Some(path),
             baseline,
             external_changed: false,
@@ -50,6 +54,11 @@ impl Document {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub fn sync_syntax(&mut self) {
+        let edits = self.buffer.take_edits();
+        self.syntax.update(self.buffer.text(), &edits);
     }
 
     pub fn display_name(&self) -> String {
@@ -143,6 +152,9 @@ impl Document {
         }
 
         // Once renamed, this is the new baseline even if directory fsync fails.
+        if !same_path {
+            self.syntax = Syntax::for_path(Some(&path));
+        }
         self.path = Some(path);
         self.baseline = Some(self.buffer.text().to_string().into_bytes());
         self.external_changed = false;
