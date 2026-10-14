@@ -39,6 +39,9 @@ Git: :changes, :diff HEAD|index|REV|staged, :gitbase REV, :gitrefresh, :gnext/:g
 Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refresh
 Review: :review help, :review file|hunk reviewed|attention|unreviewed, :notes\nNotes: :note file|hunk|old|new; :note save or :note cancel; :review export PATH\nThemes: :theme tokyo-night|catppuccin|gruvbox
 
+LSP: :LspInfo, :Doctor, :LspRestart, :Hover, :Definition, :References, :Diagnostics
+Language: :Complete (Insert Ctrl-n), :Signature, :Rename NAME, :CodeAction, :Format, :Symbols
+
 Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
 Use -- before a filename starting with -. See README.md for the full reference.";
 
@@ -134,7 +137,11 @@ fn event_loop(
             terminal.draw(|frame| ui::render(frame, editor, &theme))?;
             redraw = false;
         }
-        let poll_ms = if editor.view == View::Files || editor.git.loading || editor.review.busy {
+        let poll_ms = if editor.view == View::Files
+            || editor.git.loading
+            || editor.review.busy
+            || editor.lsp.pending
+        {
             16
         } else {
             200

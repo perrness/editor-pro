@@ -518,3 +518,85 @@ blocked by the missing executable; seven Python tests validate only the harness.
 No integrated LSP, AI, plugins, GUI or later-milestone snapshot engine was added.
 Implementation is recorded in logical local commits. `prompt.md` remains untracked
 and excluded from commits. No push was performed.
+
+## M5 language client implementation and validation
+
+Inspected the actual M1–4 modules and tests before selecting M5. At the start of
+implementation, no `AGENTS.md` existed in this checkout or its ancestors. The
+starting checkout was clean, and all 151 existing Rust tests passed before
+implementation.
+
+The client uses a concrete background manager for Kotlin, Java and C# sessions.
+It adds negotiated commands, document synchronization, diagnostics and contextual
+result/edit-preview views without changing the editing engine. Tests use
+`tools/lsp/fake_server.py`, explicitly labelled as a protocol test double.
+Separate language IDs and roots do not prove support from three real servers.
+
+Final Rust validation on Linux x86_64 uses Rust/Cargo 1.99.0 and the updated
+`Cargo.lock`. The new direct dependencies are `lsp-types` 0.95.1 and Tokio
+(resolved to 1.53.3). Cargo fetched their dependencies using authorized network
+access; later checks used `CARGO_HOME=/tmp/editor-pro-m3-cargo` and
+`CARGO_NET_OFFLINE=true`. The temporary cache is not a product prerequisite.
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt` and `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | **178 passed**, none failed or ignored: 151 existing and 27 new LSP regressions. |
+| `cargo build --locked` | Passed. |
+| `cargo build --locked --release --bin editor-pro` | Passed on the final M5 code. |
+| Release `--help` / `--version` without a TTY | Passed; help includes LSP commands, version 0.1.0. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | All seven tests passed; harness/test doubles only. |
+| `python3 tools/terminal_smoke.py` | All **17 sessions passed** against the final debug binary, including terminal restoration. |
+| Isolated real Kotlin probe | Blocked, exit 2: executable absent. |
+| `git diff --check` | Passed. |
+
+Coverage includes fragmented framed stdio and malformed/oversized messages;
+UTF-16 surrogate rejection, combining graphemes and CRLF; full and incremental
+synchronization; save, reload, save-as and close; separate Kotlin/Java/C# sessions;
+Gradle/Maven/solution/project boundaries and explicit root overrides; missing
+servers, unsupported capabilities/encodings, slow initialization, deadlines,
+crash recovery, explicit restart, shutdown and child reaping. Captured requests
+are rejected after edits, reloads, cursor/buffer changes or newer requests.
+Versioned stale diagnostics are suppressed; pull and unversioned reports retain
+their distinct provenance.
+
+Feature tests exercise completion resolution/documentation, hover, signature
+help, definitions/references, symbols, diagnostic navigation, formatting, rename,
+direct/resolved/command-driven code actions, preview cancellation and application.
+Multi-file edits are validated before any mutation, preserve dirty text and
+independent histories, and leave disk bytes untouched. Tests reject conflicting
+versions, overlapping edits, resource operations, external writes and
+unsynchronized open targets. Review note text never reaches the source server.
+A code-action preview can remain open beyond the network request deadline.
+Rendering checks include 1×1, 2×2 and narrow contextual views.
+
+The PTY addition runs the real editor binary against the test double: wait for
+actual didOpen, inspect hover, request formatting, resize an edit preview, apply,
+undo, apply again, save and quit. It checks exact saved bytes, shutdown/exit,
+alternate-screen exit, bracketed-paste disablement and termios restoration.
+Existing editing/Git/review sessions are retained.
+
+Review found and corrected completion cursor placement after returning to Insert,
+combining-grapheme completion prefixes, save-as session retention, didClose on
+last-buffer shutdown, pull-diagnostic scheduling after immediate requests, and
+server edits targeting unsynchronized open buffers. No general backend trait,
+plugin framework, second editing engine or M6–8 feature was added.
+
+**Acceptance remains open.** The installed environment has no
+`intellij-server`/`kotlin-lsp`, `jdtls`, `csharp-ls` or `dotnet`. The real Kotlin
+probe still reports missing prerequisites. Provision pinned real distributions
+and record capabilities, runtime/project SDKs, cold/warm import behavior and
+essential commands on representative Gradle, Maven, `.sln` and `.csproj` projects.
+No KMP, Android, Razor or framework support is inferred from protocol fixtures.
+macOS, hosted CI, minimum Rust 1.88 and physical-terminal comfort remain unobserved.
+
+Known client limits are documented in README: manual completion, plain
+documentation, static capabilities, no snippets/completion commands, virtual
+sources, watched-file registration or resource/annotated edits; eight sessions,
+2 MiB documents and 32-file/4,096-replacement proposals. Undo is per buffer.
+Versionless push diagnostics are unverified. Open edit targets must have been
+synchronized by the requesting server. Unopened unversioned targets are guarded
+from proposal preparation onward, not before the response. JDT workspace data
+is temporary. Existing performance examples compile as all-target checks, but
+their timing workloads were not rerun and no new real-server latency claim is made.

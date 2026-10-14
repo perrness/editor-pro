@@ -16,7 +16,7 @@ import termios
 import time
 
 
-def run_session(binary, path, commands, expected):
+def run_session(binary, path, commands, expected, environment=None):
     master, slave = pty.openpty()
     original = termios.tcgetattr(slave)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -32,6 +32,8 @@ def run_session(binary, path, commands, expected):
         os.environ["TERM"] = "xterm-256color"
         os.environ["COLORTERM"] = "truecolor"
         os.environ.pop("NO_COLOR", None)
+        if environment:
+            os.environ.update(environment)
         os.execv(str(binary), [str(binary), str(path)])
     output = bytearray()
     reaped = False
@@ -264,7 +266,27 @@ def main():
             f":review export {feedback}\r".encode(), (b"already exists", 10), b":q\r"], source.read_bytes())
         assert feedback.read_text() == report
         assert (repo / ".git" / "index").read_bytes() == index_before
-    print("PASS: 16 PTY sessions; modal editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git changes/diffs/resize/return, review/notes/resume/staleness/export/failure recovery, and restoration")
+        # M5 uses a labelled test double: protocol/UI validation, not real-server acceptance.
+        lsp_root = Path(directory) / "lsp project"
+        lsp_root.mkdir()
+        (lsp_root / "pom.xml").write_text("<project/>")
+        language_source = lsp_root / "Main.kt"
+        language_source.write_text("bad value\n")
+        log = lsp_root / "protocol.jsonl"
+        fake = Path(__file__).parent / "lsp" / "fake_server.py"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps(
+            [sys.executable, str(fake.resolve()), "--log", str(log)])}
+        def server_ready():
+            return log.exists() and '"method": "textDocument/didOpen"' in log.read_text()
+        output = run_session(binary, language_source, [
+            (server_ready, 10), b":Hover\r", (b"Documentation", 10), b"\x1b",
+            b":Format\r", (b"Enter applies", 10), resize(3, 1), resize(24, 100),
+            b"\r", (b"unsaved", 10), b"u", b":Format\r", (b"Enter applies", 10),
+            b"\r", b":wq\r",
+        ], b"good value\n", environment)
+        assert '"method": "shutdown"' in log.read_text()
+        assert '"method": "exit"' in log.read_text()
+    print("PASS: 17 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP hover/format/preview/undo/save/shutdown, and restoration")
     return 0
 
 

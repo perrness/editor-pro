@@ -1,8 +1,9 @@
 # Language-server feasibility
 
-Investigated 2026-10-14 using upstream documentation. This is a decision record,
-not a claim that the Rust editor already speaks LSP. There are no LSP dependencies
-or subprocesses in the editor binary. The experiment is in `tools/kotlin-lsp/`.
+Investigated 2026-10-14 using upstream documentation. The Rust editor now implements
+a standard stdio LSP client for M5. Client tests use a labelled protocol double;
+real Kotlin/JDT/Roslyn acceptance is still unverified. The independent Kotlin
+experiment remains in `tools/kotlin-lsp/`. See README for client setup/commands.
 
 ## Initial choices
 
@@ -119,6 +120,13 @@ documentation; actual Kotlin runtime feasibility is **unverified**. Keep this
 gate open. Do not describe mock-server success as Kotlin support.
 
 ## Required real-project follow-up
+
+The M5 implementation did not provision server binaries. Re-running the isolated
+Kotlin probe still returned blocked (exit 2, missing executable). Neither `jdtls`
+nor `csharp-ls` nor `dotnet` is installed/on PATH in this environment. The new
+`tools/lsp/fake_server.py` validates client lifecycle, synchronization, commands
+and failure handling only. Three language IDs in a protocol test do not establish
+the capabilities or SDK compatibility of three real server distributions.
 
 Run and retain the probe report with the exact archive version/checksum, OS,
 architecture, runtime JDK and server log. Then test a representative Gradle JVM

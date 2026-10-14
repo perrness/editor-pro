@@ -4,13 +4,16 @@ A terminal-native, Vim-inspired code editor in Rust. **Milestones 1–4 are impl
 incremental highlighting for eight languages, Visual selections, composable
 motions/operators, search, multiple buffers, fuzzy file navigation, and three
 dark themes, plus asynchronous Git status, source gutters, changed-file navigation,
-and inline/paired diffs, persistent content-based review marks, notes and Markdown feedback export. Editing and file safety remain independent of terminal rendering.
+and inline/paired diffs, persistent content-based review marks, notes and Markdown feedback export.
+The **M5 language client is implemented**, with real Kotlin/JDT/Roslyn acceptance
+still open. Editing and file safety remain independent of terminal rendering.
 
-**Validation:** 151 Rust tests, seven Python harness tests, 16 PTY sessions,
-formatting, Clippy, debug/release builds and all three performance workloads pass
-on Linux, including review/resume, staleness and export. See [VALIDATION.md](VALIDATION.md)
-for exact counts, measurements and scope. macOS, hosted CI, a minimum-Rust build,
-physical-terminal comfort and real Kotlin LSP feasibility remain separate open gates.
+**Validation:** 178 Rust tests (including 27 LSP regressions), seven Python harness
+tests, formatting, Clippy and debug/release builds pass on Linux. The terminal harness
+covers 17 sessions, including LSP preview/undo/save/shutdown. See
+[VALIDATION.md](VALIDATION.md) for build results, earlier performance measurements
+and exact scope. macOS, hosted CI, a minimum-Rust build, physical-terminal comfort
+and real Kotlin/JDT/Roslyn project validation remain separate open gates.
 
 ## Build and run
 
@@ -280,6 +283,103 @@ A terminal-only walkthrough (wait for comparison/loading and pending writes):
 :review export /tmp/feedback-1.md use a new path for every export
 ```
 
+## Language intelligence
+
+Language servers are optional. Opening a named Kotlin (`.kt`/`.kts`), Java
+(`.java`) or C# (`.cs`) buffer starts background discovery. Default commands are
+`intellij-server --stdio` (official JetBrains Kotlin), `jdtls` (Eclipse JDT LS)
+and `csharp-ls` (Roslyn-based). Install the standalone server and its required
+runtime yourself; no software is downloaded by the editor. A server's project
+import may invoke build tools and fetch dependencies. The runtime SDK and the
+project's target SDK can differ; see the [server report](docs/LANGUAGE_SERVERS.md).
+
+Use `:Doctor` for actual executable/root/SDK discovery and runtime version output,
+`:LspInfo` for negotiated features and import status, and `:LspLog` for recent
+stderr/messages. Missing prerequisites and unsupported features produce useful
+errors; editing, Git and review continue working.
+
+Server overrides are argv arrays, with no shell expansion:
+
+```sh
+EDITOR_PRO_KOTLIN_LSP='["/path/to/kotlin/bin/intellij-server","--stdio"]' \
+  cargo run --locked -- /path/to/project/src/Main.kt
+```
+
+The corresponding variables are `EDITOR_PRO_JAVA_LSP` and
+`EDITOR_PRO_CSHARP_LSP`. A single executable path is also accepted. Wrappers may
+select SDKs or pass server-specific initialization arguments. JDT LS gets a
+private temporary `-data` directory; omit that argument from overrides.
+
+Discovery chooses a containing Gradle settings file, the nearest Maven POM,
+or a containing C# solution/project, stopping at a Git boundary; otherwise it
+uses the source directory. Multiple solutions are an explicit ambiguity.
+`EDITOR_PRO_LSP_ROOT=/absolute/project` overrides discovery; configure the
+server argv to select the intended solution when necessary. Sources outside
+that override are refused. `:LspRestart` rediscovers and reopens unsaved documents.
+
+| Command / key | Action |
+| --- | --- |
+| `:Complete`, Insert `Ctrl-n` | Request a completion list; `d` resolves documentation, Enter chooses |
+| `:Hover` | Read documentation at the cursor |
+| `:Signature` | Show signatures and the active parameter |
+| `:Definition`, `:References` | List locations; Enter opens an ordinary source buffer |
+| `:Diagnostics` | List current diagnostics across open sources; Enter jumps |
+| `:Dnext`, `:Dprev` | Navigate diagnostics in the current buffer, wrapping |
+| `:Rename NEW_NAME` | Propose a symbol rename, including edits to other files |
+| `:CodeAction` | List fixes/actions; Enter selects, resolving edits when supported |
+| `:Format` | Propose document formatting |
+| `:Symbols` | List document symbols, including nested symbols |
+| `:LspInfo`, `:LspLog`, `:Doctor` | Inspect capabilities, logs, roots and SDK/server discovery |
+| `:LspRestart` | Restart the current root/language session and resynchronize |
+
+Results use a contextual view: `j/k` or arrows select, Page Up/Down scroll,
+`h/l` scroll horizontally, and Escape returns without changing source location.
+Documentation is displayed as plain text, including Markdown source.
+Completion is requested manually; snippet expansion and completion commands are
+unsupported. Only negotiated features can be requested.
+
+**Server edits open a preview. Enter applies; Escape cancels.** This includes
+completion, rename, formatting and quick fixes. All targets are validated before
+the first change, with buffer versions and exact disk-baseline checks repeated
+at application. Applying produces unsaved edits with one undo group per buffer.
+An open target must have been synchronized by the requesting server; cross-server
+edits to unsynchronized open documents are refused, preserving their unsaved text.
+Use `:ls` to find affected buffers, `u` in each to undo, or `:w` in each to save.
+Quit protects every dirty buffer. Sources are never saved automatically.
+Review note drafts are excluded from synchronization and language commands.
+
+Diagnostics mark the source gutter and appear in the statusline. Old versioned
+reports and stale request results are discarded. A `?` marks versionless push
+diagnostics as **unverified**: their server-side text version is unknowable.
+Known edits immediately invalidate diagnostics. Pull diagnostics carry captured
+document versions. Server progress, request errors and restart status remain
+inspectable without blocking editing.
+
+Limits: eight project/language sessions, 2 MiB per synchronized document, 8 MiB
+protocol messages, 32-file/4,096-replacement edit proposals. Previews show the
+first 128 replacements per file and 512 characters per old/new excerpt, labelling
+truncation; horizontal scrolling reveals clipped lines. Initialization times out
+after 180 seconds, feature requests after 15 seconds (excluding time spent
+reviewing a server edit preview); crashes retry twice before
+requiring `:LspRestart`. Logs are bounded and session-local. JDT workspace indexes
+are discarded on shutdown, so warm indexes do not survive editor restarts.
+
+File create/rename/delete operations, annotated edits, duplicate edit entries for
+one URI, edits outside the root, virtual/decompiled sources, dynamic capability
+registration and watched-file registration are unsupported. Unopened,
+unversioned edit targets are read when a proposal arrives; external changes
+before that point cannot be proven absent. Subsequent disk/buffer changes reject
+the entire proposal. Server-specific import extensions and framework support
+require real-project validation; mock tests do not establish them.
+
+Manually verify with pinned real servers: open representative Gradle, Maven,
+`.sln` and `.csproj` projects; inspect `:Doctor` and import progress; edit without
+saving and try completion, diagnostics, hover, definitions/references, rename,
+actions, formatting and symbols. Preview a multi-file edit, cancel/apply it,
+undo in each buffer, and check dirty quit protection. Restart or terminate a
+server while text is unsaved, then confirm resynchronization and unchanged disk
+bytes. Inspect narrow/normal terminal layouts on Linux and macOS.
+
 ## Commands and themes
 
 | Command | Action |
@@ -326,7 +426,7 @@ Large Markdown documents are slower; measured results are in the validation log.
 
 - This is a Vim-inspired subset: no dot-repeat, named/system-clipboard registers,
   block Visual selection, regex search, macros, general splits, configuration file,
-  integrated LSP, AI, plugins or GUI. Escape Visual mode before putting.
+  AI, plugins or GUI. Escape Visual mode before putting.
   Counts are capped at 10,000.
 - UTF-8 only; NUL-containing files, non-regular files and files over 64 MiB are
   rejected. Existing BOMs, mixed LF/CRLF endings and final-newline presence are

@@ -75,6 +75,7 @@ pub enum View {
     Changes,
     Diff,
     Review,
+    Lsp,
 }
 
 pub struct Editor {
@@ -86,6 +87,7 @@ pub struct Editor {
     pub picker: Option<FilePicker>,
     pub git: crate::git_view::GitState,
     pub review: crate::review_view::ReviewState,
+    pub lsp: crate::lsp_view::LspState,
     pub note_edit: Option<Box<NoteEdit>>,
     pub theme: ThemeName,
     pub mode: Mode,
@@ -114,6 +116,7 @@ impl Editor {
             picker: None,
             git: crate::git_view::GitState::default(),
             review: crate::review_view::ReviewState::default(),
+            lsp: crate::lsp_view::LspState::default(),
             note_edit: None,
             theme: ThemeName::default(),
             mode: Mode::Normal,
@@ -133,6 +136,20 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.view == View::Lsp && self.mode != Mode::Command {
+            self.lsp_key(key);
+            return;
+        }
+        if self.view == View::Editing
+            && self.note_edit.is_none()
+            && self.mode == Mode::Insert
+            && key == Key::Ctrl('n')
+        {
+            if let Err(e) = self.lsp_command("Complete", "") {
+                self.error(&e.to_string());
+            }
+            return;
+        }
         if self.note_edit.is_some()
             && self.mode == Mode::Normal
             && self.pending_label().is_empty()
@@ -856,6 +873,9 @@ impl Editor {
             ));
         }
         match name {
+            "LspInfo" | "LspRestart" | "LspLog" | "Doctor" | "Complete" | "Hover" | "Signature"
+                | "Definition" | "References" | "Rename" | "CodeAction" | "Format" | "Symbols"
+                | "Diagnostics" | "Dnext" | "Dprev" => self.lsp_command(name, argument)?,
             "w" | "wq" => {
                 let path = if argument.is_empty() {
                     None
@@ -955,6 +975,7 @@ impl Editor {
     }
 
     pub(crate) fn reset_context(&mut self) {
+        self.lsp.cancel();
         self.mode = Mode::Normal;
         self.pending = Pending::default();
         self.selection_anchor = None;
@@ -1002,6 +1023,7 @@ impl Editor {
         record: crate::review::Record,
         expected: Option<crate::review::Record>,
     ) {
+        self.lsp.cancel();
         let mut document = Document::default();
         document.buffer = crate::buffer::Buffer::new(record.note.as_deref().unwrap_or_default());
         let source = std::mem::replace(&mut self.document, document);

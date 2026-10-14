@@ -29,6 +29,7 @@ struct Snapshot {
 
 /// Text and editing history, independent of terminal input, rendering, and disk I/O.
 pub struct Buffer {
+    instance: u64,
     text: Rope,
     cursor: usize,
     desired_column: Option<usize>,
@@ -54,6 +55,10 @@ impl Buffer {
             }
         });
         Self {
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             text: Rope::from_str(text),
             cursor: 0,
             desired_column: None,
@@ -79,6 +84,11 @@ impl Buffer {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Distinguishes replacement/reload from an earlier buffer with the same generation.
+    pub fn instance(&self) -> u64 {
+        self.instance
     }
 
     pub fn newline(&self) -> &'static str {

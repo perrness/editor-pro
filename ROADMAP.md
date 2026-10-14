@@ -2,7 +2,8 @@
 
 Build small complete slices. Acceptance requires observed behavior and checks,
 not only code or an advertised server capability. Milestones 1, 2, 3 and 4 are implemented
-in this delivery. Editing modes remain independent of contextual views throughout.
+in this delivery. M5 client functionality is implemented; its real-server acceptance
+gate remains incomplete. Editing modes remain independent of contextual views throughout.
 
 ## Milestone 1 — Minimal editor
 
@@ -111,6 +112,9 @@ other bases are visibly unavailable, and stale annotations require explicit acti
 
 ## Milestone 5 — Language intelligence
 
+**Status:** client implementation complete; real-server/project acceptance open.
+This is the next milestone to validate, not a claim that M5 has passed acceptance.
+
 Robust LSP lifecycle/synchronization with Kotlin (official JetBrains), Java
 (JDT LS), and C# (Roslyn-based). SDK/root/server discovery, asynchronous import,
 progress/status/logging, crash recovery, stale-response suppression, completion
@@ -122,6 +126,43 @@ and `:LspInfo`, `:LspRestart`, `:Doctor`. Gate features by negotiated capability
 and use essential intelligence reliably. Test missing SDK/server, slow indexing,
 crashes, restart/resync, unsaved edits, multi-file edits, UTF-16 ranges and
 out-of-order results. Do not infer KMP/Android or framework support from JVM probes.
+
+**Implemented:** a bounded background manager with independent project/language
+sessions, Gradle/Maven/solution/project discovery and explicit root/argv overrides;
+SDK/server discovery and Doctor probes; static capability negotiation; asynchronous
+import progress/logging; full/incremental UTF-16 synchronization; open/change/save/
+close, reload/save-as and unsaved restart/resync; cancellation, deadlines and bounded
+automatic crash recovery. Buffer instance IDs prevent equal-generation reloads
+from accepting old replies. Review note drafts never enter source synchronization.
+
+Completion/documentation resolution, hover, signature help, definitions,
+references, push/pull diagnostics with list/next/previous navigation, rename,
+quick fixes/code actions, formatting and document-symbol lists use contextual
+views. `:LspInfo`, `:LspLog`, `:LspRestart` and `:Doctor` expose state.
+Edits require a preview, validate all affected documents before applying, retain
+unopened targets as dirty buffers, preserve per-buffer undo, and never auto-save.
+
+**Evidence:** 27 Rust LSP regressions exercise framed stdio subprocesses,
+all three language IDs and separate roots, delayed/stale responses, versioned
+diagnostics, missing servers, malformed protocols, unsupported capabilities,
+timeouts, crash/restart/resync, UTF-16/CRLF, full/incremental synchronization,
+multi-file edits and source/note isolation. These are labelled test doubles.
+Final full-suite and terminal results are recorded in [VALIDATION.md](VALIDATION.md).
+
+**Remaining acceptance:** provision/pin official Kotlin, JDT LS and Roslyn-based
+`csharp-ls` and test representative Gradle, Maven, `.sln` and `.csproj` projects,
+cold/warm indexing, project SDK selection and real feature behavior. The isolated
+Kotlin probe still returns blocked because its executable is absent; JDT LS,
+`csharp-ls` and dotnet are also absent here. macOS and physical-terminal checks
+remain unobserved. Do not advance to M6 on the strength of mock-server results.
+
+**Known scope limits:** manual completion, plain documentation, static capabilities,
+no snippets/completion commands, virtual documents, file resource operations,
+annotated edits or watched-file registration. Versionless push diagnostics are
+visibly unverified. Limits: eight sessions, 2 MiB documents, 8 MiB messages and
+32-file/4,096-replacement proposals; undo remains per buffer. Unopened unversioned
+edit targets are guarded from proposal preparation onward, not before the response.
+JDT indexes are temporary per session. See README for setup and manual checks.
 
 ## Milestone 6 — Code comprehension
 

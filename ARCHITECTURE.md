@@ -1,7 +1,8 @@
 # Architecture
 
-Decision record, 2026-10-14. Scope: Milestones 1–4 and an isolated Kotlin feasibility
-experiment. The product is one terminal editor for editing, navigation, Git review
+Decision record, 2026-10-14. Scope: Milestones 1–4, the M5 LSP client and an isolated
+Kotlin feasibility experiment. Real-server M5 acceptance remains open.
+The product is one terminal editor for editing, navigation, Git review
 and eventual AI comprehension. There is no separate Review Mode.
 
 ## Current structure
@@ -27,6 +28,10 @@ git_ui.rs    contextual Git lists, inline rows and synchronized paired panes
 review.rs    versioned records, full content identities and unique attachment keys
 review_store.rs bounded loading, record CAS, atomic persistence and Markdown worker
 review_view.rs  review commands, progress/navigation and contextual record list
+lsp.rs         protocol positions, immutable document stamps, capabilities and roots
+lsp_worker.rs  bounded multi-project server lifecycle, transport and synchronization
+lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
+lsp_view.rs    language commands, diagnostics and contextual results/edit previews
 text.rs      shared grapheme/cell rules
 ui.rs        projects editor state into Ratatui; maintains derived state/viewport
 theme.rs     semantic colors and three selectable palettes
@@ -42,7 +47,7 @@ The unnamed register and last search are session-wide; the search cache is
 invalidated on every buffer switch.
 
 `Mode` (Normal, Insert, Visual, VisualLine, Command, Search) and `View` (Editing,
-Buffers, Files, Changes, Diff, Review) are separate. Contextual views intercept their own keys and do not
+Buffers, Files, Changes, Diff, Review, Lsp) are separate. Contextual views intercept their own keys and do not
 edit the underlying text. Closing a picker/list returns to the originating
 location. M3 adds only a paired diff projection, not a general window framework.
 
@@ -56,7 +61,7 @@ location. M3 adds only a paired diff projection, not a general window framework.
 | Files | `tempfile` supplies safe temporary-name creation and same-filesystem persistence. The editor supplies baseline checks, fsync and explicit error handling. [Persistence API](https://docs.rs/tempfile/latest/tempfile/struct.NamedTempFile.html#method.persist). |
 | Highlighting | Tree-sitter 0.26 with upstream grammar crates and queries for eight languages. The Markdown crate supplies its combined block/inline parser. Byte edit descriptions and old trees support incremental parsing. [Incremental parsing](https://tree-sitter.github.io/tree-sitter/using-parsers/3-advanced-parsing.html). |
 | File picker | Nucleo 0.5 supplies background fuzzy matching/ranking and immutable result snapshots. The `ignore` walker supplies ignore-file handling; a small discovery thread feeds Nucleo. [Nucleo](https://github.com/helix-editor/nucleo). |
-| External services, later | Tokio and `lsp-types` when LSP/project processes become real requirements. No async runtime is needed for review. |
+| Language services | Tokio process/I/O/timers/channels on one private runtime thread, plus `lsp-types` 0.95.1 for LSP 3.17 positions, edits, diagnostics and file URIs. No runtime enters the editing, Git or review core. |
 | Git | Git CLI subprocesses with porcelain-v2 NUL status, immutable blob reads, and internally generated no-index diffs. One bounded worker owns cancellation/timeouts. M3 added no dependencies; M4 adds the review dependencies below. Project search remains future work. |
 | Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
 | Configuration, later | A small serde/TOML schema when users need settings. M2 selects among three semantic palette values at runtime; no configuration framework. |
@@ -88,8 +93,8 @@ shared Rope, cursor and revision; no undo tree or transaction algebra yet.
 Segmenting one whole line is an intentional starting simplification. Extremely
 long/minified lines require later profiling and chunk-aware segmentation. Text
 width is shared by movement and rendering. Tree-sitter byte offsets are explicitly
-converted at the mutation boundary; they never become the core cursor representation. Future LSP UTF-16 conversion
-belongs at the protocol boundary.
+converted at the mutation boundary; they never become the core cursor representation.
+LSP UTF-16 conversion lives in `lsp.rs`, outside the core.
 
 ## Derived syntax, search and background navigation
 
@@ -315,14 +320,87 @@ state and raw mode restoration are attempted on errors. A panic hook restores
 before printing the panic. Cursor shape and bracketed-paste/focus reporting are
 restored too. Signals/job control require a separate future hardening change.
 
+## Language-server integration
+
+One manager owns at most eight sessions keyed by project root and language.
+A latest-value watch channel coalesces immutable Rope snapshots; bounded channels
+carry commands and results. Discovery, process spawning, protocol framing,
+serialization, synchronization and SDK probes run on its private Tokio thread.
+Each session has separate asynchronous stdout/stderr readers, so a stalled pipe
+does not block editing or another server's I/O. No generic service/backend layer
+was added. Ordinary document loading, edit-preview validation and safe-save I/O
+remain synchronous, under the existing file limits and a 2 MiB LSP document limit.
+
+Default argv uses official Kotlin `intellij-server --stdio`, Java `jdtls`, and
+Roslyn-based `csharp-ls`. Environment JSON argv overrides require no shell.
+The manager checks executable/runtime presence; Doctor probes the selected runtime
+with a three-second deadline and bounded output. Servers, rather than the editor,
+interpret project toolchains and perform dependency imports. Discovery uses
+Gradle settings, the nearest Maven POM, or a containing C# solution/project,
+stopping at a Git boundary. Ambiguous solutions fail explicitly; a root override
+plus server arguments can select a solution. Each JDT session has private temporary
+workspace data, removed at shutdown; it does not persist warm indexes between runs.
+
+The [LSP 3.17 protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
+uses UTF-16 positions here. Surrogate splits, CRLF interiors and out-of-range edits
+are rejected. Full synchronization and incremental range replacements both work.
+Incremental changes are computed between Rope snapshots, so LSP never consumes
+the syntax edit queue. A monotonic buffer instance ID distinguishes reloads with
+equal buffer-slot IDs/generations; a document save counter drives didSave.
+Reload/save-as/close produce the appropriate close/open events. Review notes keep
+synchronizing their retained source, never the note draft.
+
+Initialization negotiates static capabilities and has a 180-second deadline;
+feature requests default to 15 seconds. Cancelled/obsolete requests are removed,
+and responses carry session epoch, request serial, source instance/generation and
+captured document versions. Server command deadlines pause while their edit
+preview awaits user input. UI acceptance checks the active buffer, path, cursor,
+context and all captured open-document stamps before displaying or applying work.
+Crash recovery retries twice, reopening current unsaved snapshots; explicit
+restart resets the session. Shutdown closes documents, sends shutdown/exit,
+then kills/reaps remaining processes (and the Unix process group). The manager
+joins at editor destruction after terminal restoration.
+
+Headers cap at 8 KiB and messages at 8 MiB; command/frame queues have 32 slots,
+the UI result queue 128. Stderr/messages retain sixteen chunks of at most 4,096
+characters per session. Queue saturation and timeouts fail visibly. Pull
+diagnostics are tied to captured versions; push diagnostics with old versions are
+discarded. Versionless push diagnostics have no protocol freshness proof and are
+explicitly labelled unverified and invalidated on known edits.
+No dynamic capability registration, watched-file registration,
+semantic tokens or virtual/decompiled documents are advertised.
+
+Language results use one contextual list with source-preserving scroll/selection.
+Completion resolution supplies documentation and additional edits; snippets and
+completion commands are refused. Hover/signatures, definitions/references,
+document symbols and diagnostic navigation operate on the ordinary documents.
+No M6 workspace-symbol browser, call hierarchy, project search or navigation
+history was introduced.
+
+Rename, formatting, completion and quick fixes create an edit proposal. Validate
+every URI, project boundary, known version, captured buffer stamp, scalar range,
+overlap and size before constructing a preview. All affected buffers and disk
+baselines are rechecked before any splice. Applying makes one undo group per
+changed document. An open target absent from that server's synchronized snapshots
+is refused, including unsynchronized documents owned by another language session.
+Applying retains unopened targets as new dirty buffers; it never
+saves files. Unversioned unopened targets are read when preparing the proposal:
+their state before the server response cannot be proven. Resource operations,
+annotated edits, duplicate entries for one URI and edits outside the project
+are refused. Limits are 32 files/4,096 replacements and 2 MiB per resulting file.
+Previews show up to 128 replacements per file with bounded text; truncation is
+labelled. Multi-file undo remains per buffer, without a new transaction engine.
+
+Only a selected, advertised code-action command can authorize a server
+workspace/applyEdit request, and it still requires a preview. Unsolicited, stale
+or concurrent server edit requests receive applied=false. Applying a proposal
+invalidates Git/review derived state through the established paths.
+
 ## Future boundaries, not current infrastructure
 
-- **M5:** One language-server manager owns subprocess lifecycle and protocol I/O.
-  Requests carry document version, buffer ID and request generation. Ignore stale
-  results, support cancellation, bounded queues, stderr logs, timeouts and crash
-  recovery. UI commands submit work; no process waits on the UI thread. Capability
-  negotiation controls available actions. Root discovery must respect Gradle,
-  Maven, solution and project boundaries. See the feasibility report.
+- **M5 acceptance:** Provision pinned real servers and validate representative
+  Gradle/Maven/solution/project workspaces. Protocol test doubles establish client
+  behavior, not Kotlin/JDT/Roslyn compatibility. See the feasibility report.
 - **M6–7:** Navigation history records buffer, cursor and viewport. Review
   snapshots record immutable content without altering the working tree.
 - **M8:** Context collection and provider integration stay independent of editing
@@ -335,8 +413,8 @@ restored too. Signals/job control require a separate future hardening change.
 | --- | --- |
 | Unicode boundary and screen-width errors | Core tests for combining characters, emoji, CJK, CRLF and mixed edits; real-terminal checks on both OSes. |
 | Lost work | Conflict tests, failed-save tests, dirty quit guards; document remaining race, metadata and crash-recovery limits. |
-| Project import and SDK mismatches | Isolated Kotlin test now; capability and real-project matrix before M5. Runtime JDK and project target JDK are separate. |
+| Project import and SDK mismatches | Client capability tests pass; a real-project/server matrix is required for M5 acceptance. Runtime JDK and project target JDK are separate. |
 | Server churn or proprietary protocol assumptions | Pin tested standalone versions, record capabilities, run standard-LSP probes. Kotlin feasibility is still unverified here. |
-| Stale async state | Picker snapshots must match the current query before selection. Git requests carry buffer/generation/base and serial identity, with stale results suppressed. Future protocol requests need the same discipline. |
-| Scope and architecture growth | Only M1–4 code in the binary; no LSP/AI stubs. Split modules only at concrete responsibilities. |
-| Platform and responsiveness evidence | Linux formatting, Clippy, Rust/Python tests, sixteen PTY sessions and release timing measurements pass. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |
+| Stale async state | Picker queries, Git generations, and LSP session/request/document stamps guard acceptance. Versionless diagnostics remain explicitly unverified. |
+| Scope and architecture growth | M1–5 client code only; no AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
+| Platform and responsiveness evidence | Linux formatting, Clippy, 178 Rust tests, Python tests and seventeen PTY sessions pass. Earlier M2–4 timings remain in VALIDATION.md; no real-server latency claim. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |

@@ -18,6 +18,7 @@ pub struct Document {
     baseline: Option<Vec<u8>>,
     pub external_changed: bool,
     pub syntax: Syntax,
+    save_generation: u64,
 }
 
 impl Default for Document {
@@ -28,6 +29,7 @@ impl Default for Document {
             baseline: None,
             external_changed: false,
             syntax: Syntax::for_path(None),
+            save_generation: 0,
         }
     }
 }
@@ -49,11 +51,16 @@ impl Document {
             path: Some(path),
             baseline,
             external_changed: false,
+            save_generation: 0,
         })
     }
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub fn save_generation(&self) -> u64 {
+        self.save_generation
     }
 
     pub fn sync_syntax(&mut self) {
@@ -167,6 +174,7 @@ impl Document {
                 ))
             })?;
         self.buffer.mark_saved();
+        self.save_generation += 1;
         Ok(())
     }
 }

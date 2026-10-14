@@ -23,6 +23,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     }
     let base = Style::default().fg(theme.foreground).bg(theme.background);
     frame.render_widget(Block::default().style(base), area);
+    if editor.view == View::Lsp {
+        crate::lsp_view::render(frame, editor, theme);
+        return;
+    }
     if matches!(editor.view, View::Changes | View::Diff) {
         crate::git_ui::render(frame, editor, theme);
         return;
@@ -125,6 +129,18 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             frame.render_widget(
                 Paragraph::new(symbol).style(style.fg(color)),
                 Rect::new(area.x, area.y + row, 1, 1),
+            );
+        }
+        if gutter >= 2
+            && editor.current_diagnostics().is_some_and(|d| {
+                d.items
+                    .iter()
+                    .any(|item| item.range.start.line as usize == line_index)
+            })
+        {
+            frame.render_widget(
+                Paragraph::new("!").style(style.fg(theme.error)),
+                Rect::new(area.x + gutter - 1, area.y + row, 1, 1),
             );
         }
         let line_selected = selection.as_ref().is_some_and(|s| {
@@ -548,6 +564,12 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
         right
     };
     let width = usize::from(area.width);
+    let lsp = editor.lsp_summary();
+    let right = if area.width >= 70 && !lsp.is_empty() {
+        format!(" {} |{}", visible_text(&lsp, 0, 24), right)
+    } else {
+        right
+    };
     let right = visible_text(
         &right,
         0,
