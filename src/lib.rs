@@ -2,6 +2,7 @@ pub mod buffer;
 pub mod editor;
 pub mod file;
 pub mod input;
+pub mod motion;
 pub mod syntax;
 pub mod text;
 pub mod theme;

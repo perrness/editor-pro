@@ -115,7 +115,8 @@ fn event_loop(
     while !editor.quit {
         if redraw {
             if previous_mode != Some(editor.mode) {
-                let shape = if editor.mode == Mode::Normal {
+                let shape = if matches!(editor.mode, Mode::Normal | Mode::Visual | Mode::VisualLine)
+                {
                     SetCursorStyle::SteadyBlock
                 } else {
                     SetCursorStyle::SteadyBar

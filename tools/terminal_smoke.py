@@ -102,6 +102,10 @@ def main():
                     "// 界e\u0301\nfn main() {}\n".encode())
         run_session(binary, path, [b"iunsaved", b"\x1b", b":q\r", b":q!\r"],
                     "// 界e\u0301\nfn main() {}\n".encode())
+        path.write_bytes("one two three\r\n界e\u0301\r\nlast".encode())
+        run_session(binary, path, [b"cwnew", b"\x1b", b"j0vly", b"G$p", b"u",
+                                  b"\x12", b":wq\r"],
+                    "new two three\r\n界e\u0301\r\nlast界e\u0301".encode())
     print("PASS: real terminal editing, undo/redo, saving, dirty quit guard, and restoration")
     return 0
 

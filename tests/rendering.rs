@@ -66,3 +66,30 @@ fn vertical_viewport_tracks_cursor_and_resize() {
         .unwrap();
     assert_eq!(editor.viewport.top, 0);
 }
+
+#[test]
+fn visual_selection_colors_complete_wide_and_combining_graphemes() {
+    use editor_pro::input::Key;
+    let mut document = Document::default();
+    document.buffer = Buffer::new("e\u{301}界z\r\nnext");
+    let mut editor = Editor::new(document);
+    editor.handle_key(Key::Char('v'));
+    editor.handle_key(Key::Char('l'));
+    let theme = Theme::night();
+    let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut editor, &theme))
+        .unwrap();
+    let cells = terminal.backend().buffer();
+    assert_eq!(cells[(3, 0)].symbol(), "e\u{301}");
+    assert_eq!(cells[(3, 0)].bg, theme.selection);
+    assert_eq!(cells[(4, 0)].symbol(), "界");
+    assert_eq!(cells[(4, 0)].bg, theme.selection);
+    assert_ne!(cells[(6, 0)].bg, theme.selection);
+    editor.handle_key(Key::Char('V'));
+    editor.handle_key(Key::Char('j'));
+    terminal
+        .draw(|frame| ui::render(frame, &mut editor, &theme))
+        .unwrap();
+    assert_eq!(terminal.backend().buffer()[(20, 1)].bg, theme.selection);
+}

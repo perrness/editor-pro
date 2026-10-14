@@ -48,3 +48,12 @@ exclude fenced code, including after edits. Kotlin uses the published
 `tree-sitter-kotlin-sg` package of the fwcd grammar and its compatible upstream
 queries. Unsupported query predicates trigger fallback rather than silently
 matching everything. Language injections and semantic LSP tokens are not included.
+
+## M2 slice 2 — Modal editing
+
+Formatting, Clippy, all 60 Rust tests and the extended PTY smoke test passed.
+The new checks cover multiplied counts, inclusive/exclusive and linewise
+operators, Unicode Visual selections, CRLF and EOF behavior, nested/quoted text
+objects, character/line registers, paste, find/repeat, and grouped change undo.
+A 2,000-action mixed modal regression checks grapheme boundaries after every key.
+The PTY test now exercises Visual yank/paste and change/undo/redo with CRLF text.

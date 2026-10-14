@@ -3,6 +3,7 @@ use std::{io, path::Path};
 use crate::{
     file::{Document, MAX_FILE_BYTES},
     input::Key,
+    motion::{self, Motion, Selection},
     text::pop_grapheme,
 };
 
@@ -10,6 +11,8 @@ use crate::{
 pub enum Mode {
     Normal,
     Insert,
+    Visual,
+    VisualLine,
     Command,
 }
 
@@ -18,6 +21,8 @@ impl Mode {
         match self {
             Self::Normal => "NORMAL",
             Self::Insert => "INSERT",
+            Self::Visual => "VISUAL",
+            Self::VisualLine => "V-LINE",
             Self::Command => "COMMAND",
         }
     }
@@ -30,6 +35,29 @@ pub struct Viewport {
     pub height: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Operator {
+    Delete,
+    Change,
+    Yank,
+}
+
+#[derive(Default)]
+struct Pending {
+    count: usize,
+    operator: Option<Operator>,
+    operator_count: usize,
+    g: bool,
+    object: Option<bool>,
+    find: Option<(bool, bool)>,
+}
+
+#[derive(Clone, Default)]
+pub struct Register {
+    pub text: String,
+    pub linewise: bool,
+}
+
 pub struct Editor {
     pub document: Document,
     pub mode: Mode,
@@ -38,7 +66,10 @@ pub struct Editor {
     pub message: String,
     pub message_is_error: bool,
     pub quit: bool,
-    pending_g: bool,
+    pending: Pending,
+    pub selection_anchor: Option<usize>,
+    pub register: Register,
+    last_find: Option<Motion>,
 }
 
 impl Editor {
@@ -51,7 +82,10 @@ impl Editor {
             message: "i  insert   :w  save   :q  quit   :help  keys".into(),
             message_is_error: false,
             quit: false,
-            pending_g: false,
+            pending: Pending::default(),
+            selection_anchor: None,
+            register: Register::default(),
+            last_find: None,
         }
     }
 
@@ -61,31 +95,234 @@ impl Editor {
             return;
         }
         match self.mode {
-            Mode::Normal => self.normal_key(key),
+            Mode::Normal | Mode::Visual | Mode::VisualLine => self.normal_key(key),
             Mode::Insert => self.insert_key(key),
             Mode::Command => self.command_key(key),
         }
     }
 
+    pub fn selection(&self) -> Option<Selection> {
+        self.selection_anchor.map(|anchor| {
+            motion::visual(&self.document.buffer, anchor, self.mode == Mode::VisualLine)
+        })
+    }
+
+    fn count(&self) -> usize {
+        if self.pending.operator.is_some()
+            && (self.pending.operator_count > 0 || self.pending.count > 0)
+        {
+            self.pending
+                .operator_count
+                .max(1)
+                .saturating_mul(self.pending.count.max(1))
+                .min(10_000)
+        } else {
+            self.pending.count
+        }
+    }
+
     fn normal_key(&mut self, key: Key) {
-        let pending = std::mem::take(&mut self.pending_g);
+        if key == Key::Escape {
+            self.escape();
+            return;
+        }
+        if let Some(around) = self.pending.object.take() {
+            if let Key::Char(object) = key {
+                if let Some(selection) =
+                    motion::text_object(&self.document.buffer, object, around, self.count())
+                {
+                    if let Some(operator) = self.pending.operator {
+                        self.operate(selection, operator, self.document.buffer.cursor());
+                    } else {
+                        self.selection_anchor = Some(selection.chars.start);
+                        let end = self
+                            .document
+                            .buffer
+                            .grapheme_start_before(selection.chars.end);
+                        self.document
+                            .buffer
+                            .set_cursor(end.max(selection.chars.start), false);
+                        self.mode = Mode::Visual;
+                    }
+                } else {
+                    self.error("Text object not found");
+                }
+            }
+            self.pending = Pending::default();
+            return;
+        }
+        if let Some((backward, till)) = self.pending.find.take() {
+            if let Key::Char(character) = key {
+                let motion = Motion::Find {
+                    character,
+                    backward,
+                    till,
+                };
+                self.last_find = Some(motion);
+                self.run_motion(motion);
+            } else {
+                self.pending = Pending::default();
+            }
+            return;
+        }
+        if self.pending.g {
+            self.pending.g = false;
+            if key == Key::Char('g') {
+                self.run_motion(Motion::FirstLine);
+            } else {
+                self.pending = Pending::default();
+            }
+            return;
+        }
+        if let Key::Char(digit @ '0'..='9') = key
+            && (digit != '0' || self.pending.count > 0)
+        {
+            self.pending.count =
+                (self.pending.count * 10 + digit.to_digit(10).unwrap() as usize).min(10_000);
+            return;
+        }
+        if key == Key::Char('g') {
+            self.pending.g = true;
+            return;
+        }
+        if matches!(key, Key::Char('i' | 'a'))
+            && (self.pending.operator.is_some() || self.selection_anchor.is_some())
+        {
+            self.pending.object = Some(key == Key::Char('a'));
+            return;
+        }
+        if let Key::Char(ch @ ('f' | 'F' | 't' | 'T')) = key {
+            self.pending.find = Some((ch.is_uppercase(), matches!(ch, 't' | 'T')));
+            return;
+        }
+        let motion = match key {
+            Key::Char('h') | Key::Left => Some(Motion::Left),
+            Key::Char('l') | Key::Right => Some(Motion::Right),
+            Key::Char('j') | Key::Down => Some(Motion::Down),
+            Key::Char('k') | Key::Up => Some(Motion::Up),
+            Key::Char('0') | Key::Home => Some(Motion::Start),
+            Key::Char('^') => Some(Motion::FirstNonblank),
+            Key::Char('$') | Key::End => Some(Motion::End),
+            Key::Char('w') => Some(Motion::WordForward(false)),
+            Key::Char('W') => Some(Motion::WordForward(true)),
+            Key::Char('b') => Some(Motion::WordBackward(false)),
+            Key::Char('B') => Some(Motion::WordBackward(true)),
+            Key::Char('e') => Some(Motion::WordEnd(false)),
+            Key::Char('E') => Some(Motion::WordEnd(true)),
+            Key::Char('G') => Some(Motion::LastLine),
+            Key::Char('%') => Some(Motion::MatchingPair),
+            Key::Char(';') => self.last_find,
+            Key::Char(',') => self.last_find.map(|m| match m {
+                Motion::Find {
+                    character,
+                    backward,
+                    till,
+                } => Motion::Find {
+                    character,
+                    backward: !backward,
+                    till,
+                },
+                _ => m,
+            }),
+            _ => None,
+        };
+        if let Some(motion) = motion {
+            self.run_motion(motion);
+            return;
+        }
+        if let Key::Char(ch @ ('d' | 'c' | 'y')) = key {
+            let operator = match ch {
+                'd' => Operator::Delete,
+                'c' => Operator::Change,
+                _ => Operator::Yank,
+            };
+            if let Some(selection) = self.selection() {
+                let start = selection.chars.start;
+                self.operate(selection, operator, start);
+            } else if self.pending.operator == Some(operator) {
+                let row = self.document.buffer.position().0;
+                let selection =
+                    motion::lines(&self.document.buffer, row, row + self.count().max(1) - 1);
+                self.operate(selection, operator, self.document.buffer.cursor());
+            } else if self.pending.operator.is_none() {
+                self.pending.operator = Some(operator);
+                self.pending.operator_count = self.pending.count;
+                self.pending.count = 0;
+            } else {
+                self.pending = Pending::default();
+            }
+            return;
+        }
+        if self.pending.operator.is_some() {
+            self.pending = Pending::default();
+            return;
+        }
+        let count = self.pending.count.max(1);
+        self.pending = Pending::default();
         let buffer = &mut self.document.buffer;
         match key {
-            Key::Char('h') | Key::Left => buffer.move_left(false),
-            Key::Char('l') | Key::Right => buffer.move_right(false),
-            Key::Char('j') | Key::Down => buffer.move_vertical(1, false),
-            Key::Char('k') | Key::Up => buffer.move_vertical(-1, false),
-            Key::Char('0') | Key::Home => buffer.line_start(),
-            Key::Char('$') | Key::End => buffer.line_end(false),
-            Key::Char('g') if pending => buffer.goto_line(0, false),
-            Key::Char('g') => self.pending_g = true,
-            Key::Char('G') => buffer.goto_line(buffer.line_count() - 1, false),
+            Key::Char('v' | 'V') => {
+                let mode = if key == Key::Char('V') {
+                    Mode::VisualLine
+                } else {
+                    Mode::Visual
+                };
+                if self.mode == mode {
+                    self.escape();
+                } else {
+                    self.selection_anchor.get_or_insert(buffer.cursor());
+                    self.mode = mode;
+                }
+            }
+            Key::Char('o') if self.selection_anchor.is_some() => {
+                let anchor = self.selection_anchor.replace(buffer.cursor()).unwrap();
+                buffer.set_cursor(anchor, false);
+            }
+            Key::Char('x') | Key::Delete | Key::Char('s') => {
+                let selection = self.selection().unwrap_or_else(|| {
+                    let buffer = &mut self.document.buffer;
+                    let start = buffer.cursor();
+                    for _ in 0..count {
+                        buffer.move_right(true);
+                    }
+                    let end = buffer.cursor();
+                    buffer.set_cursor(start, false);
+                    Selection {
+                        chars: start..end,
+                        linewise: false,
+                    }
+                });
+                let operator = if key == Key::Char('s') {
+                    Operator::Change
+                } else {
+                    Operator::Delete
+                };
+                self.operate(selection, operator, self.document.buffer.cursor());
+            }
+            Key::Char('D' | 'C' | 'Y') => {
+                self.pending.count = count;
+                self.pending.operator = Some(match key {
+                    Key::Char('D') => Operator::Delete,
+                    Key::Char('C') => Operator::Change,
+                    _ => Operator::Yank,
+                });
+                if key == Key::Char('Y') {
+                    let row = self.document.buffer.position().0;
+                    let selection = motion::lines(&self.document.buffer, row, row + count - 1);
+                    self.operate(selection, Operator::Yank, self.document.buffer.cursor());
+                } else {
+                    self.run_motion(Motion::End);
+                }
+            }
+            Key::Char('p' | 'P') => self.put(key == Key::Char('P'), count),
+            _ if self.selection_anchor.is_some() => {}
             Key::Ctrl('d') | Key::PageDown => {
-                buffer.move_vertical((self.viewport.height / 2).max(1) as isize, false);
+                buffer.move_vertical(((self.viewport.height / 2).max(1) * count) as isize, false)
             }
-            Key::Ctrl('u') | Key::PageUp => {
-                buffer.move_vertical(-((self.viewport.height / 2).max(1) as isize), false);
-            }
+            Key::Ctrl('u') | Key::PageUp => buffer.move_vertical(
+                -(((self.viewport.height / 2).max(1) * count) as isize),
+                false,
+            ),
             Key::Char('i') => self.enter_insert(),
             Key::Char('a') => {
                 buffer.move_right(true);
@@ -99,35 +336,202 @@ impl Editor {
                 buffer.line_end(true);
                 self.enter_insert();
             }
-            Key::Char('o') | Key::Char('O') => {
-                if buffer.text().len_bytes() as u64 + 2 <= MAX_FILE_BYTES {
-                    buffer.open_line(key == Key::Char('O'));
+            Key::Char('o' | 'O') => {
+                if self.has_room(2) {
+                    self.document.buffer.open_line(key == Key::Char('O'));
                     self.enter_insert();
-                } else {
-                    self.error("Milestone 1 supports buffers up to 64 MiB");
                 }
             }
-            Key::Char('x') | Key::Delete => {
-                buffer.delete(false);
-                buffer.commit();
-            }
             Key::Char('u') => {
-                if !buffer.undo() {
-                    self.info("Already at oldest change");
+                for _ in 0..count {
+                    if !self.document.buffer.undo() {
+                        self.info("Already at oldest change");
+                        break;
+                    }
                 }
             }
             Key::Ctrl('r') => {
-                if !buffer.redo() {
-                    self.info("Already at newest change");
+                for _ in 0..count {
+                    if !self.document.buffer.redo() {
+                        self.info("Already at newest change");
+                        break;
+                    }
                 }
             }
             Key::Char(':') => {
                 self.mode = Mode::Command;
                 self.command.clear();
             }
-            Key::Escape => self.escape(),
             _ => {}
         }
+    }
+
+    fn run_motion(&mut self, motion: Motion) {
+        let origin = self.document.buffer.cursor();
+        let operator = self.pending.operator;
+        let count = self.count();
+        // cw changes through the current word's end, preserving following space.
+        if let Motion::WordForward(big) = motion
+            && operator == Some(Operator::Change)
+            && origin < self.document.buffer.text().len_chars()
+            && !self.document.buffer.text().char(origin).is_whitespace()
+            && let Some(word) = motion::text_object(
+                &self.document.buffer,
+                if big { 'W' } else { 'w' },
+                false,
+                count,
+            )
+        {
+            self.operate(
+                Selection {
+                    chars: origin..word.chars.end,
+                    linewise: false,
+                },
+                Operator::Change,
+                origin,
+            );
+            return;
+        }
+        // Keep the motion value explicit; all coordinate changes live in motion.rs.
+        let result = motion::apply(&mut self.document.buffer, motion, count, operator.is_some());
+        if let Some(extent) = result {
+            if let Some(operator) = operator {
+                let selection = motion::operated(&self.document.buffer, origin, extent);
+                self.document.buffer.set_cursor(origin, false);
+                self.operate(selection, operator, origin);
+            }
+        } else {
+            self.info("Motion target not found");
+        }
+        self.pending = Pending::default();
+    }
+
+    fn operate(&mut self, mut selection: Selection, operator: Operator, yank_cursor: usize) {
+        self.pending = Pending::default();
+        self.selection_anchor = None;
+        self.mode = Mode::Normal;
+        let buffer = &mut self.document.buffer;
+        if selection.chars.is_empty() && !selection.linewise {
+            if operator == Operator::Change {
+                self.enter_insert();
+            }
+            return;
+        }
+        let mut text = buffer.text().slice(selection.chars.clone()).to_string();
+        if selection.linewise && !text.ends_with('\n') {
+            text.push_str(buffer.newline());
+        }
+        self.register = Register {
+            text,
+            linewise: selection.linewise,
+        };
+        if operator == Operator::Yank {
+            buffer.set_cursor(yank_cursor, false);
+            return;
+        }
+        let row = buffer.text().char_to_line(selection.chars.start);
+        if operator == Operator::Delete
+            && selection.linewise
+            && selection.chars.end == buffer.text().len_chars()
+            && selection.chars.start > 0
+            && !buffer
+                .text()
+                .slice(selection.chars.clone())
+                .to_string()
+                .ends_with('\n')
+        {
+            selection.chars.start = buffer.grapheme_start_before(selection.chars.start);
+        }
+        let start = selection.chars.start;
+        let replacement = if operator == Operator::Change
+            && selection.linewise
+            && buffer
+                .text()
+                .slice(selection.chars.clone())
+                .to_string()
+                .ends_with('\n')
+        {
+            buffer.newline()
+        } else {
+            ""
+        };
+        buffer.replace_range(selection.chars, replacement);
+        buffer.set_cursor(start, operator == Operator::Change);
+        if operator == Operator::Change {
+            self.enter_insert();
+        } else {
+            buffer.commit();
+            if selection.linewise {
+                buffer.goto_line(row.min(buffer.line_count() - 1), false);
+                buffer.first_nonblank();
+                buffer.clamp_cursor(false);
+            }
+        }
+    }
+
+    fn put(&mut self, before: bool, count: usize) {
+        if self.register.text.is_empty() {
+            self.info("Register is empty");
+            return;
+        }
+        if self.selection_anchor.is_some() {
+            self.info("Escape Visual mode before putting text");
+            return;
+        }
+        let newline = self.document.buffer.newline();
+        let normalized = self
+            .register
+            .text
+            .replace("\r\n", "\n")
+            .replace('\n', newline);
+        let Some(bytes) = normalized
+            .len()
+            .checked_mul(count)
+            .and_then(|n| n.checked_add(2))
+        else {
+            self.error("Paste is too large");
+            return;
+        };
+        if !self.has_room(bytes) {
+            return;
+        }
+        let mut text = normalized.repeat(count);
+        let buffer = &mut self.document.buffer;
+        buffer.begin();
+        if self.register.linewise {
+            let row = buffer.position().0;
+            let inserted_line = if before || buffer.text().len_chars() == 0 {
+                row
+            } else {
+                row + 1
+            };
+            let mut start = buffer.text().line_to_char(row);
+            if !before {
+                if row + 1 < buffer.line_count() {
+                    start = buffer.text().line_to_char(row + 1);
+                } else {
+                    start = buffer.text().len_chars();
+                    if text.ends_with(newline) {
+                        text.truncate(text.len() - newline.len());
+                    }
+                    if start > 0 {
+                        text.insert_str(0, newline);
+                    }
+                }
+            }
+            buffer.set_cursor(start, true);
+            buffer.insert(&text);
+            buffer.goto_line(inserted_line, false);
+            buffer.first_nonblank();
+            buffer.clamp_cursor(false);
+        } else {
+            if !before {
+                buffer.move_right(true);
+            }
+            buffer.insert(&text);
+            buffer.move_left(false);
+        }
+        buffer.commit();
     }
 
     fn enter_insert(&mut self) {
@@ -142,7 +546,8 @@ impl Editor {
             self.document.buffer.move_left(false);
         }
         self.mode = Mode::Normal;
-        self.pending_g = false;
+        self.pending = Pending::default();
+        self.selection_anchor = None;
         self.command.clear();
     }
 
@@ -186,7 +591,7 @@ impl Editor {
             .saturating_add(bytes) as u64
             > MAX_FILE_BYTES
         {
-            self.error("Milestone 1 supports buffers up to 64 MiB");
+            self.error("Supports buffers up to 64 MiB");
             false
         } else {
             true
@@ -276,7 +681,8 @@ impl Editor {
                 let document = Document::open(path)?;
                 self.document = document;
                 self.viewport = Viewport::default();
-                self.pending_g = false;
+                self.pending = Pending::default();
+                self.selection_anchor = None;
                 self.info("Opened");
             }
             "help" if argument.is_empty() => self.info(

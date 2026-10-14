@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph},
 };
+use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
@@ -60,6 +61,15 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         .document
         .syntax
         .highlights(buffer.text(), first_byte..last_byte);
+    let selection = editor.selection();
+    let selected_bytes = selection.as_ref().map(|s| {
+        buffer.text().char_to_byte(s.chars.start)..buffer.text().char_to_byte(s.chars.end)
+    });
+    let styles = TextStyles {
+        highlights: &highlights,
+        selection: selected_bytes,
+        theme,
+    };
     for row in 0..height {
         let line_index = editor.viewport.top + usize::from(row);
         let rect = Rect::new(area.x, area.y + row, area.width, 1);
@@ -89,17 +99,27 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 Rect::new(area.x, area.y + row, gutter, 1),
             );
         }
+        let line_selected = selection.as_ref().is_some_and(|s| {
+            s.linewise && {
+                let anchor_line = buffer.text().char_to_line(editor.selection_anchor.unwrap());
+                (anchor_line.min(cursor_line)..=anchor_line.max(cursor_line)).contains(&line_index)
+            }
+        });
+        let text_style = if line_selected {
+            style.bg(theme.selection)
+        } else {
+            style
+        };
         let text = styled_text(
             &buffer.line(line_index),
             buffer.text().line_to_byte(line_index),
             editor.viewport.left,
             text_width,
-            &highlights,
-            style,
-            theme,
+            text_style,
+            &styles,
         );
         frame.render_widget(
-            Paragraph::new(text).style(style),
+            Paragraph::new(text).style(text_style),
             Rect::new(area.x + gutter, area.y + row, text_width as u16, 1),
         );
     }
@@ -143,19 +163,25 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     }
 }
 
+struct TextStyles<'a> {
+    highlights: &'a [HighlightSpan],
+    selection: Option<Range<usize>>,
+    theme: &'a Theme,
+}
+
 fn styled_text(
     line: &str,
     byte_start: usize,
     left: usize,
     width: usize,
-    highlights: &[HighlightSpan],
     base: Style,
-    theme: &Theme,
+    styles: &TextStyles<'_>,
 ) -> Line<'static> {
     let mut spans = Vec::new();
     let mut column = 0;
     let right = left.saturating_add(width);
-    let highlights: Vec<_> = highlights
+    let highlights: Vec<_> = styles
+        .highlights
         .iter()
         .filter(|h| h.bytes.end > byte_start && h.bytes.start < byte_start + line.len())
         .cloned()
@@ -171,11 +197,27 @@ fn styled_text(
             } else {
                 " ".repeat(end.min(right) - column.max(left))
             };
-            let style = highlight_at(&highlights, byte_start + byte)
-                .map_or(base, |kind| base.fg(theme.highlight(kind)));
+            let mut style = highlight_at(&highlights, byte_start + byte)
+                .map_or(base, |kind| base.fg(styles.theme.highlight(kind)));
+            if styles
+                .selection
+                .as_ref()
+                .is_some_and(|s| s.contains(&(byte_start + byte)))
+            {
+                style = style.bg(styles.theme.selection);
+            }
             spans.push(Span::styled(text, style));
         }
         column = end;
+    }
+    if column >= left
+        && column < right
+        && styles
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.contains(&(byte_start + line.len())))
+    {
+        spans.push(Span::styled(" ", base.bg(styles.theme.selection)));
     }
     Line::from(spans)
 }

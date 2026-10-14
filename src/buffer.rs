@@ -81,6 +81,55 @@ impl Buffer {
         self.generation
     }
 
+    pub fn newline(&self) -> &'static str {
+        self.newline
+    }
+
+    pub fn set_cursor(&mut self, cursor: usize, insert: bool) {
+        self.cursor = cursor.min(self.text.len_chars());
+        self.desired_column = None;
+        self.clamp_cursor(insert);
+    }
+
+    pub fn grapheme_end(&self, cursor: usize) -> usize {
+        if cursor >= self.text.len_chars() {
+            return self.text.len_chars();
+        }
+        let row = self.text.char_to_line(cursor);
+        let start = self.text.line_to_char(row);
+        let line = self.line(row);
+        if cursor - start >= line.chars().count() {
+            return self.text.line_to_char((row + 1).min(self.line_count()));
+        }
+        start + next_boundary(&line, cursor - start)
+    }
+
+    pub fn grapheme_start_before(&self, cursor: usize) -> usize {
+        if cursor == 0 {
+            return 0;
+        }
+        let row = self.text.char_to_line(cursor);
+        let start = self.text.line_to_char(row);
+        if cursor == start {
+            return self.text.line_to_char(row - 1) + self.line(row - 1).chars().count();
+        }
+        start + previous_boundary(&self.line(row), cursor - start)
+    }
+
+    /// Replace a range produced by a motion/selection. Callers use grapheme
+    /// boundaries; the cursor is snapped again because deletion can join clusters.
+    pub fn replace_range(&mut self, range: Range<usize>, text: &str) {
+        if range.is_empty() && text.is_empty() {
+            return;
+        }
+        self.begin();
+        let start = range.start;
+        self.splice(range, text);
+        self.cursor = start + text.chars().count();
+        self.changed();
+        self.snap_cursor_forward();
+    }
+
     pub fn take_edits(&mut self) -> Vec<TextEdit> {
         std::mem::take(&mut self.edits)
     }
