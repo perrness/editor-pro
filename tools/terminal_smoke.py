@@ -117,6 +117,10 @@ def main():
                                   b":ls\r", b"\x1b", b":bp\r", b":wq\r"],
                     b"Aalpha\r\n")
         assert second.read_bytes() == b"Bbeta\n"
+        run_session(binary, path, [f":files {directory}\r".encode(), b"secondkt", b"\r",
+                                  b"iC", b"\x1b", b":w\r", b":b 1\r", b":q\r"],
+                    b"Aalpha\r\n")
+        assert second.read_bytes() == b"CBbeta\n"
     print("PASS: real terminal editing, undo/redo, saving, dirty quit guard, and restoration")
     return 0
 

@@ -151,3 +151,25 @@ fn buffer_list_renders_dirty_inactive_documents_in_tiny_terminals() {
         }
     }
 }
+
+#[test]
+fn file_picker_prompt_renders_safely_in_tiny_terminals() {
+    use editor_pro::input::Key;
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("界 file.rs"), "").unwrap();
+    let mut editor = Editor::new(Document::default());
+    editor.open_picker(directory.path()).unwrap();
+    for c in "long query 界e\u{301}".chars() {
+        editor.handle_key(Key::Char(c));
+    }
+    for (width, height) in [(1, 1), (1, 3), (2, 4), (40, 10)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| ui::render(f, &mut editor, &Theme::night()))
+            .unwrap();
+        if height > 2 {
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(cursor.x < width && cursor.y < height - 2);
+        }
+    }
+}

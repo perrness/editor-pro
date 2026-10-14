@@ -5,6 +5,7 @@ use crate::{
     file::{Document, MAX_FILE_BYTES},
     input::Key,
     motion::{self, Motion, Selection},
+    picker::FilePicker,
     search::Search,
     text::pop_grapheme,
 };
@@ -69,6 +70,7 @@ pub enum View {
     Buffers {
         selected: usize,
     },
+    Files,
 }
 
 pub struct Editor {
@@ -77,6 +79,7 @@ pub struct Editor {
     pub(crate) next_buffer_id: usize,
     pub(crate) buffers: BTreeMap<usize, BufferSlot>,
     pub view: View,
+    pub picker: Option<FilePicker>,
     pub mode: Mode,
     pub viewport: Viewport,
     pub command: String,
@@ -100,6 +103,7 @@ impl Editor {
             next_buffer_id: 2,
             buffers: BTreeMap::new(),
             view: View::Editing,
+            picker: None,
             mode: Mode::Normal,
             viewport: Viewport::default(),
             command: String::new(),
@@ -117,6 +121,10 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.view == View::Files {
+            self.picker_key(key);
+            return;
+        }
         if matches!(self.view, View::Buffers { .. }) {
             self.buffer_list_key(key);
             return;
@@ -360,6 +368,12 @@ impl Editor {
             }
             Key::Char('n' | 'N') => self.find_next(key == Key::Char('N'), count),
             _ if self.selection_anchor.is_some() => {}
+            Key::Ctrl('p') => {
+                if let Err(error) = std::env::current_dir().and_then(|root| self.open_picker(&root))
+                {
+                    self.error(&error.to_string());
+                }
+            }
             Key::Ctrl('d') | Key::PageDown => {
                 buffer.move_vertical(((self.viewport.height / 2).max(1) * count) as isize, false)
             }
@@ -770,6 +784,14 @@ impl Editor {
                 self.quit = true;
             }
             "e" | "e!" => self.edit_command(argument, name == "e!")?,
+            "files" => {
+                let root = if argument.is_empty() {
+                    std::env::current_dir()?
+                } else {
+                    argument.into()
+                };
+                self.open_picker(&root)?;
+            }
             "enew" if argument.is_empty() => self.new_buffer(),
             "bn" | "bnext" if argument.is_empty() => self.cycle_buffer(false)?,
             "bp" | "bprevious" if argument.is_empty() => self.cycle_buffer(true)?,
@@ -816,6 +838,7 @@ impl Editor {
         self.selection_anchor = None;
         self.command.clear();
         self.view = View::Editing;
+        self.picker = None;
         self.search.invalidate();
         self.document.buffer.clamp_cursor(false);
     }

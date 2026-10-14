@@ -7,6 +7,8 @@ description = "A small terminal-native, Vim-inspired code editor"
 publish = false
 
 [dependencies]
+ignore = "0.4"
+nucleo = "0.5"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 tempfile = "3.23"

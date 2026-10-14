@@ -7,7 +7,7 @@ use std::{
 };
 
 use editor_pro::{
-    editor::{Editor, Mode},
+    editor::{Editor, Mode, View},
     file::Document,
     input,
     theme::Theme,
@@ -115,6 +115,7 @@ fn event_loop(
     let mut previous_mode = None;
     let mut redraw = true;
     while !editor.quit {
+        redraw |= editor.tick();
         if redraw {
             if previous_mode != Some(editor.mode) {
                 let shape = if matches!(editor.mode, Mode::Normal | Mode::Visual | Mode::VisualLine)
@@ -129,7 +130,8 @@ fn event_loop(
             terminal.draw(|frame| ui::render(frame, editor, theme))?;
             redraw = false;
         }
-        if event::poll(Duration::from_millis(200))? {
+        let poll_ms = if editor.view == View::Files { 16 } else { 200 };
+        if event::poll(Duration::from_millis(poll_ms))? {
             match event::read()? {
                 Event::Key(key) => {
                     if let Some(key) = input::decode(key) {

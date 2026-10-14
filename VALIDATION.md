@@ -75,3 +75,12 @@ deduplication, failed-open rollback, save-as identity collisions, inactive disk
 conflicts, all-buffer quit protection, and a separate buffer-list view. The PTY
 workflow edits two files, verifies refusal to quit with an inactive dirty buffer,
 and saves both. `:e path` now retains the buffer being left behind.
+
+## M2 slice 5 — Fuzzy file navigation
+
+Formatting, Clippy, all 85 Rust tests and the extended PTY test passed. Nucleo
+matches in its worker pool; a cancellable discovery thread uses ignore rules,
+excludes VCS metadata and symlinks, and reports unreadable entries and a 100,000
+file cap. Tests cover fuzzy ranking, Unicode/spaces, ignore files, stale-query
+suppression, failed opens, cancellation, dirty-buffer preservation and tiny
+terminals. The PTY test finds, opens and edits a second file through the picker.

@@ -4,6 +4,7 @@ pub mod editor;
 pub mod file;
 pub mod input;
 pub mod motion;
+pub mod picker;
 pub mod search;
 pub mod syntax;
 pub mod text;

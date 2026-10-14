@@ -199,6 +199,98 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
     }
+    if editor.view == View::Files
+        && let Some(picker) = &editor.picker
+    {
+        render_picker(
+            frame,
+            picker,
+            theme,
+            Rect::new(area.x, area.y, area.width, height),
+        );
+        if area.height >= 2 && !editor.message_is_error {
+            frame.render_widget(
+                Paragraph::new(visible_text(
+                    "Files: type to filter  ↑/↓ select  Enter open  Esc return",
+                    0,
+                    usize::from(area.width),
+                ))
+                .style(base),
+                Rect::new(area.x, status_y + 1, area.width, 1),
+            );
+        }
+    }
+}
+
+fn render_picker(
+    frame: &mut Frame<'_>,
+    picker: &crate::picker::FilePicker,
+    theme: &Theme,
+    area: Rect,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let style = Style::default().fg(theme.foreground).bg(theme.background);
+    frame.render_widget(Block::default().style(style), area);
+    if area.height > 1 {
+        let title = format!(
+            "Files {}/{}{}{} ({} unreadable) — {}",
+            picker.match_count(),
+            picker.item_count(),
+            if picker.working() { " …" } else { "" },
+            if picker.limited { " [100k limit]" } else { "" },
+            picker.errors,
+            picker.root.display()
+        );
+        frame.render_widget(
+            Paragraph::new(visible_text(&title, 0, usize::from(area.width)))
+                .style(style.fg(theme.muted)),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+    }
+    let prompt_row = u16::from(area.height > 1);
+    let prompt = format!("> {}", picker.query);
+    let cells = display_column(&prompt, prompt.chars().count());
+    let left = cells.saturating_sub(usize::from(area.width).saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(visible_text(&prompt, left, usize::from(area.width)))
+            .style(style.fg(theme.normal)),
+        Rect::new(area.x, area.y + prompt_row, area.width, 1),
+    );
+    frame.set_cursor_position((area.x + (cells - left) as u16, area.y + prompt_row));
+    let rows = area.height.saturating_sub(prompt_row + 1);
+    let top = picker
+        .selected
+        .saturating_sub(u32::from(rows.saturating_sub(1)));
+    for row in 0..rows {
+        let index = top + u32::from(row);
+        let Some(candidate) = picker.candidate(index) else {
+            break;
+        };
+        let row_style = if index == picker.selected {
+            style.bg(theme.selection)
+        } else {
+            style
+        };
+        frame.render_widget(
+            Paragraph::new(visible_text(&candidate.display, 0, usize::from(area.width)))
+                .style(row_style),
+            Rect::new(area.x, area.y + prompt_row + 1 + row, area.width, 1),
+        );
+    }
+    if rows > 0 && picker.match_count() == 0 {
+        let message = if picker.working() {
+            "Finding files…"
+        } else {
+            "No matching files"
+        };
+        frame.render_widget(
+            Paragraph::new(visible_text(message, 0, usize::from(area.width)))
+                .style(style.fg(theme.muted)),
+            Rect::new(area.x, area.y + prompt_row + 1, area.width, 1),
+        );
+    }
 }
 
 fn render_buffers(
