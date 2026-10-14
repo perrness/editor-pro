@@ -1,0 +1,8 @@
+/target/
+__pycache__/
+*.pyc
+/tools/kotlin-lsp/result.json
+/tools/kotlin-lsp/server.stderr.log
+/tools/kotlin-lsp/fixture/.gradle/
+/tools/kotlin-lsp/fixture/build/
+/tools/kotlin-lsp/fixture/target/

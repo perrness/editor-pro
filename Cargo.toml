@@ -1,0 +1,21 @@
+[package]
+name = "editor-pro"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A small terminal-native, Vim-inspired code editor"
+publish = false
+
+[dependencies]
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
+tempfile = "3.23"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,22 @@
+name: Check
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust tooling
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+      - run: cargo build
+      - run: python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+      - run: python3 tools/terminal_smoke.py
