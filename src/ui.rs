@@ -17,14 +17,18 @@ use crate::{
 };
 
 pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
-    editor.document.sync_syntax();
-    editor.search.refresh(&editor.document.buffer);
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
     }
     let base = Style::default().fg(theme.foreground).bg(theme.background);
     frame.render_widget(Block::default().style(base), area);
+    if matches!(editor.view, View::Changes | View::Diff) {
+        crate::git_ui::render(frame, editor, theme);
+        return;
+    }
+    editor.document.sync_syntax();
+    editor.search.refresh(&editor.document.buffer);
     let height = area.height.saturating_sub(2);
     editor.viewport.height = usize::from(height);
     let buffer = &editor.document.buffer;
@@ -106,6 +110,19 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 Rect::new(area.x, area.y + row, gutter, 1),
             );
         }
+        if gutter >= 3
+            && let Some(mark) = editor.git_mark(line_index)
+        {
+            let (symbol, color) = match mark {
+                crate::diff::Mark::Added => ("+", theme.diff_added),
+                crate::diff::Mark::Modified => ("~", theme.diff_modified),
+                crate::diff::Mark::Deleted => ("-", theme.diff_deleted),
+            };
+            frame.render_widget(
+                Paragraph::new(symbol).style(style.fg(color)),
+                Rect::new(area.x, area.y + row, 1, 1),
+            );
+        }
         let line_selected = selection.as_ref().is_some_and(|s| {
             s.linewise && {
                 let anchor_line = buffer.text().char_to_line(editor.selection_anchor.unwrap());
@@ -157,14 +174,18 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
             frame.set_cursor_position((area.x + (cells - offset) as u16, command_area.y));
         } else {
-            let color = if editor.message_is_error {
+            let color = if editor.message_is_error || editor.git.problem().is_some() {
                 theme.error
             } else {
                 theme.muted
             };
             frame.render_widget(
-                Paragraph::new(visible_text(&editor.message, 0, usize::from(area.width)))
-                    .style(base.fg(color)),
+                Paragraph::new(visible_text(
+                    editor.git.problem().unwrap_or(&editor.message),
+                    0,
+                    usize::from(area.width),
+                ))
+                .style(base.fg(color)),
                 command_area,
             );
         }
@@ -478,7 +499,31 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     } else {
         String::new()
     };
+    let right = if area.width >= 70 && editor.git.visible() {
+        let git = format!(
+            "{}→buffer{} {}",
+            editor.git.comparison.label(),
+            if editor.document.buffer.is_modified() {
+                "+"
+            } else {
+                ""
+            },
+            editor.git.summary()
+        );
+        format!(
+            " {} |{}",
+            visible_text(&git, 0, usize::from(area.width) / 3),
+            right
+        )
+    } else {
+        right
+    };
     let width = usize::from(area.width);
+    let right = visible_text(
+        &right,
+        0,
+        width.saturating_sub(mode.len() + identity.len() + modified.len() + external.len() + 3),
+    );
     let name_width = width.saturating_sub(
         mode.len() + identity.len() + modified.len() + external.len() + right.len() + 2,
     );

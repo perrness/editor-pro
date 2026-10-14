@@ -426,3 +426,361 @@ fn slow_git_times_out_and_shutdown_reaps_the_process() {
             .success()
     );
 }
+
+use editor_pro::{
+    editor::{Editor, View, Viewport},
+    file::Document,
+    input::Key,
+    theme::Theme,
+    ui,
+};
+use ratatui::{Terminal, backend::TestBackend};
+fn settle_editor(editor: &mut Editor) {
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        editor.tick();
+        if !editor.git.loading {
+            break;
+        }
+        assert!(Instant::now() < until, "{}", editor.git.summary());
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+fn draw(editor: &mut Editor, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|f| ui::render(f, editor, &Theme::night()))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+#[test]
+fn source_gutters_use_selected_base_and_semantic_colors() {
+    let r = Repo::new();
+    r.write("a", "first\nold\nlast");
+    r.commit();
+    r.write("a", "first\nnew\nlast");
+    r.git(&["add", "a"]);
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    settle_editor(&mut e);
+    assert_eq!(e.git_mark(1), Some(Mark::Modified));
+    let mut terminal = Terminal::new(TestBackend::new(120, 8)).unwrap();
+    let theme = Theme::night();
+    terminal.draw(|f| ui::render(f, &mut e, &theme)).unwrap();
+    assert_eq!(terminal.backend().buffer()[(0, 1)].fg, theme.diff_modified);
+    e.execute_command("gitbase index").unwrap();
+    assert_eq!(e.git_mark(1), None);
+    settle_editor(&mut e);
+    assert_eq!(e.git_mark(1), None);
+    e.document.buffer.goto_line(1, false);
+    e.document.buffer.replace_range(6..10, "");
+    e.document.buffer.commit();
+    e.tick();
+    assert_eq!(e.git_mark(1), None);
+    settle_editor(&mut e);
+    assert_eq!(e.git_mark(1), Some(Mark::Deleted));
+    let shown = draw(&mut e, 140, 8);
+    assert!(shown.contains("S1"));
+    assert!(shown.contains("index"));
+    assert!(shown.contains("[+]"));
+}
+#[test]
+fn diff_close_and_refresh_preserve_dirty_history_cursor_and_viewport() {
+    let r = Repo::new();
+    r.write("a", &"row\n".repeat(80));
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.document.buffer.goto_line(40, true);
+    e.document.buffer.insert("界");
+    e.document.buffer.commit();
+    e.document
+        .buffer
+        .set_cursor(e.document.buffer.cursor(), false);
+    e.viewport = Viewport {
+        top: 35,
+        left: 0,
+        height: 10,
+    };
+    let location = (e.document.buffer.cursor(), e.viewport.clone());
+    let dirty = e.document.buffer.text().to_string();
+    e.execute_command("diff HEAD").unwrap();
+    settle_editor(&mut e);
+    assert!(e.git.diff().unwrap().right_label.contains("UNSAVED"));
+    for key in [Key::Char('j'), Key::Char(']'), Key::Tab, Key::Char('G')] {
+        e.handle_key(key);
+    }
+    for (w, h) in [(130, 20), (42, 8), (1, 1), (1, 3), (130, 20)] {
+        draw(&mut e, w, h);
+        assert_eq!(e.viewport, location.1);
+        assert_eq!(e.document.buffer.cursor(), location.0);
+    }
+    e.execute_command("diff index").unwrap();
+    settle_editor(&mut e);
+    e.handle_key(Key::Char('r'));
+    settle_editor(&mut e);
+    e.handle_key(Key::Escape);
+    assert_eq!(e.view, View::Editing);
+    assert_eq!(e.document.buffer.cursor(), location.0);
+    assert_eq!(e.viewport, location.1);
+    assert_eq!(e.document.buffer.text().to_string(), dirty);
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "row\n".repeat(80));
+    assert!(e.document.buffer.redo());
+    assert_eq!(e.document.buffer.text().to_string(), dirty);
+}
+#[test]
+fn changed_file_navigation_retains_documents_and_inspects_deleted_history() {
+    let r = Repo::new();
+    r.write("a", "a\n");
+    r.write("deleted/sub/file", "history\n");
+    r.write("renamed", "same\n");
+    r.commit();
+    r.git(&["mv", "renamed", "new name"]);
+    fs::remove_dir_all(r.path("deleted")).unwrap();
+    r.write("untracked", "new\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.document.buffer.insert("unsaved");
+    e.document.buffer.commit();
+    let origin = e.document.buffer.cursor();
+    e.execute_command("changes").unwrap();
+    settle_editor(&mut e);
+    let files = e.changed_files();
+    assert_eq!(files.len(), 4);
+    assert!(files[0].label.contains("buffer only"));
+    assert!(files.iter().any(|f| f.label.contains("renamed → new name")));
+    assert!(draw(&mut e, 120, 12).contains("??"));
+    e.git.selected = files.iter().position(|f| f.deleted).unwrap();
+    e.handle_key(Key::Enter);
+    settle_editor(&mut e);
+    assert_eq!(e.view, View::Diff);
+    assert!(draw(&mut e, 120, 12).contains("history"));
+    e.handle_key(Key::Enter);
+    assert!(e.message_is_error);
+    assert_eq!(e.view, View::Diff);
+    e.handle_key(Key::Escape);
+    assert_eq!(e.document.buffer.cursor(), origin);
+    e.execute_command("changes").unwrap();
+    settle_editor(&mut e);
+    e.git.selected = e
+        .changed_files()
+        .iter()
+        .position(|f| f.path == r.path("untracked"))
+        .unwrap();
+    e.handle_key(Key::Enter);
+    assert_eq!(e.document.path(), Some(r.path("untracked").as_path()));
+    e.document.buffer.insert("also dirty");
+    e.document.buffer.commit();
+    e.execute_command("b 1").unwrap();
+    assert!(e.document.buffer.text().to_string().starts_with("unsaved"));
+    assert_eq!(e.document.buffer.cursor(), origin);
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "a\n");
+}
+#[test]
+fn paired_alignment_scroll_and_narrow_fallback_preserve_selection() {
+    let r = Repo::new();
+    r.write("a", "first\nold1\nold2\nlast\n");
+    r.commit();
+    r.write("a", "first\nnew1\nnew2\nnew3\nlast\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.execute_command("diff").unwrap();
+    settle_editor(&mut e);
+    e.handle_key(Key::Tab);
+    let output = draw(&mut e, 130, 15);
+    assert!(e.git.diff_view.as_ref().unwrap().effective_paired);
+    let lines: Vec<_> = output
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(130)
+        .map(|v| v.iter().collect::<String>())
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("old1") && l.contains("new1"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("new3") && !l.contains("old2"))
+    );
+    e.handle_key(Key::Char('j'));
+    e.handle_key(Key::PageDown);
+    let selected = e.git.diff_view.as_ref().unwrap().selected;
+    let narrow = draw(&mut e, 50, 8);
+    assert!(narrow.contains("DIFF inline"));
+    assert_eq!(e.git.diff_view.as_ref().unwrap().selected, selected);
+    draw(&mut e, 130, 8);
+    assert!(e.git.diff_view.as_ref().unwrap().effective_paired);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().selected, selected);
+}
+#[test]
+fn diff_jump_uses_deleted_line_anchor_and_clamps_at_eof() {
+    for (old, new, expected) in [
+        ("first\nkeep\n", "keep\n", 0),
+        ("keep\ntail", "keep", 0),
+        ("only", "", 0),
+    ] {
+        let r = Repo::new();
+        r.write("a", old);
+        r.commit();
+        r.write("a", new);
+        let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+        e.execute_command("diff").unwrap();
+        settle_editor(&mut e);
+        let row = e
+            .git
+            .diff()
+            .unwrap()
+            .rows
+            .iter()
+            .position(|r| r.kind == Kind::Delete)
+            .unwrap();
+        e.git.diff_view.as_mut().unwrap().selected = row;
+        e.jump_diff_source().unwrap();
+        assert_eq!(e.document.buffer.position().0, expected);
+        assert_eq!(e.document.buffer.text().to_string(), new);
+    }
+}
+#[test]
+fn rapid_edits_base_and_buffer_switches_cannot_install_stale_results() {
+    let r = Repo::new();
+    r.write("a", "base");
+    r.write("b", "second");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.tick();
+    for _ in 0..30 {
+        e.document.buffer.insert("x");
+        e.tick();
+        e.execute_command("gitbase missing").unwrap();
+        e.tick();
+    }
+    e.open_buffer(&r.path("b")).unwrap();
+    e.execute_command("gitbase index").unwrap();
+    e.tick();
+    e.document.buffer.insert("LATEST");
+    e.document.buffer.commit();
+    settle_editor(&mut e);
+    let d = e.git.diff().unwrap();
+    assert!(d.right_label.contains("B2@"));
+    assert_eq!(text(d, Kind::Add), ["LATESTsecond"]);
+    assert_eq!(
+        e.git.snapshot.as_ref().unwrap().comparison,
+        Comparison::Index
+    );
+}
+#[test]
+fn external_git_refresh_retains_dirty_text_and_changed_list_selection() {
+    let r = Repo::new();
+    r.write("a", "head\n");
+    r.write("z", "head\n");
+    r.commit();
+    r.write("z", "disk\n");
+    let mut e = Editor::new(Document::open(&r.path("z")).unwrap());
+    e.document.buffer.insert("dirty ");
+    e.document.buffer.commit();
+    e.execute_command("changes").unwrap();
+    settle_editor(&mut e);
+    e.git.selected = e
+        .changed_files()
+        .iter()
+        .position(|f| f.path == r.path("z"))
+        .unwrap();
+    r.write("a", "disk\n");
+    r.git(&["add", "z"]);
+    e.refresh_git();
+    settle_editor(&mut e);
+    assert_eq!(e.changed_files()[e.git.selected].path, r.path("z"));
+    assert!(
+        e.git
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|s| s.index == 'M')
+    );
+    assert_eq!(e.document.buffer.text().to_string(), "dirty disk\n");
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "disk\n");
+}
+#[test]
+fn diff_is_read_only_and_deleted_clean_buffer_still_has_history() {
+    let r = Repo::new();
+    r.write("a", "history\n");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    fs::remove_file(r.path("a")).unwrap();
+    e.execute_command("diff").unwrap();
+    settle_editor(&mut e);
+    assert_eq!(text(e.git.diff().unwrap(), Kind::Delete), ["history"]);
+    for key in [Key::Char('i'), Key::Char('x'), Key::Delete, Key::Char('u')] {
+        e.handle_key(key);
+    }
+    e.paste("bad");
+    assert!(e.execute_command("w").is_err());
+    assert_eq!(e.document.buffer.text().to_string(), "history\n");
+    assert!(!r.path("a").exists());
+    assert!(!e.document.buffer.undo());
+}
+#[test]
+fn unsupported_and_invalid_comparisons_render_as_errors_in_tiny_terminals() {
+    let r = Repo::new();
+    r.write("a", "base");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.execute_command("diff not-a-revision").unwrap();
+    settle_editor(&mut e);
+    assert!(draw(&mut e, 150, 12).contains("Unavailable revision"));
+    for (w, h) in [(1, 1), (1, 2), (2, 3), (5, 8)] {
+        draw(&mut e, w, h);
+    }
+    e.handle_key(Key::Char(':'));
+    for c in "diff HEAD".chars() {
+        e.handle_key(Key::Char(c));
+    }
+    e.handle_key(Key::Enter);
+    settle_editor(&mut e);
+    assert!(e.git.diff().is_some());
+    e.handle_key(Key::Escape);
+    e.new_buffer();
+    settle_editor(&mut e);
+    assert!(!e.git.loading);
+}
+#[test]
+fn multiple_hunks_navigation_and_base_refresh_keep_source_anchor() {
+    let r = Repo::new();
+    let original = (0..60).map(|n| format!("row{n}\n")).collect::<String>();
+    r.write("a", &original);
+    r.commit();
+    r.write(
+        "a",
+        &original
+            .replace("row2\n", "changed2\n")
+            .replace("row50\n", "changed50\n"),
+    );
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.execute_command("diff").unwrap();
+    settle_editor(&mut e);
+    assert_eq!(e.git.diff().unwrap().hunks.len(), 2);
+    e.handle_key(Key::Char(']'));
+    let anchor = e.git.diff_view.as_ref().unwrap().anchor;
+    assert!(anchor > 40);
+    e.execute_command("diff index").unwrap();
+    settle_editor(&mut e);
+    let v = e.git.diff_view.as_ref().unwrap();
+    assert!(
+        e.git.diff().unwrap().rows[v.selected]
+            .anchor
+            .abs_diff(anchor)
+            < 2
+    );
+    e.handle_key(Key::Char('['));
+    assert!(e.git.diff_view.as_ref().unwrap().anchor < 10);
+}

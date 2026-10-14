@@ -35,6 +35,8 @@ Objects: iw/aw, iW/aW, quotes, parentheses, brackets, braces (e.g. ciw, di{)
 Search: / or ?, Enter, n/N; Escape cancels prompts and selections
 Files: Ctrl-p or :files [directory]; :e path, :enew, :bn/:bp, :b ID, :ls
 Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh, :help
+Git: :changes, :diff HEAD|index|REV|staged, :gitbase REV, :gitrefresh, :gnext/:gprev
+Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refresh
 Themes: :theme tokyo-night|catppuccin|gruvbox
 
 Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
@@ -132,7 +134,11 @@ fn event_loop(
             terminal.draw(|frame| ui::render(frame, editor, &theme))?;
             redraw = false;
         }
-        let poll_ms = if editor.view == View::Files { 16 } else { 200 };
+        let poll_ms = if editor.view == View::Files || editor.git.loading {
+            16
+        } else {
+            200
+        };
         if event::poll(Duration::from_millis(poll_ms))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -148,6 +154,7 @@ fn event_loop(
                 Event::Resize(_, _) => redraw = true,
                 Event::FocusGained => {
                     editor.check_external();
+                    editor.refresh_git();
                     redraw = true;
                 }
                 _ => {}

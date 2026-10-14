@@ -596,7 +596,9 @@ fn blob(
     })
 }
 fn working(request: &Request) -> Result<(Vec<u8>, String, bool), String> {
-    if let Some(buffer) = &request.buffer {
+    if let Some(buffer) = &request.buffer
+        && (buffer.dirty || request.path.try_exists().map_err(err)?)
+    {
         if buffer.text.len_bytes() > CONTENT_LIMIT {
             return Err("Unsupported diff: buffer exceeds 2 MiB".into());
         }

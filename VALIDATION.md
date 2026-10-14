@@ -220,3 +220,21 @@ Unicode, missing final newlines, paired coordinates, stale requests, timeouts an
 shutdown process cleanup. Inspection tests assert unchanged worktree/index bytes.
 No language server was provisioned; `intellij-server` and `kotlin-lsp` remain
 missing. macOS and physical-terminal validation remain unobserved.
+
+## M3 contextual navigation and rendering slice
+
+All 115 Rust tests (92 existing plus 23 Git/editor regressions), formatting and
+Clippy pass. The expanded Linux harness passes all 13 PTY sessions. The new
+sessions cover changed-file selection, historical deletions, staged/index/HEAD
+comparisons, missing revisions, unsaved text, paired layout, narrow resizing,
+source return, and unchanged index bytes. All sessions check terminal restoration.
+The harness now waits for fresh output after asynchronous view changes; a first
+run exposed its earlier assumption that Git would always finish in 150 ms.
+
+The Git responsiveness example completes on a temporary repository containing
+2,501 tracked files, 100 staged, 100 unstaged and 100 untracked paths. An initial
+run observed 139.67 ms status/comparison completion and 135.55 ms after a burst of
+150 edits (including the 75 ms debounce). Navigation key/tick/draw p95 was 0.79 ms,
+max 2.69 ms; typing p95 4.11 ms, max 5.86 ms. It uses a 120×32 TestBackend and an
+active 3,001-line Rust buffer. Setup, terminal transport and existing synchronous
+disk checks are excluded; these numbers are observations, not timing guarantees.

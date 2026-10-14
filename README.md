@@ -1,14 +1,14 @@
 # editor-pro
 
-A terminal-native, Vim-inspired code editor in Rust. **Milestone 2 is implemented:**
+A terminal-native, Vim-inspired code editor in Rust. **Milestones 1–3 are implemented:**
 incremental highlighting for eight languages, Visual selections, composable
 motions/operators, search, multiple buffers, fuzzy file navigation, and three
-dark themes. Editing and file safety remain independent of terminal rendering.
+dark themes, plus asynchronous Git status, source gutters, changed-file navigation,
+and inline/paired diffs. Editing and file safety remain independent of terminal rendering.
 
-**Validation:** Linux builds, formatting, Clippy, all 92 Rust tests, seven Python
-probe tests, ten PTY sessions, and a release performance smoke run pass. macOS,
-physical-terminal visual inspection, and real Kotlin LSP feasibility remain open.
-See [VALIDATION.md](VALIDATION.md) for measurements and acceptance scope.
+**Validation:** the baseline and Git workflow have Linux automated coverage.
+macOS, physical-terminal visual inspection, and real Kotlin LSP feasibility remain
+open. See [VALIDATION.md](VALIDATION.md) for actual checks, measurements and scope.
 
 ## Build and run
 
@@ -82,6 +82,72 @@ errors or its 100,000-file limit. Matching uses Nucleo's smart case/normalizatio
 `:ls` opens the buffer list; use `j`/`k` or arrows, Enter to switch, Escape to
 return. Switching preserves unsaved text, undo history, cursor and viewport.
 
+## Git-aware editing
+
+Git is optional; install Git on PATH to enable inspection. No language server is
+needed. This workflow is read-only: it has no staging, committing, checkout or
+reset commands. Run the editor from any directory and open a file in a repository;
+discovery follows its containing repository, including linked worktrees.
+
+| Command | Action |
+| --- | --- |
+| `:changes` | List repository disk/index changes and separately labeled unsaved buffers |
+| `:diff [HEAD\|index\|REV]` | Compare that base with the current file's working content |
+| `:diff staged` | Inspect staged changes: HEAD versus index, excluding unsaved edits |
+| `:gitbase HEAD\|index\|REV` | Choose the source-gutter and subsequent diff baseline |
+| `:gitrefresh` | Request fresh status and comparison data |
+| `:gnext`, `:gprev` | Open next/previous changed file, retaining other buffers |
+| `:diffclose` | Close a diff and restore its originating source location |
+
+In **Changes**, `j`/`k` or arrows select; Enter opens source, or a historical diff
+for a deleted file; `d` opens a diff; `r` refreshes; Escape returns. `XY` reports
+index then disk status (`M`, `A`, `D`, `R`, `?`, or conflict flags; `.` is unchanged).
+Renames show both paths. `B<ID>+ UNSAVED` is independent of those Git flags; a
+buffer-only row can appear even when Git's disk/index status is clean.
+
+In a **diff**, `j`/`k` or arrows scroll, Page Up/Down or Ctrl-u/d move half a screen,
+`g`/`G` go to the first/last row, `[`/`]` navigate hunk headers, and `h`/`l` scroll
+horizontally. Tab toggles aligned, synchronized old/new panes. Below 100 columns,
+the paired view falls back to inline automatically; selection survives resizing.
+`1`, `2`, `3` select HEAD, index, or staged; `:diff REV` selects a commit-ish
+(e.g. `HEAD~2` or `refs/heads/main`). `n`/`p` inspect the next/previous changed
+file within the diff, and `r` refreshes.
+
+**Escape restores the original buffer, cursor and viewport**, including after
+browsing other changed files. Enter instead jumps to the selected current source
+line. Deleted-only lines anchor to the following surviving line, clamped to EOF;
+a wholly deleted file without an open dirty buffer has no current source, so it
+stays inspectable and explains why jumping is unavailable. Staged coordinates
+are mapped through working/unsaved changes before jumping. These are contextual,
+read-only views, not another editing mode; `:w` in a diff is refused.
+
+Both sides are labeled with paths and resolved commit/blob identities. Working
+comparisons use open buffer text, including `UNSAVED` edits; otherwise they read
+disk. A clean loaded buffer may differ from externally changed disk and is labeled
+as such. If the file was deleted, a clean loaded copy does not hide that deletion;
+a dirty copy still participates as unsaved content. Staged comparisons always use
+index content on the right. Neither comparison stages or saves anything. Unborn
+HEAD is an empty baseline. Untracked files are additions. Empty/mode-only changes
+have no text hunks. Missing final newlines are annotated. Binary/non-UTF-8 files,
+symlinks/submodules and unresolved conflicts have explicit unsupported responses.
+
+Source gutters use theme colors for `+` added, `~` modified and `-` deleted lines,
+including EOF deletions. The statusline shows branch or detached identity and
+`S` staged, `W` unstaged, `?` untracked and `!` conflicted file counts. Wider
+terminals show more detail. These counts describe disk/index only; `[+]` means an
+unsaved buffer. Closing a staged diff returns source gutters to HEAD.
+
+Edits, saves, buffer/base changes and focus gain request asynchronous updates.
+Idle polling notices external Git changes about every two seconds. Requests
+coalesce after 75 ms of quiet; a single worker cancels superseded subprocesses and
+discards obsolete results. Loading/stale/error states are visible; stale gutters
+and source jumps are withheld. Refresh never reloads text or changes undo history.
+`r` / `:gitrefresh` retries errors. Inspection has a cooperative five-second job
+budget, 2 MiB per content side, 16 MiB command output and 100,000-file/diff-row
+limits. Heavy/remote repositories may exceed them. Renames follow Git's detection;
+untracked moves may appear as deletion plus addition. Submodule interiors are
+ignored. Existing synchronous file loading/saving/disk checks remain separate.
+
 ## Commands and themes
 
 | Command | Action |
@@ -127,7 +193,7 @@ guarantees. There are no embedded-language injections or semantic LSP tokens.
 Large Markdown documents are slower; measured results are in the validation log.
 
 - This is a Vim-inspired subset: no dot-repeat, named/system-clipboard registers,
-  block Visual selection, regex search, macros, splits, configuration file, Git,
+  block Visual selection, regex search, macros, general splits, configuration file,
   integrated LSP, review, AI, plugins or GUI. Escape Visual mode before putting.
   Counts are capped at 10,000.
 - UTF-8 only; NUL-containing files, non-regular files and files over 64 MiB are
@@ -159,6 +225,7 @@ cargo build --locked
 python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
 python3 tools/terminal_smoke.py
 cargo run --locked --release --example performance
+cargo run --locked --release --example git_performance
 ```
 
 `Cargo.lock` records resolved dependencies. CI is configured for Linux and macOS;

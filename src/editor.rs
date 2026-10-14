@@ -72,6 +72,8 @@ pub enum View {
         selected: usize,
     },
     Files,
+    Changes,
+    Diff,
 }
 
 pub struct Editor {
@@ -81,6 +83,7 @@ pub struct Editor {
     pub(crate) buffers: BTreeMap<usize, BufferSlot>,
     pub view: View,
     pub picker: Option<FilePicker>,
+    pub git: crate::git_view::GitState,
     pub theme: ThemeName,
     pub mode: Mode,
     pub viewport: Viewport,
@@ -106,6 +109,7 @@ impl Editor {
             buffers: BTreeMap::new(),
             view: View::Editing,
             picker: None,
+            git: crate::git_view::GitState::default(),
             theme: ThemeName::default(),
             mode: Mode::Normal,
             viewport: Viewport::default(),
@@ -124,6 +128,10 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if matches!(self.view, View::Changes | View::Diff) && self.mode != Mode::Command {
+            self.git_key(key);
+            return;
+        }
         if self.view == View::Files {
             self.picker_key(key);
             return;
@@ -800,6 +808,11 @@ impl Editor {
         let (name, argument) = command
             .split_once(char::is_whitespace)
             .map_or((command, ""), |(name, argument)| (name, argument.trim()));
+        if self.view == View::Diff && matches!(name, "w" | "wq") {
+            return Err(io::Error::other(
+                "Diff is read-only; Enter jumps to source, Escape returns",
+            ));
+        }
         match name {
             "w" | "wq" => {
                 let path = if argument.is_empty() {
@@ -827,6 +840,22 @@ impl Editor {
                 };
                 self.open_picker(&root)?;
             }
+            "changes" if argument.is_empty() => self.open_changes(),
+            "diff" => {
+                let path = self.git.diff_view.as_ref().map(|v| v.path.clone()).or_else(|| self.document.path().map(Path::to_path_buf)).ok_or_else(|| io::Error::other("Name a file before comparing"))?;
+                let comparison = if argument.is_empty() { self.git.comparison.clone() } else { crate::git::Comparison::parse(argument) };
+                self.open_diff(path, comparison);
+            }
+            "gitbase" => {
+                let comparison = crate::git::Comparison::parse(argument);
+                if comparison == crate::git::Comparison::Staged { return Err(io::Error::other("Use :diff staged for HEAD versus index; source bases are HEAD, index or REV")); }
+                self.git.comparison = comparison;
+                self.refresh_git();
+            }
+            "gitrefresh" if argument.is_empty() => self.refresh_git(),
+            "gnext" if argument.is_empty() => self.cycle_changed_file(false)?,
+            "gprev" if argument.is_empty() => self.cycle_changed_file(true)?,
+            "diffclose" if argument.is_empty() => self.close_diff(),
             "theme" => {
                 if !argument.is_empty() {
                     self.theme = ThemeName::parse(argument).ok_or_else(|| {
@@ -860,7 +889,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "i insert  v/V select  d/c/y + motion  p paste  u undo  / search  n/N  Ctrl-p files  :ls buffers  :w save  :q quit  :theme NAME; README.md has all keys",
+                "i insert  v/V select  d/c/y + motion  p paste  u undo  / search  n/N  Ctrl-p files  :ls buffers  :changes  :diff HEAD|index|REV|staged  :w save  :q quit; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),
@@ -886,6 +915,9 @@ impl Editor {
         self.view = View::Editing;
         self.picker = None;
         self.search.invalidate();
+        self.git.diff_view = None;
+        self.git.snapshot = None;
+        self.git.invalidate();
         self.document.buffer.clamp_cursor(false);
     }
 

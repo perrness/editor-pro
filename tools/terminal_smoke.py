@@ -8,6 +8,7 @@ import pty
 import select
 import signal
 import struct
+import subprocess
 import sys
 import tempfile
 import termios
@@ -62,8 +63,17 @@ def run_session(binary, path, commands, expected):
         while b"NORMAL" not in output and time.monotonic() < startup:
             pump(0.05)
         assert b"NORMAL" in output, f"Editor never rendered: {output!r}"
+        command_output_start = len(output)
         for index, command in enumerate(commands):
-            if callable(command):
+            if not isinstance(command, tuple):
+                command_output_start = len(output)
+            if isinstance(command, tuple):
+                marker, timeout = command
+                deadline = time.monotonic() + timeout
+                while marker not in output[command_output_start:] and time.monotonic() < deadline:
+                    pump(0.02)
+                assert marker in output[command_output_start:], f"Missing PTY marker {marker!r}: {output!r}"
+            elif callable(command):
                 command(master, slave, pid)
             else:
                 os.write(master, command)
@@ -152,7 +162,57 @@ def main():
                                   b"\x1b[I", b":w\r", f":w {recovery}\r".encode(), b":q\r"],
                     b"external\r\n")
         assert recovery.read_bytes() == b"local original\r\n"
-    print("PASS: 10 PTY sessions; modal editing, search, buffers, picker, themes, resize, paste, disk conflicts, and restoration")
+        repo = Path(directory) / "git project 界"
+        repo.mkdir()
+        def git(*args):
+            environment = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+                               GIT_AUTHOR_DATE="2001-01-01T00:00:00Z", GIT_COMMITTER_DATE="2001-01-01T00:00:00Z")
+            subprocess.run(["git", "-C", str(repo), *args], env=environment, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        git("init", "-b", "main")
+        git("config", "user.name", "PTY Test")
+        git("config", "user.email", "pty@example.invalid")
+        git("config", "commit.gpgsign", "false")
+        git("config", "core.autocrlf", "false")
+        source = repo / "source.rs"
+        second = repo / "second.rs"
+        gone = repo / "gone.rs"
+        rows = [f"row{index}\n" for index in range(60)]
+        source.write_text("".join(rows))
+        second.write_text("second\n")
+        gone.write_text("historical deletion\n")
+        git("add", "--all")
+        git("commit", "-m", "base")
+        rows[2] = "STAGED change\n"
+        source.write_text("".join(rows))
+        git("add", "source.rs")
+        rows[50] = "WORKING change\n"
+        source.write_text("".join(rows))
+        second.write_text("changed second\n")
+        gone.unlink()
+        (repo / "untracked.rs").write_text("untracked addition\n")
+        index_before = (repo / ".git" / "index").read_bytes()
+        expected_rows = rows.copy()
+        expected_rows[0] = "LOCAL" + expected_rows[0]
+        expected_rows[29] = "RETURN" + expected_rows[29]
+        output = run_session(binary, source, [b"iLOCAL", b"\x1b", b"30G0", b":diff HEAD\r",
+            (b"UNSAVED", 10), b"\t", resize(24, 130), (b"paired", 10), b"]", b"[",
+            resize(10, 45), b"\x06", b"r", resize(3, 1), resize(24, 130), b"\x1b",
+            b"iRETURN", b"\x1b", b":wq\r"], "".join(expected_rows).encode())
+        assert b"OLD " in output and b"NEW " in output
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        output = run_session(binary, source, [b":changes\r", (b"gone.rs", 10), b"\r",
+            (b"historical deletion", 10), b"\r", b"\x1b", b":changes\r", (b"second.rs", 10), b"j", b"\r",
+            b"iSECOND ", b"\x1b", b":w\r", b":gnext\r", b":gprev\r", b":q\r"],
+            "".join(expected_rows).encode())
+        assert second.read_bytes() == b"SECOND changed second\n", (second.read_bytes(), output[-12000:])
+        assert not gone.exists()
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        output = run_session(binary, source, [b":diff staged\r", (b"index@", 10), b":diff index\r",
+            b":diff HEAD\r", b":diff missing-revision\r", (b"Unavailable revision", 10),
+            b":diff HEAD\r", b"n", b"r", b"\x1b", b":q\r"], "".join(expected_rows).encode())
+        assert (repo / ".git" / "index").read_bytes() == index_before
+    print("PASS: 13 PTY sessions; modal editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git changes/diffs/resize/return, and restoration")
     return 0
 
 

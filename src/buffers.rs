@@ -184,7 +184,9 @@ impl Editor {
                 )));
             }
         }
-        self.document.save(destination)
+        self.document.save(destination)?;
+        self.refresh_git();
+        Ok(())
     }
 
     pub(crate) fn ensure_all_saved(&self, force: bool) -> io::Result<()> {
