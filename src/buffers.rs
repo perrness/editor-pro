@@ -20,6 +20,19 @@ pub struct BufferInfo {
 }
 
 impl Editor {
+    pub fn buffer_count(&self) -> usize {
+        self.buffers.len() + 1
+    }
+
+    pub fn dirty_buffer_count(&self) -> usize {
+        usize::from(self.document.buffer.is_modified())
+            + self
+                .buffers
+                .values()
+                .filter(|slot| slot.document.buffer.is_modified())
+                .count()
+    }
+
     pub fn buffer_infos(&self) -> Vec<BufferInfo> {
         let mut infos: Vec<_> = std::iter::once((self.active_buffer_id, &self.document))
             .chain(self.buffers.iter().map(|(id, slot)| (*id, &slot.document)))

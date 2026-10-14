@@ -8,6 +8,7 @@ use crate::{
     picker::FilePicker,
     search::Search,
     text::pop_grapheme,
+    theme::ThemeName,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +81,7 @@ pub struct Editor {
     pub(crate) buffers: BTreeMap<usize, BufferSlot>,
     pub view: View,
     pub picker: Option<FilePicker>,
+    pub theme: ThemeName,
     pub mode: Mode,
     pub viewport: Viewport,
     pub command: String,
@@ -104,6 +106,7 @@ impl Editor {
             buffers: BTreeMap::new(),
             view: View::Editing,
             picker: None,
+            theme: ThemeName::default(),
             mode: Mode::Normal,
             viewport: Viewport::default(),
             command: String::new(),
@@ -150,6 +153,38 @@ impl Editor {
                     || (self.mode == Mode::Search && self.search_mode == Mode::VisualLine),
             )
         })
+    }
+
+    pub fn pending_label(&self) -> String {
+        let mut label = String::new();
+        if let Some(operator) = self.pending.operator {
+            if self.pending.operator_count > 0 {
+                label.push_str(&self.pending.operator_count.to_string());
+            }
+            label.push(match operator {
+                Operator::Delete => 'd',
+                Operator::Change => 'c',
+                Operator::Yank => 'y',
+            });
+        }
+        if self.pending.count > 0 {
+            label.push_str(&self.pending.count.to_string());
+        }
+        if self.pending.g {
+            label.push('g');
+        }
+        if let Some(around) = self.pending.object {
+            label.push(if around { 'a' } else { 'i' });
+        }
+        if let Some((backward, till)) = self.pending.find {
+            label.push(match (backward, till) {
+                (false, false) => 'f',
+                (true, false) => 'F',
+                (false, true) => 't',
+                (true, true) => 'T',
+            });
+        }
+        label
     }
 
     fn count(&self) -> usize {
@@ -791,6 +826,17 @@ impl Editor {
                     argument.into()
                 };
                 self.open_picker(&root)?;
+            }
+            "theme" => {
+                if !argument.is_empty() {
+                    self.theme = ThemeName::parse(argument).ok_or_else(|| {
+                        io::Error::other("Themes: tokyo-night, catppuccin, gruvbox")
+                    })?;
+                }
+                self.info(&format!(
+                    "Theme: {}. Available: tokyo-night, catppuccin, gruvbox",
+                    self.theme.name()
+                ));
             }
             "enew" if argument.is_empty() => self.new_buffer(),
             "bn" | "bnext" if argument.is_empty() => self.cycle_buffer(false)?,

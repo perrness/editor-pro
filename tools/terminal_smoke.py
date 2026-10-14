@@ -27,6 +27,9 @@ def run_session(binary, path, commands, expected):
             os.dup2(slave, descriptor)
         if slave > 2:
             os.close(slave)
+        os.environ["TERM"] = "xterm-256color"
+        os.environ["COLORTERM"] = "truecolor"
+        os.environ.pop("NO_COLOR", None)
         os.execv(str(binary), [str(binary), str(path)])
     output = bytearray()
     reaped = False
@@ -81,6 +84,7 @@ def run_session(binary, path, commands, expected):
         assert b"\x1b[?1049l" in output, "Alternate screen was not left"
         assert b"\x1b[?2004l" in output, "Bracketed paste was not disabled"
         assert path.read_bytes() == expected, path.read_bytes()
+        return bytes(output)
     finally:
         if not reaped:
             os.killpg(pid, signal.SIGKILL)
@@ -121,6 +125,10 @@ def main():
                                   b"iC", b"\x1b", b":w\r", b":b 1\r", b":q\r"],
                     b"Aalpha\r\n")
         assert second.read_bytes() == b"CBbeta\n"
+        output = run_session(binary, path, [b":theme catppuccin\r", b":theme gruvbox\r",
+                                            b":theme tokyo-night\r", b":q\r"], b"Aalpha\r\n")
+        for background in [b"48;2;30;30;46", b"48;2;40;40;40", b"48;2;26;27;38"]:
+            assert background in output, f"Theme background was not rendered: {background!r}"
     print("PASS: real terminal editing, undo/redo, saving, dirty quit guard, and restoration")
     return 0
 

@@ -403,7 +403,24 @@ fn styled_text(
 fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Rect) {
     let style = Style::default().fg(theme.foreground).bg(theme.status);
     frame.render_widget(Block::default().style(style), area);
-    let mode = format!(" {} ", editor.mode.label());
+    let label = if area.width >= 28 {
+        editor.mode.label()
+    } else {
+        match editor.mode {
+            Mode::Normal => "N",
+            Mode::Insert => "I",
+            Mode::Visual => "V",
+            Mode::VisualLine => "VL",
+            Mode::Command => ":",
+            Mode::Search => "/",
+        }
+    };
+    let mode = format!(" {label} ");
+    let identity = if area.width >= 40 {
+        format!(" [B{}]", editor.active_buffer_id)
+    } else {
+        String::new()
+    };
     let modified = if editor.document.buffer.is_modified() {
         " [+]"
     } else {
@@ -421,21 +438,50 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
         .nth(column)
         .map_or(text.len(), |(i, _)| i);
     let column = text[..byte].graphemes(true).count() + 1;
-    let right = if area.width >= 55 {
+    let percent = (line + 1) * 100 / editor.document.buffer.line_count();
+    let syntax = &editor.document.syntax;
+    let language = format!(
+        "{}{}",
+        syntax.language,
+        if syntax.fallback.is_some() {
+            "[plain]"
+        } else {
+            ""
+        }
+    );
+    let pending = editor.pending_label();
+    let pending = if pending.is_empty() {
+        String::new()
+    } else {
+        format!("{pending} ")
+    };
+    let right = if area.width >= 100 {
         format!(
-            " {}:{}  UTF-8 {} ",
+            " {pending}{}buf {}dirty | {language} UTF-8 {} | {}:{} {percent}% ",
+            editor.buffer_count(),
+            editor.dirty_buffer_count(),
+            editor.document.buffer.newline_name(),
             line + 1,
-            column,
-            editor.document.buffer.newline_name()
+            column
         )
-    } else if area.width >= 25 {
-        format!(" {}:{} ", line + 1, column)
+    } else if area.width >= 70 {
+        format!(
+            " {pending}{language} UTF-8 {} {}:{} {percent}% ",
+            editor.document.buffer.newline_name(),
+            line + 1,
+            column
+        )
+    } else if area.width >= 40 {
+        format!(" {pending}{}:{} {percent}% ", line + 1, column)
+    } else if area.width >= 20 {
+        format!(" {pending}{}:{} ", line + 1, column)
     } else {
         String::new()
     };
     let width = usize::from(area.width);
-    let name_width =
-        width.saturating_sub(mode.len() + modified.len() + external.len() + right.len() + 2);
+    let name_width = width.saturating_sub(
+        mode.len() + identity.len() + modified.len() + external.len() + right.len() + 2,
+    );
     let name = editor.document.display_name();
     let name_cells = display_column(&name, name.chars().count());
     let name = visible_text(&name, name_cells.saturating_sub(name_width), name_width);
@@ -447,6 +493,7 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
                 .bg(theme.mode_color(editor.mode))
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(identity, style.fg(theme.muted)),
         Span::raw(format!(" {name}")),
         Span::styled(modified, style.fg(theme.modified)),
         Span::styled(external, style.fg(theme.error)),

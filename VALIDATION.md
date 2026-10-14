@@ -84,3 +84,13 @@ excludes VCS metadata and symlinks, and reports unreadable entries and a 100,000
 file cap. Tests cover fuzzy ranking, Unicode/spaces, ignore files, stale-query
 suppression, failed opens, cancellation, dirty-buffer preservation and tiny
 terminals. The PTY test finds, opens and edits a second file through the picker.
+
+## M2 slice 6 — Themes and statusline
+
+Formatting, Clippy, all 88 Rust tests and the extended PTY test passed. Tokyo
+Night, Catppuccin and Gruvbox-inspired palettes color syntax, selections, search,
+modes and contextual views. Status rendering reports buffer identity/count,
+dirty buffers, language/plain fallback, EOL/encoding, grapheme column, position
+and pending operators, with compact layouts for narrow terminals. The PTY test
+switches all three themes and verifies actual RGB output; its child environment
+now explicitly models a truecolor terminal rather than inheriting NO_COLOR.

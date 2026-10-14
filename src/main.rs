@@ -9,9 +9,7 @@ use std::{
 use editor_pro::{
     editor::{Editor, Mode, View},
     file::Document,
-    input,
-    theme::Theme,
-    ui,
+    input, ui,
 };
 use ratatui::{
     Terminal,
@@ -81,7 +79,6 @@ fn run() -> io::Result<()> {
         editor.open_buffer(&path)?;
     }
     editor.switch_buffer(1)?;
-    let theme = Theme::night();
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = restore_terminal();
@@ -98,7 +95,7 @@ fn run() -> io::Result<()> {
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
-    let result = event_loop(&mut terminal, &mut editor, &theme);
+    let result = event_loop(&mut terminal, &mut editor);
     drop(terminal);
     let restored = restore_terminal();
     // Drop is a fallback for early returns; restoration is deliberately idempotent.
@@ -109,7 +106,6 @@ fn run() -> io::Result<()> {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     editor: &mut Editor,
-    theme: &Theme,
 ) -> io::Result<()> {
     let mut last_check = Instant::now();
     let mut previous_mode = None;
@@ -127,7 +123,8 @@ fn event_loop(
                 execute!(stdout(), shape)?;
                 previous_mode = Some(editor.mode);
             }
-            terminal.draw(|frame| ui::render(frame, editor, theme))?;
+            let theme = editor.theme.palette();
+            terminal.draw(|frame| ui::render(frame, editor, &theme))?;
             redraw = false;
         }
         let poll_ms = if editor.view == View::Files { 16 } else { 200 };

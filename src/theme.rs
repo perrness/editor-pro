@@ -3,7 +3,41 @@ use ratatui::style::Color;
 use crate::editor::Mode;
 use crate::syntax::Highlight;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThemeName {
+    #[default]
+    TokyoNight,
+    Catppuccin,
+    Gruvbox,
+}
+
+impl ThemeName {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "tokyo-night" => Some(Self::TokyoNight),
+            "catppuccin" => Some(Self::Catppuccin),
+            "gruvbox" => Some(Self::Gruvbox),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::TokyoNight => "tokyo-night",
+            Self::Catppuccin => "catppuccin",
+            Self::Gruvbox => "gruvbox",
+        }
+    }
+    pub fn palette(self) -> Theme {
+        match self {
+            Self::TokyoNight => Theme::night(),
+            Self::Catppuccin => Theme::catppuccin(),
+            Self::Gruvbox => Theme::gruvbox(),
+        }
+    }
+}
+
 /// Semantic palette; rendering code never chooses literal colors.
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub background: Color,
     pub foreground: Color,
@@ -51,6 +85,54 @@ impl Theme {
         }
     }
 
+    pub fn catppuccin() -> Self {
+        Self {
+            background: rgb(0x1e1e2e),
+            foreground: rgb(0xcdd6f4),
+            muted: rgb(0x6c7086),
+            current_line: rgb(0x313244),
+            status: rgb(0x181825),
+            normal: rgb(0x89b4fa),
+            insert: rgb(0xa6e3a1),
+            command: rgb(0xcba6f7),
+            error: rgb(0xf38ba8),
+            modified: rgb(0xf9e2af),
+            comment: rgb(0x6c7086),
+            keyword: rgb(0xcba6f7),
+            string: rgb(0xa6e3a1),
+            number: rgb(0xfab387),
+            function: rgb(0x89b4fa),
+            type_name: rgb(0x94e2d5),
+            property: rgb(0x89dceb),
+            selection: rgb(0x45475a),
+            search: rgb(0x665a3a),
+        }
+    }
+
+    pub fn gruvbox() -> Self {
+        Self {
+            background: rgb(0x282828),
+            foreground: rgb(0xebdbb2),
+            muted: rgb(0x928374),
+            current_line: rgb(0x32302f),
+            status: rgb(0x3c3836),
+            normal: rgb(0x83a598),
+            insert: rgb(0xb8bb26),
+            command: rgb(0xd3869b),
+            error: rgb(0xfb4934),
+            modified: rgb(0xfabd2f),
+            comment: rgb(0x928374),
+            keyword: rgb(0xfb4934),
+            string: rgb(0xb8bb26),
+            number: rgb(0xd3869b),
+            function: rgb(0xfabd2f),
+            type_name: rgb(0x8ec07c),
+            property: rgb(0x83a598),
+            selection: rgb(0x504945),
+            search: rgb(0x665c20),
+        }
+    }
+
     pub fn highlight(&self, kind: Highlight) -> Color {
         match kind {
             Highlight::Comment => self.comment,
@@ -73,4 +155,8 @@ impl Theme {
             Mode::Command | Mode::Search => self.command,
         }
     }
+}
+
+fn rgb(value: u32) -> Color {
+    Color::Rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
