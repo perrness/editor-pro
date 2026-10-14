@@ -288,6 +288,29 @@ impl Buffer {
         self.clamp_cursor(insert);
     }
 
+    pub fn move_horizontal(&mut self, delta: isize, insert: bool) {
+        let (row, column) = self.position();
+        let line = self.line(row);
+        let index = line
+            .graphemes(true)
+            .scan(0, |offset, g| {
+                let start = *offset;
+                *offset += g.chars().count();
+                Some(start)
+            })
+            .take_while(|start| *start < column)
+            .count();
+        let target = index.saturating_add_signed(delta);
+        self.cursor = self.text.line_to_char(row)
+            + line
+                .graphemes(true)
+                .take(target)
+                .map(|g| g.chars().count())
+                .sum::<usize>();
+        self.desired_column = None;
+        self.clamp_cursor(insert);
+    }
+
     pub fn move_vertical(&mut self, delta: isize, insert: bool) {
         let (line, column) = self.position();
         let goal = self

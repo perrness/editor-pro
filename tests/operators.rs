@@ -269,3 +269,31 @@ fn empty_line_end_operator_does_not_join_lines_and_backward_find_is_inclusive() 
     keys(&mut e, "u$dTb");
     assert_eq!(text(&e), "ab");
 }
+
+#[test]
+fn repeated_till_search_skips_the_adjacent_previous_target() {
+    let mut e = editor("a,b,c,d");
+    keys(&mut e, "t,;;");
+    assert_eq!(e.document.buffer.cursor(), 4);
+    let mut e = editor("a,b,c,d");
+    keys(&mut e, "$T,;;");
+    assert_eq!(e.document.buffer.cursor(), 2);
+}
+#[test]
+fn linewise_register_can_put_an_empty_line_into_an_empty_buffer() {
+    let mut e = editor("");
+    keys(&mut e, "yyp");
+    assert_eq!(text(&e), "\n");
+    keys(&mut e, "u");
+    assert_eq!(text(&e), "");
+}
+#[test]
+fn large_horizontal_counts_are_grapheme_based_and_clamped() {
+    let mut e = editor(&"界".repeat(12_000));
+    keys(&mut e, "10000l");
+    assert_eq!(e.document.buffer.cursor(), 10_000);
+    keys(&mut e, "10000x");
+    assert_eq!(e.document.buffer.text().len_chars(), 10_000);
+    keys(&mut e, "u");
+    assert_eq!(e.document.buffer.text().len_chars(), 12_000);
+}

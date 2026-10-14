@@ -94,3 +94,28 @@ dirty buffers, language/plain fallback, EOL/encoding, grapheme column, position
 and pending operators, with compact layouts for narrow terminals. The PTY test
 switches all three themes and verifies actual RGB output; its child environment
 now explicitly models a truecolor terminal rather than inheriting NO_COLOR.
+
+## Final hardening and regression coverage
+
+All **92 Rust tests** pass after the six feature slices. Final hardening fixes
+repeated `t`/`T` searches stopping at the adjacent prior target, putting an empty
+line into an empty buffer, and repeated full-line segmentation for counted
+horizontal motions/deletes. Each has a regression test. Existing mixed-action
+tests continue checking grapheme boundaries after thousands of operations.
+
+The first release performance run exposed a Markdown inline-parser timeout:
+combining separate inline ranges in one parse could treat them as one paragraph.
+The final implementation uses the upstream Markdown block/inline parser, with
+Tree-sitter 0.26 as required by that API. A new regression checks separate
+paragraph delimiters, table-cell emphasis, blockquotes, Unicode/CRLF edits and
+incremental/fresh equivalence through undo/redo. The completed release workload
+has no syntax fallback in any of the eight languages.
+
+The PTY harness now completes **10 sessions**: UTF-8 editing/history/save, dirty
+quit refusal, Visual/change with CRLF, search, multiple buffers, fuzzy file open,
+three themes with actual RGB output, wide text with real resize events (including
+a one-column terminal), bracketed paste containing command-looking text, and an
+external-write conflict recovered with save-as. Every session checks saved bytes,
+process lifetime, restored termios, alternate-screen exit and disabled bracketed
+paste. Physical-terminal appearance and injected panic/error cleanup have not
+been manually exercised; the latter retains the existing scope guard/panic hook.

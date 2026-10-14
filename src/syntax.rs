@@ -1,6 +1,6 @@
 //! Derived syntax state. Text, cursor coordinates and undo remain in Buffer.
 use std::{
-    ops::Range,
+    ops::{ControlFlow, Range},
     path::Path,
     time::{Duration, Instant},
 };
@@ -10,6 +10,8 @@ use tree_sitter::{
     InputEdit, Language, ParseOptions, Parser, Point, Query, QueryCursor, QueryCursorOptions,
     StreamingIterator, TextProvider, Tree,
 };
+
+use tree_sitter_md::{MarkdownParseOptions, MarkdownParser, MarkdownTree};
 
 use crate::buffer::TextEdit;
 
@@ -73,34 +75,26 @@ pub fn highlight_at(spans: &[HighlightSpan], byte: usize) -> Option<Highlight> {
         .map(|span| span.kind)
 }
 
-struct Layer {
-    parser: Parser,
-    query: Query,
-    tree: Option<Tree>,
-}
-
-impl Layer {
-    fn new(language: Language, query: &str) -> Result<Self, String> {
-        let mut parser = Parser::new();
-        parser.set_language(&language).map_err(|e| e.to_string())?;
-        let query = Query::new(&language, query).map_err(|e| e.to_string())?;
-        for pattern in 0..query.pattern_count() {
-            if !query.general_predicates(pattern).is_empty() {
-                return Err("unsupported highlight predicate".into());
-            }
-        }
-        Ok(Self {
-            parser,
-            query,
-            tree: None,
-        })
-    }
+enum ParserState {
+    Single(Parser, Option<Tree>),
+    Markdown(MarkdownParser, Option<MarkdownTree>),
 }
 
 pub struct Syntax {
     pub language: &'static str,
     pub fallback: Option<String>,
-    layers: Vec<Layer>,
+    parser: Option<ParserState>,
+    queries: Vec<Query>,
+}
+
+fn query(language: Language, source: &str) -> Result<Query, String> {
+    let query = Query::new(&language, source).map_err(|error| error.to_string())?;
+    for pattern in 0..query.pattern_count() {
+        if !query.general_predicates(pattern).is_empty() {
+            return Err("unsupported highlight predicate".into());
+        }
+    }
+    Ok(query)
 }
 
 impl Syntax {
@@ -109,52 +103,52 @@ impl Syntax {
             .and_then(Path::extension)
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let (language, layers) = match extension {
+        let (language, layers): (_, Vec<(Language, &str)>) = match extension {
             "rs" => (
                 "Rust",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_rust::LANGUAGE.into(),
                     tree_sitter_rust::HIGHLIGHTS_QUERY,
                 )],
             ),
             "java" => (
                 "Java",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_java::LANGUAGE.into(),
                     tree_sitter_java::HIGHLIGHTS_QUERY,
                 )],
             ),
             "kt" | "kts" => (
                 "Kotlin",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_kotlin::LANGUAGE.into(),
                     tree_sitter_kotlin::HIGHLIGHTS_QUERY,
                 )],
             ),
             "cs" => (
                 "C#",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_c_sharp::LANGUAGE.into(),
                     tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
                 )],
             ),
             "json" => (
                 "JSON",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_json::LANGUAGE.into(),
                     tree_sitter_json::HIGHLIGHTS_QUERY,
                 )],
             ),
             "yaml" | "yml" => (
                 "YAML",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_yaml::LANGUAGE.into(),
                     tree_sitter_yaml::HIGHLIGHTS_QUERY,
                 )],
             ),
             "toml" => (
                 "TOML",
-                vec![Layer::new(
+                vec![(
                     tree_sitter_toml_ng::LANGUAGE.into(),
                     tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
                 )],
@@ -162,11 +156,11 @@ impl Syntax {
             "md" | "markdown" => (
                 "Markdown",
                 vec![
-                    Layer::new(
+                    (
                         tree_sitter_md::LANGUAGE.into(),
                         tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
                     ),
-                    Layer::new(
+                    (
                         tree_sitter_md::INLINE_LANGUAGE.into(),
                         tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
                     ),
@@ -174,131 +168,141 @@ impl Syntax {
             ),
             _ => ("Text", vec![]),
         };
-        match layers.into_iter().collect::<Result<Vec<_>, _>>() {
-            Ok(layers) => Self {
+        let build = || -> Result<_, String> {
+            let parser = if language == "Markdown" {
+                Some(ParserState::Markdown(MarkdownParser::default(), None))
+            } else if let Some((grammar, _)) = layers.first() {
+                let mut parser = Parser::new();
+                parser
+                    .set_language(grammar)
+                    .map_err(|error| error.to_string())?;
+                Some(ParserState::Single(parser, None))
+            } else {
+                None
+            };
+            let queries = layers
+                .into_iter()
+                .map(|(grammar, source)| query(grammar, source))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((parser, queries))
+        };
+        match build() {
+            Ok((parser, queries)) => Self {
                 language,
                 fallback: None,
-                layers,
+                parser,
+                queries,
             },
             Err(error) => Self {
                 language,
                 fallback: Some(error),
-                layers: vec![],
+                parser: None,
+                queries: vec![],
             },
         }
     }
 
     pub fn update(&mut self, text: &Rope, edits: &[TextEdit]) {
-        if self.layers.is_empty() {
+        // A failed parse is retried on the next edit, not on every cursor move.
+        if edits.is_empty() && (self.tree().is_some() || self.fallback.is_some()) {
             return;
         }
+        let Some(parser) = &mut self.parser else {
+            return;
+        };
         if text.len_bytes() > MAX_SYNTAX_BYTES {
-            for layer in &mut self.layers {
-                layer.tree = None;
+            match parser {
+                ParserState::Single(_, tree) => *tree = None,
+                ParserState::Markdown(_, tree) => *tree = None,
             }
             self.fallback = Some("syntax limit: 2 MiB".into());
             return;
         }
-        // A failed parse is retried on the next edit, not on every cursor move.
-        if edits.is_empty() && (self.layers[0].tree.is_some() || self.fallback.is_some()) {
-            return;
-        }
-        self.fallback = None;
-        let mut inline_ranges = Vec::new();
-        for (index, layer) in self.layers.iter_mut().enumerate() {
-            if index == 1 {
-                // Markdown inline syntax is restricted to inline nodes from the
-                // block tree; fenced code must never be parsed as emphasis.
-                if inline_ranges.is_empty() {
-                    layer.tree = None;
-                    continue;
-                }
-                if let Err(error) = layer.parser.set_included_ranges(&inline_ranges) {
-                    self.fallback = Some(error.to_string());
-                    layer.tree = None;
-                    continue;
-                }
+        let started = Instant::now();
+        let mut cancel = |_state: &tree_sitter::ParseState| budget(started, 100);
+        let mut read = |byte, _| {
+            if byte >= text.len_bytes() {
+                return &[][..];
             }
-            if let Some(tree) = &mut layer.tree {
-                for edit in edits {
-                    tree.edit(&InputEdit {
-                        start_byte: edit.start_byte,
-                        old_end_byte: edit.old_end_byte,
-                        new_end_byte: edit.new_end_byte,
-                        start_position: Point::new(edit.start_position.0, edit.start_position.1),
-                        old_end_position: Point::new(
-                            edit.old_end_position.0,
-                            edit.old_end_position.1,
-                        ),
-                        new_end_position: Point::new(
-                            edit.new_end_position.0,
-                            edit.new_end_position.1,
-                        ),
-                    });
-                }
-            }
-            let started = Instant::now();
-            let mut cancel =
-                |_state: &tree_sitter::ParseState| started.elapsed() > Duration::from_millis(100);
-            let tree = layer.parser.parse_with_options(
-                &mut |byte, _| {
-                    if byte >= text.len_bytes() {
-                        return &[][..];
-                    }
-                    let (chunk, start, _, _) = text.chunk_at_byte(byte);
-                    &chunk.as_bytes()[byte - start..]
-                },
-                layer.tree.as_ref(),
-                Some(ParseOptions::new().progress_callback(&mut cancel)),
-            );
-            if tree.is_none() {
-                layer.parser.reset();
-                self.fallback = Some("syntax parse budget exceeded".into());
-            }
-            if self.language == "Markdown"
-                && index == 0
-                && let Some(tree) = &tree
-            {
-                let mut cursor = tree.walk();
-                loop {
-                    if cursor.node().kind() == "inline" {
-                        inline_ranges.push(cursor.node().range());
-                    } else if cursor.goto_first_child() {
-                        continue;
-                    }
-                    while !cursor.goto_next_sibling() {
-                        if !cursor.goto_parent() {
-                            break;
-                        }
-                    }
-                    if cursor.node() == tree.root_node() {
-                        break;
+            let (chunk, start, _, _) = text.chunk_at_byte(byte);
+            &chunk.as_bytes()[byte - start..]
+        };
+        let input_edits = edits.iter().map(|edit| InputEdit {
+            start_byte: edit.start_byte,
+            old_end_byte: edit.old_end_byte,
+            new_end_byte: edit.new_end_byte,
+            start_position: Point::new(edit.start_position.0, edit.start_position.1),
+            old_end_position: Point::new(edit.old_end_position.0, edit.old_end_position.1),
+            new_end_position: Point::new(edit.new_end_position.0, edit.new_end_position.1),
+        });
+        let parsed = match parser {
+            ParserState::Single(parser, tree) => {
+                if let Some(tree) = tree {
+                    for edit in input_edits {
+                        tree.edit(&edit);
                     }
                 }
+                *tree = parser.parse_with_options(
+                    &mut read,
+                    tree.as_ref(),
+                    Some(ParseOptions::new().progress_callback(&mut cancel)),
+                );
+                if tree.is_none() {
+                    parser.reset();
+                }
+                tree.is_some()
             }
-            layer.tree = tree;
-        }
+            ParserState::Markdown(parser, tree) => {
+                if let Some(tree) = tree {
+                    for edit in input_edits {
+                        tree.edit(&edit);
+                    }
+                }
+                // The upstream parser keeps a separate incremental tree for each
+                // inline block, including table cells and block continuations.
+                let mut cancel_inline = |_state: &tree_sitter::ParseState| budget(started, 100);
+                *tree = parser.parse_with_options(
+                    &mut read,
+                    tree.as_ref(),
+                    MarkdownParseOptions::new(
+                        Some(ParseOptions::new().progress_callback(&mut cancel)),
+                        Some(ParseOptions::new().progress_callback(&mut cancel_inline)),
+                    ),
+                );
+                if tree.is_none() {
+                    *parser = MarkdownParser::default();
+                }
+                tree.is_some()
+            }
+        };
+        self.fallback = (!parsed).then(|| "syntax parse budget exceeded".into());
     }
 
     pub fn tree(&self) -> Option<&Tree> {
-        self.layers.first()?.tree.as_ref()
+        match self.parser.as_ref()? {
+            ParserState::Single(_, tree) => tree.as_ref(),
+            ParserState::Markdown(_, tree) => tree.as_ref().map(MarkdownTree::block_tree),
+        }
     }
 
     /// Query only the viewport. The Rope provider avoids copying the document.
     pub fn highlights(&self, text: &Rope, bytes: Range<usize>) -> Vec<HighlightSpan> {
         let mut spans = Vec::new();
         let started = Instant::now();
-        for layer in &self.layers {
-            let Some(tree) = &layer.tree else {
-                continue;
-            };
+        let mut collect = |query: &Query, tree: &Tree| {
+            let range = tree.root_node().byte_range();
+            if range.end <= bytes.start
+                || range.start >= bytes.end
+                || spans.len() >= 20_000
+                || started.elapsed() > Duration::from_millis(20)
+            {
+                return;
+            }
             let mut cursor = QueryCursor::new();
             cursor.set_byte_range(bytes.clone());
-            let mut cancel = |_state: &tree_sitter::QueryCursorState| {
-                started.elapsed() > Duration::from_millis(20)
-            };
+            let mut cancel = |_state: &tree_sitter::QueryCursorState| budget(started, 20);
             let mut captures = cursor.captures_with_options(
-                &layer.query,
+                query,
                 tree.root_node(),
                 RopeProvider(text),
                 QueryCursorOptions::new().progress_callback(&mut cancel),
@@ -306,7 +310,7 @@ impl Syntax {
             while let Some((matched, index)) = captures.next() {
                 let capture = matched.captures[*index];
                 if let Some(kind) =
-                    Highlight::capture(layer.query.capture_names()[capture.index as usize])
+                    Highlight::capture(query.capture_names()[capture.index as usize])
                 {
                     spans.push(HighlightSpan {
                         bytes: capture.node.byte_range(),
@@ -315,11 +319,27 @@ impl Syntax {
                     });
                 }
                 if spans.len() >= 20_000 {
-                    return spans;
+                    break;
                 }
+            }
+        };
+        if let Some(tree) = self.tree() {
+            collect(&self.queries[0], tree);
+        }
+        if let Some(ParserState::Markdown(_, Some(tree))) = &self.parser {
+            for inline in tree.inline_trees() {
+                collect(&self.queries[1], inline);
             }
         }
         spans
+    }
+}
+
+fn budget(started: Instant, millis: u64) -> ControlFlow<()> {
+    if started.elapsed() > Duration::from_millis(millis) {
+        ControlFlow::Break(())
+    } else {
+        ControlFlow::Continue(())
     }
 }
 

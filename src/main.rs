@@ -25,15 +25,20 @@ use ratatui::{
     },
 };
 
-const HELP: &str = "editor-pro [FILE]
+const HELP: &str = "editor-pro [FILE ...]
 
-A minimal terminal code editor. FILE may be a new path.
+A terminal-native, Vim-inspired UTF-8 editor. Files may be new paths.
 
-Normal: hjkl / arrows, 0 $, gg G, Ctrl-u/d, i a I A o O, x, u, Ctrl-r
-Insert: type, Enter, Tab, Backspace, Delete; Escape returns to Normal
-Commands: :w [path], :q, :q!, :wq [path], :e[!] [path], :help
+Normal: hjkl / arrows, w b e W B E, 0 ^ $, gg G, f/F/t/T, ; , %, counts
+Editing: i a I A o O, v/V, d/c/y + motion or object, x, p/P, u, Ctrl-r
+Objects: iw/aw, iW/aW, quotes, parentheses, brackets, braces (e.g. ciw, di{)
+Search: / or ?, Enter, n/N; Escape cancels prompts and selections
+Files: Ctrl-p or :files [directory]; :e path, :enew, :bn/:bp, :b ID, :ls
+Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh, :help
+Themes: :theme tokyo-night|catppuccin|gruvbox
 
-Only one UTF-8 buffer is open at a time. Use -- before a filename starting with -.";
+Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
+Use -- before a filename starting with -. See README.md for the full reference.";
 
 fn main() -> ExitCode {
     match run() {

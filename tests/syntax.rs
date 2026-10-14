@@ -235,3 +235,57 @@ fn kotlin_query_predicates_do_not_color_every_identifier_as_a_constant() {
         Some(Highlight::Constant)
     );
 }
+
+#[test]
+fn markdown_keeps_paragraphs_separate_and_parses_table_cells() {
+    let source = "*open\r\n\r\nclose*\r\n\r\n| col |\r\n| --- |\r\n| **bold界** |\r\n\r\n> **quoted\r\n> text**\r\n";
+    let mut buffer = Buffer::new(source);
+    let mut parsed = syntax("notes.md", &mut buffer);
+    let spans = parsed.highlights(buffer.text(), 0..source.len());
+    for token in ["open", "close"] {
+        assert_eq!(
+            highlight_at(&spans, source.find(token).unwrap()),
+            None,
+            "{token}"
+        );
+    }
+    for token in ["bold", "quoted", "text"] {
+        assert_eq!(
+            highlight_at(&spans, source.find(token).unwrap()),
+            Some(Highlight::Emphasis),
+            "{token}"
+        );
+    }
+    // Insert/remove inline blocks and alter Unicode content. Reusing an old
+    // inline tree must never associate it with the wrong paragraph/table cell.
+    for step in 0..5 {
+        match step {
+            0 => {
+                buffer.insert("**new**\r\n\r\n");
+                buffer.commit();
+            }
+            1 => {
+                buffer.goto_line(8, true);
+                buffer.line_end(true);
+                buffer.insert(" 👩‍💻");
+                buffer.commit();
+            }
+            2 | 3 => {
+                buffer.undo();
+            }
+            _ => {
+                buffer.redo();
+            }
+        }
+        let edits = buffer.take_edits();
+        parsed.update(buffer.text(), &edits);
+        let fresh = syntax("notes.md", &mut buffer);
+        assert!(parsed.fallback.is_none(), "{:?}", parsed.fallback);
+        let range = 0..buffer.text().len_bytes();
+        assert_eq!(
+            parsed.highlights(buffer.text(), range.clone()),
+            fresh.highlights(buffer.text(), range),
+            "step {step}"
+        );
+    }
+}

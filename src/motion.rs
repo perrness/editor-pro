@@ -53,6 +53,7 @@ pub enum Motion {
         character: char,
         backward: bool,
         till: bool,
+        repeated: bool,
     },
 }
 
@@ -67,13 +68,14 @@ pub fn apply(buffer: &mut Buffer, motion: Motion, count: usize, operator: bool) 
     let repetitions = count.max(1);
     let extent = match motion {
         Motion::Left | Motion::Right => {
-            for _ in 0..repetitions {
+            buffer.move_horizontal(
                 if matches!(motion, Motion::Left) {
-                    buffer.move_left(operator);
+                    -(repetitions as isize)
                 } else {
-                    buffer.move_right(operator);
-                }
-            }
+                    repetitions as isize
+                },
+                operator,
+            );
             Extent::Exclusive
         }
         Motion::Up | Motion::Down => {
@@ -115,7 +117,11 @@ pub fn apply(buffer: &mut Buffer, motion: Motion, count: usize, operator: bool) 
         Motion::WordForward(big) | Motion::WordBackward(big) | Motion::WordEnd(big) => {
             let mut target = buffer.cursor();
             for _ in 0..repetitions {
-                target = word_target(buffer, target, motion, big);
+                let next = word_target(buffer, target, motion, big);
+                if target == next {
+                    break;
+                }
+                target = next;
             }
             buffer.set_cursor(target, operator);
             if matches!(motion, Motion::WordEnd(_)) {
@@ -133,8 +139,9 @@ pub fn apply(buffer: &mut Buffer, motion: Motion, count: usize, operator: bool) 
             character,
             backward,
             till,
+            repeated,
         } => {
-            let target = find(buffer, character, backward, till, repetitions)?;
+            let target = find(buffer, character, backward, till, repeated, repetitions)?;
             buffer.set_cursor(target, false);
             Extent::Inclusive
         }
@@ -466,6 +473,7 @@ fn find(
     character: char,
     backward: bool,
     till: bool,
+    repeated: bool,
     count: usize,
 ) -> Option<usize> {
     let row = buffer.position().0;
@@ -489,7 +497,18 @@ fn find(
     if backward {
         positions.reverse();
     }
-    let target = *positions.get(count - 1)?;
+    let skip = usize::from(
+        till && repeated
+            && positions.first().is_some_and(|target| {
+                let previous = if backward {
+                    buffer.grapheme_end(*target)
+                } else {
+                    buffer.grapheme_start_before(*target)
+                };
+                previous == buffer.cursor()
+            }),
+    );
+    let target = *positions.get(count - 1 + skip)?;
     Some(if !till {
         target
     } else if backward {

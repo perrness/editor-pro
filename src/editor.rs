@@ -237,6 +237,7 @@ impl Editor {
                     character,
                     backward,
                     till,
+                    repeated: false,
                 };
                 self.last_find = Some(motion);
                 self.run_motion(motion);
@@ -291,16 +292,17 @@ impl Editor {
             Key::Char('E') => Some(Motion::WordEnd(true)),
             Key::Char('G') => Some(Motion::LastLine),
             Key::Char('%') => Some(Motion::MatchingPair),
-            Key::Char(';') => self.last_find,
-            Key::Char(',') => self.last_find.map(|m| match m {
+            Key::Char(';' | ',') => self.last_find.map(|m| match m {
                 Motion::Find {
                     character,
                     backward,
                     till,
+                    ..
                 } => Motion::Find {
                     character,
-                    backward: !backward,
+                    backward: backward != (key == Key::Char(',')),
                     till,
+                    repeated: true,
                 },
                 _ => m,
             }),
@@ -362,9 +364,7 @@ impl Editor {
                 let selection = self.selection().unwrap_or_else(|| {
                     let buffer = &mut self.document.buffer;
                     let start = buffer.cursor();
-                    for _ in 0..count {
-                        buffer.move_right(true);
-                    }
+                    buffer.move_horizontal(count as isize, true);
                     let end = buffer.cursor();
                     buffer.set_cursor(start, false);
                     Selection {
@@ -604,10 +604,10 @@ impl Editor {
                     start = buffer.text().line_to_char(row + 1);
                 } else {
                     start = buffer.text().len_chars();
-                    if text.ends_with(newline) {
-                        text.truncate(text.len() - newline.len());
-                    }
                     if start > 0 {
+                        if text.ends_with(newline) {
+                            text.truncate(text.len() - newline.len());
+                        }
                         text.insert_str(0, newline);
                     }
                 }
@@ -860,7 +860,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "hjkl  0 $ gg G  i a I A o O  x  u  Ctrl-r  :w [path]  :e[!] [path]  :q[!]  :wq",
+                "i insert  v/V select  d/c/y + motion  p paste  u undo  / search  n/N  Ctrl-p files  :ls buffers  :w save  :q quit  :theme NAME; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),

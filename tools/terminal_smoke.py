@@ -63,7 +63,10 @@ def run_session(binary, path, commands, expected):
             pump(0.05)
         assert b"NORMAL" in output, f"Editor never rendered: {output!r}"
         for index, command in enumerate(commands):
-            os.write(master, command)
+            if callable(command):
+                command(master, slave, pid)
+            else:
+                os.write(master, command)
             # Separate Escape from subsequent bytes (terminal Escape ambiguity).
             pump(0.15)
             if index < len(commands) - 1:
@@ -129,7 +132,27 @@ def main():
                                             b":theme tokyo-night\r", b":q\r"], b"Aalpha\r\n")
         for background in [b"48;2;30;30;46", b"48;2;40;40;40", b"48;2;26;27;38"]:
             assert background in output, f"Theme background was not rendered: {background!r}"
-    print("PASS: real terminal editing, undo/redo, saving, dirty quit guard, and restoration")
+        def resize(rows, columns):
+            def apply_resize(master, slave, pid):
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+                os.kill(pid, signal.SIGWINCH)
+            return apply_resize
+
+        wide = (("\t界👩‍💻e\u0301\r\n" * 50) + "\t界" * 200).encode()
+        path.write_bytes(wide)
+        run_session(binary, path, [b"G$", resize(7, 19), b"gg", resize(3, 1),
+                                  b"G", resize(24, 80), b":q\r"], wide)
+        path.write_bytes(b"base\r\n")
+        run_session(binary, path, [b"i", b"\x1b[200~:q!\r\n" + "界👩‍💻".encode() + b"\x1b[201~",
+                                  b"\x1b", b":wq\r"], ":q!\r\n界👩‍💻base\r\n".encode())
+        path.write_bytes(b"original\r\n")
+        recovery = Path(directory) / "recovered.rs"
+        run_session(binary, path, [b"ilocal ", b"\x1b",
+                                  lambda master, slave, pid: path.write_bytes(b"external\r\n"),
+                                  b"\x1b[I", b":w\r", f":w {recovery}\r".encode(), b":q\r"],
+                    b"external\r\n")
+        assert recovery.read_bytes() == b"local original\r\n"
+    print("PASS: 10 PTY sessions; modal editing, search, buffers, picker, themes, resize, paste, disk conflicts, and restoration")
     return 0
 
 
