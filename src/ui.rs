@@ -26,7 +26,8 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     let (cursor_line, cursor_column) = buffer.position();
     let cursor_text = buffer.line(cursor_line);
     let cursor_cell = display_column(&cursor_text, cursor_column);
-    let gutter = (buffer.line_count().to_string().len() as u16 + 2).min(area.width.saturating_sub(1));
+    let gutter =
+        (buffer.line_count().to_string().len() as u16 + 2).min(area.width.saturating_sub(1));
     let text_width = usize::from(area.width - gutter);
 
     editor.viewport.top = editor.viewport.top.min(cursor_line);
@@ -137,7 +138,10 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     };
     let (line, column) = editor.document.buffer.position();
     let text = editor.document.buffer.line(line);
-    let byte = text.char_indices().nth(column).map_or(text.len(), |(i, _)| i);
+    let byte = text
+        .char_indices()
+        .nth(column)
+        .map_or(text.len(), |(i, _)| i);
     let column = text[..byte].graphemes(true).count() + 1;
     let right = if area.width >= 55 {
         format!(

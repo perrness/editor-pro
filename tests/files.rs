@@ -102,7 +102,11 @@ fn reload_and_open_guard_unsaved_edits_and_retain_state_on_failure() {
     let mut editor = Editor::new(Document::open(&path).unwrap());
     editor.document.buffer.insert("local");
     assert!(editor.execute_command("e").is_err());
-    assert!(editor.execute_command("e! /not/a/real/parent/file").is_err());
+    assert!(
+        editor
+            .execute_command("e! /not/a/real/parent/file")
+            .is_err()
+    );
     assert_eq!(editor.document.buffer.text().to_string(), "localdisk");
     editor.execute_command("e!").unwrap();
     assert_eq!(editor.document.buffer.text().to_string(), "disk");

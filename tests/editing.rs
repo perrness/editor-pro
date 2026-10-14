@@ -295,7 +295,10 @@ fn mixed_edit_sequences_never_leave_cursor_inside_a_grapheme() {
         for grapheme in text.graphemes(true) {
             boundaries.push(boundaries.last().unwrap() + grapheme.chars().count());
         }
-        assert!(boundaries.contains(&column), "cursor {column} inside {text:?}");
+        assert!(
+            boundaries.contains(&column),
+            "cursor {column} inside {text:?}"
+        );
         assert!(buffer.cursor() <= buffer.text().len_chars());
     }
 }

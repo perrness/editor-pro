@@ -61,7 +61,9 @@ fn run() -> io::Result<()> {
         }
         Some("--") => args.next().map(PathBuf::from),
         Some(flag) if flag.starts_with('-') => {
-            return Err(io::Error::other(format!("Unknown option {flag}; use --help")));
+            return Err(io::Error::other(format!(
+                "Unknown option {flag}; use --help"
+            )));
         }
         _ => first.map(PathBuf::from),
     };

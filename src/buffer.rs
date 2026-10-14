@@ -81,11 +81,7 @@ impl Buffer {
     }
 
     pub fn newline_name(&self) -> &'static str {
-        if self.newline == "\r\n" {
-            "CRLF"
-        } else {
-            "LF"
-        }
+        if self.newline == "\r\n" { "CRLF" } else { "LF" }
     }
 
     pub fn is_modified(&self) -> bool {

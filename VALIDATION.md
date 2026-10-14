@@ -1,57 +1,33 @@
 # Delivery validation — 2026-10-14
 
-The implementation is present, but Milestone 1 is **not yet accepted as a
-validated working binary**. The host environment has Python and Java but no Rust
-toolchain or Kotlin LSP executable. This distinction should remain visible until
-actual checks succeed.
+## Foundation revalidation before Milestone 2
 
-| Check attempted | Result |
+Starting commit: `864f6ab`. Linux x86_64, Rust/Cargo 1.99.0, Python 3,
+OpenJDK 25.0.4.1, Maven 3.8.7. Stable Rust, rustfmt and Clippy were installed
+from the official Rust distribution. The persistent toolchain is under
+`/opt/editor-pro-rust/stable`, exposed in `/usr/local/bin`; the build cache
+used for these checks is `/tmp/editor-pro-cargo`.
+
+| Observed check | Result |
 | --- | --- |
-| `rustc --version`, `cargo --version` | Rust/Cargo not found; toolchain search also found no installed binaries. |
-| `cargo fmt`, `cargo fmt --check` | Blocked: `cargo: command not found`. |
-| `cargo clippy --all-targets -- -D warnings` | Blocked: `cargo: command not found`. |
-| `cargo test --all-targets` | Blocked: `cargo: command not found`. |
-| Python probe compilation | Passed. |
-| Python AST, TOML/XML, local documentation links, diff whitespace | Passed. These do not validate Rust syntax or behavior. |
-| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | 7 passed; includes a protocol test double, not a Kotlin server. |
-| `python3 tools/kotlin-lsp/probe.py --output /tmp/editor-pro-kotlin-result.json` | Blocked, exit 2: Kotlin LSP executable missing. |
-| `python3 tools/terminal_smoke.py` | Blocked, exit 2: Rust binary has not been built. |
-| Shell download reachability | `curl` failed to resolve `static.rust-lang.org`; no Rust or server install was possible. |
-| Git diff/status | Initial inspection reported “not a git repository”; source files were reviewed directly. Git was subsequently initialized on `main` for the requested foundation commit. |
+| Cargo resolution and fetch | Passed; generated Cargo.lock, reviewed direct dependencies, CI now uses --locked. |
+| cargo fmt / cargo fmt --check | Passed after applying rustfmt to the uncompiled foundation. |
+| cargo clippy --locked --all-targets -- -D warnings | Passed. |
+| cargo test --locked --all-targets | All 34 Rust tests passed. |
+| cargo build --locked | Passed. |
+| Python probe unittest discovery | All 7 tests passed. These exercise the harness and a test double. |
+| python3 tools/terminal_smoke.py | Passed after fixing the PTY harness to answer the terminal cursor-position query. Dirty quit now explicitly checks that the process stays alive. |
+| Isolated Kotlin probe | Blocked, exit 2: Kotlin LSP executable is not installed or on PATH. Report: /tmp/editor-pro-kotlin-m2-result.json. |
 
-## Supplied checks
+The initial PTY run failed because a raw PTY does not emulate terminal DSR
+responses; no compiler or editing-test failures were found. The harness now
+supplies the same cursor-position response a terminal emulator supplies.
 
-34 Rust tests cover Unicode/grapheme cursor invariants, CRLF joining, multiline edits,
-undo grouping/savepoints/redo branches, paste isolation, command guards, disk
-conflicts, save-as collisions, file permissions/link restrictions, byte-preserving
-round trips, viewport behavior and narrow terminals. They are written but unrun.
+Rust downloads succeeded with authorized network access. The previous claim
+that downloads are impossible no longer applies. JDK 25 and Maven exist, but
+no standalone Kotlin server archive/launcher is installed; no real Kotlin
+capabilities or functional behavior were observed. See
+[LANGUAGE_SERVERS.md](docs/LANGUAGE_SERVERS.md).
 
-The PTY test launches the actual editor, types Unicode source text, undoes/redoes,
-saves/quits, exercises dirty quit refusal, compares exact output-file bytes, and
-checks terminal attributes and alternate-screen/paste cleanup. It needs a compiled
-binary and Linux/macOS. The CI workflow contains the Rust and Python checks for
-both platforms; no hosted CI result is claimed.
-
-## Complete these checks before acceptance
-
-```sh
-cargo generate-lockfile
-cargo fmt
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-cargo build
-python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
-python3 tools/terminal_smoke.py
-cargo build --release
-```
-
-Resolve any compiler, formatter, lint or test failures, review the dependency
-graph, and commit `Cargo.lock`. Switch CI to `--locked` after that. Record actual
-Linux and macOS results here. Manually edit a Java/Kotlin/C# source file, resize
-the terminal, check CJK/emoji/tabs, and modify the same file externally while the
-buffer is dirty: the buffer must stay intact and `:w` must refuse the conflict.
-
-Finally run the real Kotlin probe from
-[LANGUAGE_SERVERS.md](docs/LANGUAGE_SERVERS.md). Its missing executable is an
-environmental blocker, not evidence that the language server is incompatible.
+macOS, hosted CI, and interactive visual inspection in a physical terminal have
+not been run here. These remain platform/visual validation limits.

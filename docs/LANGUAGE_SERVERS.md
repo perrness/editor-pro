@@ -103,8 +103,10 @@ The fixture tests Maven only; Gradle validation remains a separate gate.
 
 - OpenJDK **25.0.4.1** and Maven **3.8.7** are available; JDK 21 is also installed.
 - Neither `intellij-server` nor `kotlin-lsp` is installed/on PATH.
-- A shell download check failed with DNS resolution unavailable under the network
-  restriction. No standalone server archive was downloaded or executed.
+- During foundation revalidation, authorized network access worked for Rust
+  installation. No standalone Kotlin server archive/launcher is installed, and
+  none was downloaded or executed. The precise probe blocker is the missing
+  server executable; JDK 25 and Maven are present.
 - Running the probe returned **blocked**, exit 2, with reason “Kotlin LSP
   executable is not installed or not on PATH.” No capability or functional result
   was obtained from a real server.

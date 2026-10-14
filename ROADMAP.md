@@ -6,8 +6,9 @@ in this delivery. Editing modes remain independent of contextual views throughou
 
 ## Milestone 1 — Minimal editor
 
-**Status:** implementation written; Rust build, lint, tests and terminal acceptance
-are blocked by the current environment. Not accepted yet.
+**Status:** foundation build, formatting, Clippy, 34 Rust tests and the Linux PTY
+smoke test passed during M2 revalidation. macOS/visual checks and the real Kotlin
+feasibility gate remain open.
 
 - Terminal startup/restoration, open/new UTF-8 file, render/scroll text.
 - Basic Vim navigation; Normal and Insert; insert/delete; grouped undo/redo.
@@ -22,8 +23,7 @@ undo/redo, dirty quit refusal and terminal restoration. Manually resize, inspect
 wide text and provoke an external-write conflict. Record a real Kotlin probe run
 or keep its feasibility gate explicitly open.
 
-**Remaining validation:** install Rust, resolve/commit `Cargo.lock`, run checks,
-fix any build/format/test failures, and run the standalone Kotlin probe. See
+**Remaining validation:** macOS/visual checks and a real standalone Kotlin probe. See
 [VALIDATION.md](VALIDATION.md).
 
 ## Milestone 2 — Modern editing

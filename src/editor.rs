@@ -178,7 +178,14 @@ impl Editor {
     }
 
     fn has_room(&mut self, bytes: usize) -> bool {
-        if self.document.buffer.text().len_bytes().saturating_add(bytes) as u64 > MAX_FILE_BYTES {
+        if self
+            .document
+            .buffer
+            .text()
+            .len_bytes()
+            .saturating_add(bytes) as u64
+            > MAX_FILE_BYTES
+        {
             self.error("Milestone 1 supports buffers up to 64 MiB");
             false
         } else {
@@ -294,9 +301,9 @@ impl Editor {
     pub fn check_external(&mut self) {
         let was_changed = self.document.external_changed;
         match self.document.check_external() {
-            Ok(true) if !was_changed => self.error(
-                "File changed on disk. :e! reloads; :w NEW_PATH preserves your edits",
-            ),
+            Ok(true) if !was_changed => {
+                self.error("File changed on disk. :e! reloads; :w NEW_PATH preserves your edits")
+            }
             Err(error) => {
                 self.document.external_changed = true;
                 self.error(&format!("Cannot check file on disk: {error}"));

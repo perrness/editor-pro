@@ -4,11 +4,10 @@ A terminal-native, Vim-inspired code editor in Rust, focused on editing and
 understanding code. This initial implementation is **Milestone 1 only**: one
 buffer, plain text, basic modal editing, and conservative file saving.
 
-**Validation status:** the Rust implementation has not been compiled in the
-delivery environment: Rust/Cargo are absent and shell network access is
-restricted. The Kotlin probe's seven Python tests pass; a real Kotlin server is
-not installed. Milestone 1 acceptance and Kotlin runtime feasibility remain
-unverified. See [VALIDATION.md](VALIDATION.md) for exact results and next checks.
+**Validation status:** the foundation compiles on Linux with Rust 1.99.0.
+Formatting, Clippy, all 34 Rust tests, seven Python probe tests, and the PTY
+smoke test pass. macOS and real Kotlin LSP feasibility remain unverified.
+See [VALIDATION.md](VALIDATION.md) for observed results.
 
 ## Build and run
 
@@ -115,9 +114,7 @@ python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
 python3 tools/terminal_smoke.py
 ```
 
-The first successful Cargo resolution should generate `Cargo.lock`; commit that
-file after checking the resolved graph, then use `--locked` in CI. A lockfile was
-not fabricated without access to the registry. The included CI runs Rust checks
+`Cargo.lock` records the resolved dependencies; CI uses `--locked`. The included CI runs Rust checks
 and the PTY smoke test on Linux and macOS; no CI run has been observed here.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the

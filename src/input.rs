@@ -22,7 +22,9 @@ pub enum Key {
 
 pub fn decode(event: KeyEvent) -> Option<Key> {
     if event.kind == KeyEventKind::Release
-        || event.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+        || event
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
     {
         return None;
     }

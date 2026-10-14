@@ -30,8 +30,10 @@ def run_session(binary, path, commands, expected):
         os.execv(str(binary), [str(binary), str(path)])
     output = bytearray()
     reaped = False
+    cursor_queries = 0
 
     def pump(duration):
+        nonlocal cursor_queries
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             readable, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
@@ -45,16 +47,27 @@ def run_session(binary, path, commands, expected):
                 if not data:
                     return
                 output.extend(data)
+                # A PTY has no terminal emulator. Ratatui asks for the initial
+                # cursor position, so implement the terminal's DSR response.
+                queries = output.count(b"\x1b[6n")
+                if queries > cursor_queries:
+                    os.write(master, b"\x1b[1;1R" * (queries - cursor_queries))
+                    cursor_queries = queries
 
     try:
         startup = time.monotonic() + 10
         while b"NORMAL" not in output and time.monotonic() < startup:
             pump(0.05)
         assert b"NORMAL" in output, f"Editor never rendered: {output!r}"
-        for command in commands:
+        for index, command in enumerate(commands):
             os.write(master, command)
             # Separate Escape from subsequent bytes (terminal Escape ambiguity).
             pump(0.15)
+            if index < len(commands) - 1:
+                exited, _ = os.waitpid(pid, os.WNOHANG)
+                if exited:
+                    reaped = True
+                assert not exited, f"Editor exited before the final command: {output!r}"
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             pump(0.05)
