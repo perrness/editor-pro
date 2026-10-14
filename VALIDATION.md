@@ -238,3 +238,119 @@ run observed 139.67 ms status/comparison completion and 135.55 ms after a burst 
 max 2.69 ms; typing p95 4.11 ms, max 5.86 ms. It uses a 120×32 TestBackend and an
 active 3,001-line Rust buffer. Setup, terminal transport and existing synchronous
 disk checks are excluded; these numbers are observations, not timing guarantees.
+
+## M3 final hardening and acceptance
+
+Final code validation on Linux x86_64 used Rust/Cargo 1.99.0 and Git 2.43.0,
+with the verified offline registry described above. There are **121 passing Rust
+tests**: the original 92 and 29 Git/backend/editor/rendering regressions. The last
+slice adds cancellation during a running Git process, helper suppression,
+literal-pathspec and non-UTF-8 filename handling, content/patch limits, visible
+errors, CRLF/final-newline annotations, and source navigation to dirty buffers
+even after their parent directory has been removed. No dependencies were added;
+`Cargo.lock` is unchanged.
+
+| Final check | Observed result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 121 passed, none failed or ignored. |
+| `cargo build --locked` | Passed. |
+| `cargo build --locked --release --bin editor-pro` | Passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | All seven harness/test-double tests passed. |
+| `python3 tools/terminal_smoke.py` | All 13 sessions passed, including restoration checks. |
+| `cargo run --locked --release --example performance` | Passed all grammar and picker assertions; measurements below. |
+| `cargo run --locked --release --example git_performance` | Passed repository/index invariance and responsiveness workload; measurements below. |
+| Release `--help` / `--version` without TTY | Passed; help includes Git commands. |
+| `git diff --check` | Passed. |
+
+Source jumps and changed-file opens reuse known buffer identities before resolving
+filesystem paths. This preserves dirty documents whose entire containing directory
+was deleted externally; inspection never recreates that directory. Clean deleted
+files instead retain an inspectable historical diff with no current destination.
+
+Git tests use temporary repositories and local deterministic author/identity/EOL
+configuration. They assert unchanged index and worktree bytes after inspection.
+Cancellation tests wait for a launcher-start signal before superseding a request,
+then assert only the latest result and that the earlier process was reaped. No
+assertion treats an observed interactive latency as a hard correctness threshold.
+Configured diff/textconv, clean/process and fsmonitor helpers are prevented from
+executing; a regression test checks that their side-effect marker is never created.
+
+| Milestone 3 criterion | Evidence / assessment |
+| --- | --- |
+| Inspect working changes inside the editor | Changed-file view, source gutters, inline and paired diffs; Rust and PTY workflows pass. |
+| Compare every supported base | HEAD, index and selected commit-ish, plus explicitly separate HEAD-to-index staged comparisons; staged+unstaged+unsaved fixtures pass. |
+| Deletion, rename and untracked files | Historical deletions, rename source paths, additions/empty files and buffer-only entries; unusual paths, detached/unborn HEAD and linked worktrees pass. |
+| Close restores source location | Original buffer ID/cursor/viewport and independent dirty histories survive scrolling, refresh, base/layout changes and resizing. Explicit source-jump/deletion anchors have separate tests. |
+| Refresh without blocking Git work in editing | One bounded coalescing worker; cancellation, timeouts, failure states and stale-result suppression; measured key/tick/draw workload below. No Git subprocess work in input/render. |
+| Independent of LSP | No LSP dependencies, provisioning or runtime integration; Git tests and PTY workflows run without a language server. |
+
+**Milestone 3 meets its automated Linux acceptance criteria for these workloads.**
+This does not claim macOS, hosted CI, physical-terminal visual/comfort validation,
+a minimum-Rust build or real Kotlin LSP feasibility. The real server executable is
+still absent. All remain separate open gates. Milestone 4 review marks, notes,
+persistence/export and later snapshots/LSP/AI/plugin/GUI work were not implemented.
+
+Known limits: comparisons are UTF-8 text up to 2 MiB per side, with 100,000-row/file
+and 16 MiB process-output caps. Conflicts, symlinks and submodules are unsupported
+for textual inspection; submodule interiors are ignored. Clean/process filters
+are disabled and reported, so filter-dependent status can differ from ordinary
+Git. Rename detection follows Git heuristics and untracked moves can appear as a
+deletion/addition pair. Diff reanchoring after substantial changes is approximate.
+Repository sampling is not atomic against external writers, and clean loaded
+buffers can intentionally differ from disk (labels and disk-conflict flags explain
+this). Polling refreshes derived data, never document text/history. Filesystem
+stalls, existing synchronous file/search work, large Markdown parsing and terminal
+transport remain responsiveness limits; no hard latency ceiling is claimed.
+
+### Final release performance observations
+
+The existing eight-language workload is unchanged: 50 edit/undo/draw samples per
+fixture and a 10,000-file picker. The 120×32 TestBackend excludes terminal output.
+
+| Language | Initial ms | Edit+draw p95 ms | Maximum ms | Scroll+draw p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Rust | 6.03 | 0.93 | 1.17 | 0.30 |
+| Java | 4.44 | 2.02 | 2.23 | 0.40 |
+| Kotlin | 5.97 | 0.99 | 1.36 | 0.46 |
+| C# | 6.56 | 1.01 | 1.37 | 0.44 |
+| JSON | 3.61 | 0.73 | 0.78 | 0.37 |
+| YAML | 4.73 | 1.45 | 1.84 | 0.24 |
+| TOML | 3.95 | 2.00 | 2.17 | 0.33 |
+| Markdown | 35.90 | 52.53 | 54.59 | 0.35 |
+
+Picker scan/ranking took 20.00 ms; its query settled in 0.54 ms. No grammar entered
+fallback. Markdown remains the slowest fixture; changes to Git did not remove the
+existing cooperative-parser limitation.
+
+Reproduce the new workload with
+`cargo run --locked --release --example git_performance`. It creates 2,501 tracked
+files (40 lines each except a 3,001-line UTF-8 Rust source), 100 staged paths,
+100 unstaged paths and 100 untracked paths. It measures 150 navigation samples
+during refresh and 150 typing samples that coalesce pending work. Both index and
+disk bytes are asserted unchanged after the unsaved edit burst.
+
+| Final Git measurement | Observed ms |
+| --- | ---: |
+| Initial discovery, status and comparison | 117.87 |
+| Refresh completion after the edit burst | 133.87 |
+| Navigation key + tick + draw p95 / maximum | 1.61 / 2.49 |
+| Typing key + tick + draw p95 / maximum | 5.09 / 6.76 |
+
+Refresh completion includes the 75 ms quiet-period debounce and 1 ms result
+polling. The interaction samples include editor handling, request submission or
+polling, syntax and drawing, but exclude deliberate inter-sample sleeps. They
+exclude fixture setup, terminal transport and the main loop's existing synchronous
+disk checks. Continuous typing postpones comparisons until the quiet period;
+cursor navigation permits the worker to finish while drawing continues. These are
+single-run local-VM observations, not representative remote-filesystem or large
+monorepo guarantees.
+
+For this VM's offline reproduction, use `CARGO_HOME=/tmp/editor-pro-m3-cargo` and
+`CARGO_NET_OFFLINE=true` with the commands above. This is a verified temporary
+cache path for this session, not a distribution prerequisite. Normal installations
+can fetch the unchanged lockfile dependencies through Cargo's usual registry.
+
+Implementation was saved in logical local commits; `prompt.md` was left untracked
+and excluded. No push was performed.

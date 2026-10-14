@@ -181,7 +181,11 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             };
             frame.render_widget(
                 Paragraph::new(visible_text(
-                    editor.git.problem().unwrap_or(&editor.message),
+                    if editor.message_is_error {
+                        &editor.message
+                    } else {
+                        editor.git.problem().unwrap_or(&editor.message)
+                    },
                     0,
                     usize::from(area.width),
                 ))
@@ -508,7 +512,13 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
             } else {
                 ""
             },
-            editor.git.summary()
+            if editor.git.loading {
+                "[loading/stale]".into()
+            } else if editor.git.problem().is_some() {
+                "[Git error]".into()
+            } else {
+                editor.git.summary()
+            }
         );
         format!(
             " {} |{}",
@@ -524,8 +534,9 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
         0,
         width.saturating_sub(mode.len() + identity.len() + modified.len() + external.len() + 3),
     );
+    let right_cells = display_column(&right, right.chars().count());
     let name_width = width.saturating_sub(
-        mode.len() + identity.len() + modified.len() + external.len() + right.len() + 2,
+        mode.len() + identity.len() + modified.len() + external.len() + right_cells + 2,
     );
     let name = editor.document.display_name();
     let name_cells = display_column(&name, name.chars().count());
@@ -545,7 +556,7 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     ];
     frame.render_widget(Paragraph::new(Line::from(spans)).style(style), area);
     if !right.is_empty() {
-        let right_width = right.len().min(width) as u16;
+        let right_width = right_cells.min(width) as u16;
         frame.render_widget(
             Paragraph::new(right).style(style),
             Rect::new(area.right() - right_width, area.y, right_width, 1),

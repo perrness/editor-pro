@@ -6,7 +6,9 @@ motions/operators, search, multiple buffers, fuzzy file navigation, and three
 dark themes, plus asynchronous Git status, source gutters, changed-file navigation,
 and inline/paired diffs. Editing and file safety remain independent of terminal rendering.
 
-**Validation:** the baseline and Git workflow have Linux automated coverage.
+**Validation:** formatting, Clippy, 121 Rust tests, seven Python probe tests,
+13 PTY sessions, debug/release builds and both release performance examples pass
+on Linux.
 macOS, physical-terminal visual inspection, and real Kotlin LSP feasibility remain
 open. See [VALIDATION.md](VALIDATION.md) for actual checks, measurements and scope.
 
@@ -128,7 +130,7 @@ as such. If the file was deleted, a clean loaded copy does not hide that deletio
 a dirty copy still participates as unsaved content. Staged comparisons always use
 index content on the right. Neither comparison stages or saves anything. Unborn
 HEAD is an empty baseline. Untracked files are additions. Empty/mode-only changes
-have no text hunks. Missing final newlines are annotated. Binary/non-UTF-8 files,
+have no text hunks. Missing final newlines and changed CRLF rows are annotated. Binary/non-UTF-8 files,
 symlinks/submodules and unresolved conflicts have explicit unsupported responses.
 
 Source gutters use theme colors for `+` added, `~` modified and `-` deleted lines,
@@ -146,7 +148,11 @@ and source jumps are withheld. Refresh never reloads text or changes undo histor
 budget, 2 MiB per content side, 16 MiB command output and 100,000-file/diff-row
 limits. Heavy/remote repositories may exceed them. Renames follow Git's detection;
 untracked moves may appear as deletion plus addition. Submodule interiors are
-ignored. Existing synchronous file loading/saving/disk checks remain separate.
+ignored. Optional Git locks, external diff/textconv, fsmonitor and configured
+clean/process filters are disabled. `filters off` warns that filter-dependent
+repositories may show raw-content status differences. Snapshots sample Git state;
+concurrent external writes can race and are corrected by later polling. Existing
+synchronous file loading/saving/disk checks remain separate.
 
 ## Commands and themes
 
@@ -222,6 +228,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 cargo build --locked
+cargo build --locked --release --bin editor-pro
 python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
 python3 tools/terminal_smoke.py
 cargo run --locked --release --example performance

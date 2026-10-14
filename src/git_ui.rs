@@ -162,10 +162,14 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
             frame,
             area,
             0,
-            &format!(
-                "Diff {} → working buffer/disk",
-                editor.git.comparison.label()
-            ),
+            &if editor.git.comparison == crate::git::Comparison::Staged {
+                "Diff HEAD → index (staged)".into()
+            } else {
+                format!(
+                    "Diff {} → working buffer/disk",
+                    editor.git.comparison.label()
+                )
+            },
             style.fg(theme.normal),
         );
         return;
@@ -326,8 +330,13 @@ fn render_row(
     let prefix = visible_text(prefix, 0, usize::from(area.width));
     let width = usize::from(area.width).saturating_sub(prefix.len());
     let text = format!(
-        "{}{}",
+        "{}{}{}",
         row.text.strip_suffix('\r').unwrap_or(&row.text),
+        if row.text.ends_with('\r') && matches!(row.kind, Kind::Add | Kind::Delete) {
+            "  [CRLF]"
+        } else {
+            ""
+        },
         if row.no_newline {
             "  [no final newline]"
         } else {

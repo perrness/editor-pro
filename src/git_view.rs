@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -76,7 +76,11 @@ impl GitState {
         self.stamp.is_some() || self.loading
     }
     pub fn problem(&self) -> Option<&str> {
-        if !self.loading && !self.message.is_empty() && self.snapshot.is_some() {
+        if !self.loading
+            && !self.message.is_empty()
+            && self.visible()
+            && !self.message.starts_with("Git:")
+        {
             return Some(&self.message);
         }
         if !self.loading {
@@ -387,15 +391,28 @@ impl Editor {
         }
         let line = diff.rows.get(view.selected).map_or(0, |r| r.anchor);
         let path = view.path.clone();
-        if self.git.comparison == Comparison::Staged {
+        let staged = self.git.comparison == Comparison::Staged;
+        self.open_git_source(&path)?;
+        if staged {
             self.git.comparison = Comparison::Head;
         }
-        self.open_buffer(&path)?;
         self.document.buffer.goto_line(line, false);
         self.view = View::Editing;
         self.git.diff_view = None;
         self.info("Source: deleted lines anchor to the following surviving line, or EOF");
         Ok(())
+    }
+    fn open_git_source(&mut self, path: &Path) -> io::Result<()> {
+        // A known document survives deletion of its entire parent directory.
+        // Reuse its identity without asking the filesystem to resolve that path.
+        let id = std::iter::once((self.active_buffer_id, &self.document))
+            .chain(self.buffers.iter().map(|(id, slot)| (*id, &slot.document)))
+            .find_map(|(id, document)| (document.path() == Some(path)).then_some(id));
+        if let Some(id) = id {
+            self.switch_buffer(id)
+        } else {
+            self.open_buffer(path)
+        }
     }
     pub fn cycle_changed_file(&mut self, backward: bool) -> io::Result<()> {
         if !self.git.ready() {
@@ -423,7 +440,7 @@ impl Editor {
             self.open_diff(file.path.clone(), self.git.comparison.clone());
             Ok(())
         } else {
-            self.open_buffer(&file.path)
+            self.open_git_source(&file.path)
         }
     }
     pub fn git_mark(&self, line: usize) -> Option<Mark> {
@@ -482,7 +499,7 @@ impl Editor {
                     if let Some(file) = files.get(self.git.selected) {
                         if key == Key::Char('d') || file.deleted {
                             self.open_diff(file.path.clone(), self.git.comparison.clone());
-                        } else if let Err(e) = self.open_buffer(&file.path) {
+                        } else if let Err(e) = self.open_git_source(&file.path) {
                             self.error(&e.to_string());
                         }
                     }

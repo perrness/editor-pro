@@ -784,3 +784,175 @@ fn multiple_hunks_navigation_and_base_refresh_keep_source_anchor() {
     e.handle_key(Key::Char('['));
     assert!(e.git.diff_view.as_ref().unwrap().anchor < 10);
 }
+
+#[cfg(unix)]
+#[test]
+fn cancellation_of_running_git_discards_result_and_reaps_before_latest_request() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.write("a", "base\n");
+    r.commit();
+    let executable = r.path("git-launcher");
+    fs::write(&executable,"#!/usr/bin/python3\nimport os,sys,time\nmarker=os.path.join(os.path.dirname(__file__),'started')\nif not os.path.exists(marker):\n    with open(marker,'w') as f: f.write(str(os.getpid()))\n    time.sleep(60)\nos.execv('/usr/bin/git',['git']+sys.argv[1:])\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let worker = Worker::new(Config {
+        executable,
+        timeout: Duration::from_secs(15),
+        debounce: Duration::ZERO,
+    })
+    .unwrap();
+    worker.submit(r.request("a", Comparison::Revision("invalid".into())));
+    let until = Instant::now() + Duration::from_secs(10);
+    while !r.path("started").exists() {
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(2));
+    }
+    let serial = worker.submit(r.request("a", Comparison::Index));
+    let result = reply(&worker);
+    assert_eq!(result.serial, serial);
+    assert_eq!(
+        result.result.unwrap().unwrap().comparison,
+        Comparison::Index
+    );
+    let pid = fs::read_to_string(r.path("started")).unwrap();
+    assert!(
+        !Command::new("/bin/kill")
+            .args(["-0", &pid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+#[cfg(unix)]
+#[test]
+fn configured_helpers_are_disabled_and_inspection_does_not_write_repository() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.write("a", "base\n");
+    r.commit();
+    let script = r.path("helper");
+    fs::write(&script,"#!/usr/bin/python3\nimport sys\nopen('helper-was-run','w').write('bad')\nsys.stdout.buffer.write(sys.stdin.buffer.read())\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    for setting in [
+        "diff.external",
+        "diff.custom.textconv",
+        "filter.custom.clean",
+        "filter.custom.process",
+        "core.fsmonitor",
+    ] {
+        r.git(&["config", setting, script.to_str().unwrap()]);
+    }
+    r.git(&["config", "filter.custom.required", "true"]);
+    r.write(".gitattributes", "a diff=custom filter=custom\n");
+    r.write("a", "working\n");
+    let index = fs::read(r.path(".git/index")).unwrap();
+    let s = r.inspect("a", Comparison::Head);
+    assert!(s.filters_disabled);
+    assert!(s.summary().contains("filters off"));
+    assert_eq!(text(&s.diff.unwrap(), Kind::Add), ["working"]);
+    assert!(!r.path("helper-was-run").exists());
+    assert_eq!(fs::read(r.path(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(r.path("a")).unwrap(), b"working\n");
+}
+#[cfg(unix)]
+#[test]
+fn literal_pathspecs_and_non_utf8_names_are_not_reinterpreted() {
+    use std::os::unix::ffi::OsStringExt;
+    let r = Repo::new();
+    r.write(":(glob)*", "before\n");
+    let raw =
+        r.0.path()
+            .join(std::ffi::OsString::from_vec(b"-raw\xff\n".to_vec()));
+    fs::write(&raw, b"before\n").unwrap();
+    r.commit();
+    r.write(":(glob)*", "after\n");
+    fs::write(&raw, b"after\n").unwrap();
+    assert_eq!(
+        text(
+            &r.inspect(":(glob)*", Comparison::Head).diff.unwrap(),
+            Kind::Add
+        ),
+        ["after"]
+    );
+    let req = Request {
+        path: raw.clone(),
+        buffer: None,
+        comparison: Comparison::Index,
+        inspect: true,
+    };
+    let s = git::inspect(&req, &Config::default()).unwrap().unwrap();
+    assert!(s.entries.iter().any(|e| r.0.path().join(&e.path) == raw));
+    assert_eq!(text(&s.diff.unwrap(), Kind::Add), ["after"]);
+}
+#[test]
+fn content_and_patch_limits_report_unsupported_and_errors_are_visible_in_source() {
+    let r = Repo::new();
+    r.write("a", "base\n");
+    r.commit();
+    fs::write(r.path("a"), vec![b'x'; git::CONTENT_LIMIT + 1]).unwrap();
+    assert!(
+        r.inspect("a", Comparison::Head)
+            .diff
+            .unwrap_err()
+            .contains("exceeds 2 MiB")
+    );
+    let patch = format!("@@ -0,0 +1,100001 @@\n{}", "+x\n".repeat(100001));
+    assert!(Diff::parse(&patch).unwrap_err().contains("100,000"));
+    assert!(Diff::parse("@@ -1 +1 @@\n-old\n").is_err());
+    r.write("a", "base\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.execute_command("gitbase no-such-base").unwrap();
+    settle_editor(&mut e);
+    assert!(draw(&mut e, 140, 8).contains("Unavailable revision"));
+    assert!(e.git_mark(0).is_none());
+    e.execute_command("gitbase HEAD").unwrap();
+    let screen = draw(&mut e, 80, 8);
+    assert!(screen.contains("loading"));
+}
+#[test]
+fn selected_revision_empty_file_crlf_and_final_newline_metadata_render() {
+    let r = Repo::new();
+    r.write("a", "e\u{301}界");
+    r.commit();
+    r.write("a", "e\u{301}界\r\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.execute_command("diff HEAD").unwrap();
+    settle_editor(&mut e);
+    let output = draw(&mut e, 140, 12);
+    assert!(output.contains("[no final newline]"));
+    assert!(output.contains("[CRLF]"));
+}
+
+#[test]
+fn dirty_document_remains_a_source_destination_after_parent_directory_deletion() {
+    let r = Repo::new();
+    r.write("sub/a", "base\n");
+    r.write("other", "other\n");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("sub/a")).unwrap());
+    e.document.buffer.insert("unsaved ");
+    e.document.buffer.commit();
+    fs::remove_dir_all(r.path("sub")).unwrap();
+    e.open_buffer(&r.path("other")).unwrap();
+    e.execute_command("changes").unwrap();
+    settle_editor(&mut e);
+    let selected = e
+        .changed_files()
+        .iter()
+        .position(|f| f.path == r.path("sub/a"))
+        .unwrap();
+    e.git.selected = selected;
+    e.handle_key(Key::Enter);
+    assert_eq!(e.active_buffer_id, 1);
+    assert!(e.document.buffer.is_modified());
+    e.execute_command("diff").unwrap();
+    settle_editor(&mut e);
+    assert!(e.git.diff().unwrap().source_available);
+    e.jump_diff_source().unwrap();
+    assert_eq!(e.active_buffer_id, 1);
+    assert_eq!(e.document.buffer.text().to_string(), "unsaved base\n");
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "base\n");
+    assert!(!r.path("sub").exists());
+}

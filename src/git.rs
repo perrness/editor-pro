@@ -78,6 +78,7 @@ impl Entry {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub filters_disabled: bool,
     pub repository: Repository,
     pub branch: String,
     pub head: Option<String>,
@@ -88,7 +89,7 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn summary(&self) -> String {
         format!(
-            "{} S{} W{} ?{} !{}",
+            "{} S{} W{} ?{} !{}{}",
             self.branch,
             self.entries
                 .iter()
@@ -99,7 +100,12 @@ impl Snapshot {
                 .filter(|e| !matches!(e.worktree, '.' | '?') && !e.conflict)
                 .count(),
             self.entries.iter().filter(|e| e.untracked()).count(),
-            self.entries.iter().filter(|e| e.conflict).count()
+            self.entries.iter().filter(|e| e.conflict).count(),
+            if self.filters_disabled {
+                " [filters off]"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -181,6 +187,7 @@ impl Worker {
                         serial,
                         current: &state.serial,
                         deadline: Instant::now() + config.timeout,
+                        overrides: Vec::new(),
                     };
                     let result = inspect_with(&runner, &request);
                     let mut queue = state.queue.lock().unwrap();
@@ -241,15 +248,18 @@ pub fn inspect(request: &Request, config: &Config) -> Result<Option<Snapshot>, S
             serial: 0,
             current: &current,
             deadline: Instant::now() + config.timeout,
+            overrides: Vec::new(),
         },
         request,
     )
 }
+#[derive(Clone)]
 struct Runner<'a> {
     config: &'a Config,
     serial: u64,
     current: &'a AtomicU64,
     deadline: Instant,
+    overrides: Vec<OsString>,
 }
 struct Output {
     success: bool,
@@ -306,6 +316,7 @@ impl Runner<'_> {
                 "-c",
                 "diff.ignoreSubmodules=all",
             ])
+            .args(&self.overrides)
             .args(args)
             .env("LC_ALL", "C")
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -430,6 +441,42 @@ fn inspect_with(runner: &Runner<'_>, request: &Request) -> Result<Option<Snapsho
         &runner.git(&root, &refs(&args(&["rev-parse", "--absolute-git-dir"])))?,
     ))?;
     let repository = Repository { root, git_dir };
+    // Status can invoke clean/process filters as well as fsmonitor. Suppress
+    // configured helpers without changing repository configuration or attributes.
+    let filters = runner.run(
+        &repository.root,
+        &refs(&args(&[
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|process|required)$",
+        ])),
+    )?;
+    if !filters.success && filters.code != Some(1) {
+        return Err(format!("Cannot inspect Git filters: {}", filters.error));
+    }
+    let mut overrides = Vec::new();
+    for key in filters.bytes.split(|b| *b == 0).filter(|s| !s.is_empty()) {
+        let key = std::str::from_utf8(key).map_err(err)?;
+        overrides.push("-c".into());
+        overrides.push(
+            format!(
+                "{key}={}",
+                if key.ends_with(".required") {
+                    "false"
+                } else {
+                    ""
+                }
+            )
+            .into(),
+        );
+    }
+    let filters_disabled = !overrides.is_empty();
+    let runner = Runner {
+        overrides,
+        ..runner.clone()
+    };
     let status_args = args(&[
         "status",
         "--porcelain=v2",
@@ -441,6 +488,7 @@ fn inspect_with(runner: &Runner<'_>, request: &Request) -> Result<Option<Snapsho
     let raw = runner.git(&repository.root, &refs(&status_args))?;
     let (branch, head, entries) = parse_status(&raw)?;
     let mut snapshot = Snapshot {
+        filters_disabled,
         repository,
         branch,
         head,
@@ -449,7 +497,7 @@ fn inspect_with(runner: &Runner<'_>, request: &Request) -> Result<Option<Snapsho
         diff: Ok(Diff::default()),
     };
     if request.inspect {
-        snapshot.diff = comparison(runner, request, &snapshot);
+        snapshot.diff = comparison(&runner, request, &snapshot);
     }
     // Detect an index/ref/status change during the multi-command snapshot.
     if raw != runner.git(&snapshot.repository.root, &refs(&status_args))? {

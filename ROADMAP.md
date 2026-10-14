@@ -1,7 +1,7 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Milestones 1 and 2 are implemented
+not only code or an advertised server capability. Milestones 1, 2 and 3 are implemented
 in this delivery. Editing modes remain independent of contextual views throughout.
 
 ## Milestone 1 — Minimal editor
@@ -52,8 +52,9 @@ are recorded in [VALIDATION.md](VALIDATION.md). Full platform/interactive comfor
 sign-off remains open until macOS and physical-terminal use are observed. The
 missing Kotlin server executable keeps the separate feasibility gate open.
 
-**Next work:** close those validation gaps before a broader release. Milestone 3
-is the next product scope; none of its Git functionality is implemented here.
+**Remaining validation:** close those platform/physical-terminal gaps before a
+broader release. Milestone 3 is implemented below; it does not close the separate
+real Kotlin feasibility gate.
 
 ## Milestone 3 — Git-aware editing
 
@@ -65,6 +66,20 @@ fallback and return-to-source location. Refresh Git state asynchronously.
 **Acceptance:** efficiently inspect working-tree changes without leaving the
 editor. Compare against each supported base; deletion/rename/untracked cases work;
 closing a diff restores the source position. Git does not depend on LSP.
+
+**Delivery status:** implemented. `:changes`, `:diff HEAD|index|REV|staged`,
+`:gitbase`, `:gitrefresh`, `:gnext`/`:gprev`, semantic source gutters, hunk/source
+navigation and synchronized paired panes are available. Tab switches layouts;
+widths below 100 columns fall back to inline. Escape restores the original buffer,
+cursor and viewport. Disk/index status and unsaved buffer changes are distinct.
+
+**Acceptance:** supported by Linux regression/PTY checks and a reproducible Git
+responsiveness example. HEAD/index/selected revisions, staged plus working edits,
+unsaved buffers, deletion/rename/untracked cases, linked worktrees, cancellation,
+errors and location/history preservation are covered. No Git process work runs in
+the input/render loop and no LSP is required. See [VALIDATION.md](VALIDATION.md)
+for exact final counts, measurements and limits. macOS and physical-terminal
+appearance remain unobserved. No M4 persistence, review marks or notes are included.
 
 ## Milestone 4 — Code review
 
