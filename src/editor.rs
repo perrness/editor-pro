@@ -133,6 +133,22 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.note_edit.is_some()
+            && self.mode == Mode::Normal
+            && self.pending_label().is_empty()
+            && matches!(key, Key::Escape | Key::Ctrl('c' | '['))
+            && !self.review.saving_note()
+        {
+            if self.document.buffer.is_modified() {
+                self.error(
+                    "Unsaved note: :note save or :note cancel returns to the source context",
+                );
+            } else {
+                self.finish_note();
+                self.info("Unchanged note closed");
+            }
+            return;
+        }
         if self.note_edit.is_some() && (self.review.saving_note() || key == Key::Ctrl('p')) {
             self.error("Note draft: wait for saving; :note save or :note cancel returns");
             return;

@@ -16,6 +16,7 @@ pub const MAX_NOTE: usize = 16 * 1024;
 pub const MAX_CONTEXT: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContentId {
     pub present: bool,
     pub bytes: usize,
@@ -35,6 +36,7 @@ pub fn fingerprint(bytes: &[u8]) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Identity {
     pub repository: Repository,
     pub comparison: Comparison,
@@ -45,6 +47,8 @@ pub struct Identity {
     #[serde(with = "path_bytes")]
     pub new_path: PathBuf,
     pub old_blob: Option<String>,
+    pub old_mode: Option<String>,
+    pub new_mode: Option<String>,
     pub new_blob: Option<String>,
     pub old: ContentId,
     pub new: ContentId,
@@ -61,6 +65,7 @@ pub enum Attachment {
     Line { side: Side, fingerprint: String },
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Context {
     pub old_line: Option<usize>,
     pub new_line: Option<usize>,
@@ -90,6 +95,7 @@ impl State {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Record {
     pub id: u64,
     pub revision: u64,
@@ -136,6 +142,7 @@ impl Record {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Store {
     pub version: u32,
     pub repository: Repository,
@@ -190,6 +197,7 @@ impl Store {
                 || record.state.is_some() == record.note.is_some()
                 || matches!(record.attachment, Attachment::Line { .. }) && record.state.is_some()
                 || !valid_identity(&record.identity)
+                || !valid_attachment(&record.attachment)
             {
                 return Err("Invalid review record; original preserved".into());
             }
@@ -204,6 +212,7 @@ fn valid_identity(id: &Identity) -> bool {
             !p.as_os_str().is_empty()
                 && !p.is_absolute()
                 && p.as_os_str().len() <= 4096
+                && !p.as_os_str().as_encoded_bytes().contains(&0)
                 && p.components()
                     .all(|c| matches!(c, std::path::Component::Normal(_)))
         })
@@ -211,7 +220,43 @@ fn valid_identity(id: &Identity) -> bool {
             c.bytes <= crate::git::CONTENT_LIMIT
                 && c.sha256.len() == 64
                 && c.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                && (c.present || (c.bytes == 0 && c.sha256 == fingerprint(b"")))
         })
+        && [&id.resolved_base, &id.old_blob, &id.new_blob]
+            .into_iter()
+            .all(|oid| {
+                oid.as_ref().is_none_or(|s| {
+                    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            })
+        && id.old.present == id.old_blob.is_some()
+        && [
+            (&id.old_mode, id.old.present),
+            (&id.new_mode, id.new.present),
+        ]
+        .into_iter()
+        .all(|(mode, present)| {
+            mode.as_ref()
+                .is_some_and(|s| matches!(s.as_str(), "100644" | "100755"))
+                == present
+                && (present || mode.is_none())
+        })
+}
+fn valid_attachment(attachment: &Attachment) -> bool {
+    let hex = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+    match attachment {
+        Attachment::File => true,
+        Attachment::Hunk { fingerprint } => hex(fingerprint),
+        Attachment::Line { fingerprint, .. } => {
+            let fields: Vec<_> = fingerprint.split(':').collect();
+            fields.len() == 3
+                && fields[0].parse::<usize>().is_ok_and(|n| n <= 2)
+                && fields[1]
+                    .parse::<usize>()
+                    .is_ok_and(|n| (1..=3).contains(&n))
+                && hex(fields[2])
+        }
+    }
 }
 
 /// Only unique content signatures are actionable. Similar/repeated locations are

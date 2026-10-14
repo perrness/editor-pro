@@ -59,6 +59,7 @@ pub struct Request {
     pub comparison: Comparison,
     pub inspect: bool,
     pub review: Option<Arc<crate::review::Store>>,
+    pub review_generation: u64,
     pub review_buffers: Vec<(PathBuf, BufferVersion)>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +91,7 @@ pub struct Snapshot {
     pub entries: Vec<Entry>,
     pub comparison: Comparison,
     pub diff: Result<Diff, String>,
-    pub review_freshness: std::collections::BTreeMap<u64, crate::review::Freshness>,
+    pub review_freshness: std::collections::BTreeMap<u64, (u64, crate::review::Freshness)>,
     pub review_limited: bool,
 }
 impl Snapshot {
@@ -528,7 +529,7 @@ fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snaps
     for r in &store.records {
         snapshot
             .review_freshness
-            .insert(r.id, Freshness::Unavailable);
+            .insert(r.id, (r.revision, Freshness::Unavailable));
         if r.identity.comparison == request.comparison {
             paths.insert(snapshot.repository.root.join(&r.identity.new_path));
         }
@@ -541,7 +542,7 @@ fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snaps
         {
             snapshot
                 .review_freshness
-                .insert(r.id, r.freshness(snapshot.diff.as_ref().ok()));
+                .insert(r.id, (r.revision, r.freshness(snapshot.diff.as_ref().ok())));
         }
     }
     paths.remove(&request.path);
@@ -565,15 +566,19 @@ fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snaps
             inspect: true,
             review: None,
             review_buffers: Vec::new(),
+            review_generation: 0,
         };
         let diff = comparison(runner, &other, snapshot);
+        if Instant::now() >= runner.deadline {
+            snapshot.review_limited = true;
+        }
         for r in &store.records {
             if snapshot.repository.root.join(&r.identity.new_path) == path
                 && r.identity.comparison == request.comparison
             {
                 snapshot
                     .review_freshness
-                    .insert(r.id, r.freshness(diff.as_ref().ok()));
+                    .insert(r.id, (r.revision, r.freshness(diff.as_ref().ok())));
             }
         }
     }
@@ -653,6 +658,7 @@ fn parse_status(raw: &[u8]) -> Result<(String, Option<String>, Vec<Entry>), Stri
 struct Content {
     bytes: Vec<u8>,
     oid: Option<String>,
+    mode: Option<String>,
 }
 fn blob(
     runner: &Runner<'_>,
@@ -668,6 +674,7 @@ fn blob(
     command.push(path.as_os_str().to_owned());
     let bytes = runner.git(&repo.root, &refs(&command))?;
     let mut object = None;
+    let mut mode = None;
     for record in bytes.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let tab = record
             .iter()
@@ -686,6 +693,7 @@ fn blob(
         if revision.is_none() && fields[2] != b"0" {
             return Err("Unresolved conflict; inspect or resolve the source file".into());
         }
+        mode = Some(std::str::from_utf8(fields[0]).map_err(err)?.to_string());
         object = Some(
             std::str::from_utf8(if revision.is_some() {
                 fields[2]
@@ -700,6 +708,7 @@ fn blob(
         return Ok(Content {
             bytes: Vec::new(),
             oid: None,
+            mode: None,
         });
     };
     let size = runner.git(&repo.root, &refs(&args(&["cat-file", "-s", &oid])))?;
@@ -714,6 +723,7 @@ fn blob(
     Ok(Content {
         bytes,
         oid: Some(oid),
+        mode,
     })
 }
 fn working(request: &Request) -> Result<(Vec<u8>, String, bool), String> {
@@ -762,6 +772,16 @@ fn working(request: &Request) -> Result<(Vec<u8>, String, bool), String> {
             Ok((bytes, "working disk".into(), true))
         }
     }
+}
+fn working_mode(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
+            return "100755".into();
+        }
+    }
+    "100644".into()
 }
 fn compare_bytes(runner: &Runner<'_>, old: &[u8], new: &[u8]) -> Result<Diff, String> {
     for bytes in [old, new] {
@@ -866,10 +886,11 @@ fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Re
         Content {
             bytes: Vec::new(),
             oid: None,
+            mode: None,
         }
     };
     let (work, work_label, available) = working(request)?;
-    let (new, right, new_oid, new_present) = if request.comparison == Comparison::Staged {
+    let (new, right, new_oid, new_present, new_mode) = if request.comparison == Comparison::Staged {
         let content = blob(runner, repo, None, relative)?;
         (
             content.bytes,
@@ -879,9 +900,16 @@ fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Re
             ),
             content.oid.clone(),
             content.oid.is_some(),
+            content.mode,
         )
     } else {
-        (work.clone(), work_label, None, available)
+        (
+            work.clone(),
+            work_label,
+            None,
+            available,
+            available.then(|| working_mode(&request.path)),
+        )
     };
     let mut diff = compare_bytes(runner, &old.bytes, &new)?;
     let base = match &request.comparison {
@@ -908,6 +936,8 @@ fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Re
         old: crate::review::ContentId::new(&old.bytes, old.oid.is_some()),
         new: crate::review::ContentId::new(&new, new_present),
         old_blob: old.oid,
+        old_mode: old.mode,
+        new_mode,
         new_blob: new_oid,
     });
     diff.identify_locations();

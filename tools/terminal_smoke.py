@@ -2,6 +2,7 @@
 """Exercise the real binary via a PTY on Linux/macOS. No third-party modules."""
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -68,11 +69,22 @@ def run_session(binary, path, commands, expected):
             if not isinstance(command, tuple):
                 command_output_start = len(output)
             if isinstance(command, tuple):
-                marker, timeout = command
+                # A three-item tuple retries an idempotent command until an
+                # observable screen/durability signal, never a presumed delay.
+                if len(command) == 3:
+                    payload, marker, timeout = command
+                    command_output_start = len(output)
+                else:
+                    marker, timeout = command
+                    payload = None
+                def complete():
+                    return marker() if callable(marker) else marker in output[command_output_start:]
                 deadline = time.monotonic() + timeout
-                while marker not in output[command_output_start:] and time.monotonic() < deadline:
-                    pump(0.02)
-                assert marker in output[command_output_start:], f"Missing PTY marker {marker!r}: {output!r}"
+                while not complete() and time.monotonic() < deadline:
+                    if payload is not None:
+                        os.write(master, payload)
+                    pump(0.05)
+                assert complete(), f"Missing PTY completion {marker!r}: {output!r}"
             elif callable(command):
                 command(master, slave, pid)
             else:
@@ -212,7 +224,47 @@ def main():
             b":diff HEAD\r", b":diff missing-revision\r", (b"Unavailable revision", 10),
             b":diff HEAD\r", b"n", b"r", b"\x1b", b":q\r"], "".join(expected_rows).encode())
         assert (repo / ".git" / "index").read_bytes() == index_before
-    print("PASS: 13 PTY sessions; modal editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git changes/diffs/resize/return, and restoration")
+        # M4: inspect, mark and annotate without source writes; restart, detect
+        # changed content, export, and recover a failed metadata write.
+        store = repo / ".git" / "editor-pro-review.json"
+        feedback = Path(directory) / "review feedback 界.md"
+        reviewed_bytes = source.read_bytes()
+        def saved(predicate):
+            def check():
+                if not store.exists():
+                    return False
+                return predicate(json.loads(store.read_text())["records"])
+            return check
+        has_file = saved(lambda rs: any(r["state"] == "Reviewed" and r["attachment"] == "File" for r in rs))
+        has_hunk = saved(lambda rs: any(r["state"] == "Attention" for r in rs))
+        note_text = "界👩‍💻 review\nCheck `edge` case <tag>."
+        has_note = saved(lambda rs: any(r["note"] == note_text for r in rs))
+        output = run_session(binary, source, [b"30G0", b":changes\r", (b"source.rs", 10), b"\x1b", b":diff HEAD\r",
+            (b":review file reviewed\r", has_file, 10),
+            (b":review hunk attention\r", has_hunk, 10),
+            resize(24, 130), b"\t", resize(10, 45), b"\t", resize(24, 130),
+            (b":note hunk\r", b"NOTE ", 10), b"i", b"\x1b[200~" + note_text.encode() + b"\x1b[201~", b"\x1b",
+            b":note save\r", (has_note, 10), (b":notes\r", b"REVIEW records", 10),
+            (b"fresh", 10), b"\x1b", b"\x1b", b"iRETURN", b"\x1b", b"u", b":q\r"], reviewed_bytes)
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        output = run_session(binary, source, [b":diff HEAD\r", (b":notes\r", b"REVIEW records", 10), (b"fresh", 10),
+            b"\x1b", b"\x1b", lambda master, slave, pid: source.write_bytes(reviewed_bytes.replace(b"WORKING", b"ALTERED")),
+            b":e!\r", b":diff HEAD\r", b":review list stale\r", (b"STALE", 10), b"\x1b",
+            (f":review export {feedback}\r".encode(), feedback.exists, 10), b":q\r"], reviewed_bytes.replace(b"WORKING", b"ALTERED"))
+        report = feedback.read_text()
+        assert "STALE" in report and "needs-attention" in report and "界👩‍💻" in report, report
+        assert "&#96;edge&#96;" in report and "&#60;tag&#62;" in report, report
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        lock = store.with_suffix(".json.lock")
+        lock.write_text("test writer")
+        recovered = saved(lambda rs: any(r["note"] == "recovered note" for r in rs))
+        output = run_session(binary, source, [b":diff HEAD\r", (b":note file\r", b"NOTE ", 10),
+            b"irecovered note", b"\x1b", b":note save\r", (b"lock unavailable", 10),
+            lambda master, slave, pid: lock.unlink(), b":note save\r", (recovered, 10),
+            f":review export {feedback}\r".encode(), (b"already exists", 10), b":q\r"], source.read_bytes())
+        assert feedback.read_text() == report
+        assert (repo / ".git" / "index").read_bytes() == index_before
+    print("PASS: 16 PTY sessions; modal editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git changes/diffs/resize/return, review/notes/resume/staleness/export/failure recovery, and restoration")
     return 0
 
 

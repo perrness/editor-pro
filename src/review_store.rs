@@ -200,9 +200,19 @@ fn escape(value: &str) -> String {
 }
 pub fn path_text(path: &Path) -> String {
     if let Some(s) = path.to_str() {
-        return s.to_string();
+        return s
+            .chars()
+            .flat_map(|c| {
+                if c.is_control() || c == '\\' {
+                    c.escape_default().collect::<Vec<_>>()
+                } else {
+                    vec![c]
+                }
+            })
+            .collect();
     }
-    path.as_os_str()
+    let encoded: String = path
+        .as_os_str()
         .as_encoded_bytes()
         .iter()
         .map(|b| {
@@ -212,7 +222,8 @@ pub fn path_text(path: &Path) -> String {
                 format!("%{b:02X}")
             }
         })
-        .collect()
+        .collect();
+    format!("(non-UTF-8; percent-escaped bytes) {encoded}")
 }
 /// Deterministic report of persisted annotations; it does not claim a complete
 /// repository scan or export unannotated code. Excerpts are bounded on creation.
@@ -281,6 +292,11 @@ pub fn markdown(export: &Export) -> String {
         out.push_str(&format!("Content SHA-256: old {} ({} bytes, {}); new {} ({} bytes, {}). Annotated from unsaved content: {}.\n\nAttachment: {}. Old line: {}; new line: {}. Coordinates are historical hints, not identity.\n\n",
             i.old.sha256, i.old.bytes, if i.old.present { "present" } else { "missing" }, i.new.sha256, i.new.bytes, if i.new.present { "present" } else { "missing" }, r.unsaved,
             escape(&format!("{:?}", r.attachment)), r.context.old_line.map_or("—".into(), |n| (n+1).to_string()), r.context.new_line.map_or("—".into(), |n| (n+1).to_string())));
+        out.push_str(&format!(
+            "Modes: old {}; new {}.\n\n",
+            escape(i.old_mode.as_deref().unwrap_or("absent")),
+            escape(i.new_mode.as_deref().unwrap_or("absent"))
+        ));
         if !r.context.excerpt.is_empty() {
             out.push_str(&format!(
                 "Context (bounded excerpt):\n\n<pre>{}</pre>\n\n",

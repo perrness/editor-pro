@@ -58,29 +58,35 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
         let files = editor.changed_files();
+        let progress = editor.review_progress();
+        let empty = crate::review_view::FileProgress::default();
         let height = body.height.saturating_sub(3) as usize;
         let top = editor.git.selected.saturating_sub(height.saturating_sub(1));
         for (index, file) in files.iter().enumerate().skip(top).take(height) {
+            let progress = progress.get(&file.path).unwrap_or(&empty);
             line(
                 frame,
                 body,
                 (index - top + 3) as u16,
-                &format!("[{}] {}", editor.review_file_label(&file.path), file.label),
+                &format!(
+                    "[{}] {}",
+                    if editor.review.store.is_some() {
+                        progress.label()
+                    } else {
+                        "review unavailable".into()
+                    },
+                    file.label
+                ),
                 if index == editor.git.selected {
                     style.bg(theme.selection)
                 } else {
-                    style.fg(
-                        if editor.review_file_label(&file.path).starts_with("reviewed") {
-                            theme.diff_added
-                        } else if editor
-                            .review_file_label(&file.path)
-                            .contains("needs-attention")
-                        {
-                            theme.error
-                        } else {
-                            theme.foreground
-                        },
-                    )
+                    style.fg(if progress.attention > 0 {
+                        theme.error
+                    } else if progress.state == Some(crate::review::State::Reviewed) {
+                        theme.diff_added
+                    } else {
+                        theme.foreground
+                    })
                 },
             );
         }
@@ -192,6 +198,8 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
                 .and_then(|s| {
                     s.records.iter().find(|r| {
                         r.attachment == a
+                            && editor.git.diff().and_then(|d| d.identity.as_ref())
+                                == Some(&r.identity)
                             && r.state.is_some()
                             && editor.review_freshness(r) == crate::review::Freshness::Fresh
                     })

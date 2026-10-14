@@ -35,7 +35,7 @@ struct Stamp {
     buffer: Option<(usize, u64, bool)>,
     comparison: Comparison,
     inspect: bool,
-    review: usize,
+    review: u64,
     review_buffers: Vec<(PathBuf, usize, u64, bool)>,
 }
 impl Stamp {
@@ -48,10 +48,7 @@ impl Stamp {
                 .map(|b| (b.id, b.generation, b.dirty)),
             comparison: request.comparison.clone(),
             inspect: request.inspect,
-            review: request
-                .review
-                .as_ref()
-                .map_or(0, |s| std::sync::Arc::as_ptr(s) as usize),
+            review: request.review_generation,
             review_buffers: request
                 .review_buffers
                 .iter()
@@ -184,6 +181,7 @@ impl Editor {
             comparison: self.git.comparison.clone(),
             inspect,
             review: self.review.store.clone(),
+            review_generation: self.review.generation,
             review_buffers: std::iter::once((self.active_buffer_id, &self.document))
                 .chain(self.buffers.iter().map(|(id, s)| (*id, &s.document)))
                 .filter_map(|(id, d)| {
@@ -218,12 +216,7 @@ impl Editor {
         if path.is_some_and(|p| p != stamp.path)
             || path.is_some() != stamp.inspect
             || stamp.comparison != self.git.comparison
-            || stamp.review
-                != self
-                    .review
-                    .store
-                    .as_ref()
-                    .map_or(0, |s| std::sync::Arc::as_ptr(s) as usize)
+            || stamp.review != self.review.generation
         {
             return false;
         }

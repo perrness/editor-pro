@@ -43,6 +43,7 @@ impl Repo {
             inspect: true,
             review: None,
             review_buffers: Vec::new(),
+            review_generation: 0,
         })
     }
     fn inspect(&self, req: Request) -> Diff {
@@ -185,6 +186,7 @@ fn endings_presence_and_unsaved_bytes_are_exact() {
         inspect: true,
         review: None,
         review_buffers: Vec::new(),
+        review_generation: 0,
     };
     let unsaved = r.inspect(req("new\r\n", 1));
     assert_eq!(rec.freshness(Some(&unsaved)), Freshness::Fresh);
@@ -242,6 +244,7 @@ fn identities_isolate_repositories_worktrees_bases_renames_and_untracked() {
         inspect: true,
         review: None,
         review_buffers: Vec::new(),
+        review_generation: 0,
     });
     assert_eq!(rec.freshness(Some(&other)), Freshness::Stale);
     assert_ne!(
@@ -358,7 +361,10 @@ fn corrupt_oversized_future_readonly_and_locked_stores_are_preserved() {
     };
     let mut future = review_store::load(repo).unwrap();
     future.version = 999;
+    let mut unknown = serde_json::to_value(review_store::load(repo).unwrap()).unwrap();
+    unknown["unrecognized-data"] = "preserve this".into();
     for bytes in [
+        serde_json::to_vec(&unknown).unwrap(),
         b"broken json".to_vec(),
         serde_json::to_vec(&future).unwrap(),
         vec![b'x'; review_store::STORE_LIMIT as usize + 1],
@@ -791,4 +797,442 @@ fn invalid_comparison_keeps_prior_records_unavailable_and_rejects_actions() {
     assert!(e.execute_command("review file reviewed").is_err());
     assert!(e.execute_command("note file").is_err());
     assert_eq!(records(&e).len(), 1);
+}
+
+#[test]
+fn queued_obsolete_comparison_cannot_restore_a_fresh_mark() {
+    let (r, d) = fixture();
+    let repo = d.identity.as_ref().unwrap().repository.clone();
+    let (store, id) = review_store::apply(
+        &repo,
+        &Change {
+            expected: None,
+            replacement: Some(mark(&d, 0, "file")),
+        },
+    )
+    .unwrap();
+    let worker = git::Worker::new(Config {
+        debounce: Duration::from_millis(25),
+        ..Config::default()
+    })
+    .unwrap();
+    let mut req = Request {
+        path: r.path("a"),
+        buffer: None,
+        comparison: Comparison::Head,
+        inspect: true,
+        review: Some(Arc::new(store)),
+        review_buffers: vec![],
+        review_generation: 0,
+    };
+    let old = worker.submit(req.clone());
+    req.buffer = Some(BufferVersion {
+        id: 1,
+        generation: 22,
+        dirty: true,
+        text: Rope::from_str("changed\n"),
+    });
+    let new = worker.submit(req);
+    assert_ne!(old, new);
+    let start = Instant::now();
+    loop {
+        if let Some(reply) = worker.poll() {
+            assert_eq!(reply.serial, new);
+            let snapshot = reply.result.unwrap().unwrap();
+            assert_eq!(snapshot.review_freshness[&id].1, Freshness::Stale);
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10));
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+#[test]
+fn linked_worktree_persistence_and_comparison_scopes_never_share_progress() {
+    let (r, d) = fixture();
+    let repo = d.identity.as_ref().unwrap().repository.clone();
+    let (store, _) = review_store::apply(
+        &repo,
+        &Change {
+            expected: None,
+            replacement: Some(mark(&d, 0, "file")),
+        },
+    )
+    .unwrap();
+    let wt = tempdir().unwrap();
+    r.git(&[
+        "worktree",
+        "add",
+        "-b",
+        "second",
+        wt.path().to_str().unwrap(),
+    ]);
+    fs::write(wt.path().join("a"), "new\n").unwrap();
+    let other = r.inspect(Request {
+        path: wt.path().join("a"),
+        buffer: None,
+        comparison: Comparison::Head,
+        inspect: true,
+        review: Some(Arc::new(store.clone())),
+        review_buffers: vec![],
+        review_generation: 0,
+    });
+    let other_repo = &other.identity.as_ref().unwrap().repository;
+    assert!(review_store::load(other_repo).unwrap().records.is_empty());
+    assert!(!review_store::store_path(other_repo).exists());
+    review_store::apply(
+        other_repo,
+        &Change {
+            expected: None,
+            replacement: Some(mark(&other, 0, "file")),
+        },
+    )
+    .unwrap();
+    assert_eq!(review_store::load(&repo).unwrap(), store);
+    let mut e = editor(&r);
+    act(&mut e, "diff index");
+    assert_eq!(e.review_freshness(&records(&e)[0]), Freshness::Unavailable);
+    act(&mut e, "review file attention");
+    assert_eq!(records(&e).len(), 2);
+    act(&mut e, "diff HEAD");
+    assert_eq!(e.review_freshness(&records(&e)[0]), Freshness::Fresh);
+    assert_eq!(e.review_freshness(&records(&e)[1]), Freshness::Unavailable);
+}
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_multiline_names_and_note_control_text_roundtrip_safely() {
+    use std::os::unix::ffi::OsStringExt;
+    let r = Repo::new();
+    r.write("a", "old\n");
+    r.commit();
+    let name = std::ffi::OsString::from_vec(b"-`odd`\xff\n*name*.rs".to_vec());
+    let path = r.0.path().join(name);
+    fs::write(&path, "new\n").unwrap();
+    let d = r.inspect(Request {
+        path: path.clone(),
+        buffer: None,
+        comparison: Comparison::Head,
+        inspect: true,
+        review: None,
+        review_buffers: vec![],
+        review_generation: 0,
+    });
+    let repo = &d.identity.as_ref().unwrap().repository;
+    let mut note = mark(&d, 1, "new");
+    note.state = None;
+    note.note = Some("界\n\u{1b}]0;bad\u{7}\n</pre>```".into());
+    let (store, id) = review_store::apply(
+        repo,
+        &Change {
+            expected: None,
+            replacement: Some(note),
+        },
+    )
+    .unwrap();
+    assert_eq!(review_store::load(repo).unwrap(), store);
+    assert_eq!(
+        store.records[0].identity.new_path,
+        path.strip_prefix(r.0.path()).unwrap()
+    );
+    let dir = tempdir().unwrap();
+    let export = Export {
+        store: Arc::new(store),
+        freshness: vec![(id, Freshness::Fresh)],
+        destination: dir.path().join("feedback.md"),
+        protected: vec![],
+        scope: "Test".into(),
+    };
+    let md = review_store::markdown(&export);
+    assert!(!md.contains('\u{1b}'));
+    assert!(!md.contains("```"));
+    assert!(md.contains("FF"));
+    assert_eq!(fs::read(&path).unwrap(), b"new\n");
+}
+#[test]
+fn deleted_lines_notes_remain_historical_and_stale_notes_never_jump_by_ordinal() {
+    let r = Repo::new();
+    r.write("a", "old\n");
+    r.write("gone", "deleted\n");
+    r.commit();
+    r.write("a", "new\n");
+    fs::remove_file(r.path("gone")).unwrap();
+    let mut e = editor(&r);
+    let cursor = e.document.buffer.cursor();
+    e.open_diff(r.path("gone"), Comparison::Head);
+    settle(&mut e);
+    e.git.diff_view.as_mut().unwrap().selected = 1;
+    e.execute_command("note old").unwrap();
+    e.handle_key(Key::Char('i'));
+    e.paste("Explain removal");
+    e.handle_key(Key::Escape);
+    act(&mut e, "note save");
+    assert_eq!(e.review_freshness(&records(&e)[0]), Freshness::Fresh);
+    assert!(e.jump_diff_source().is_err());
+    e.handle_key(Key::Escape);
+    assert_eq!(e.document.buffer.cursor(), cursor);
+    r.write("gone", "unrelated\n");
+    act(&mut e, "gitrefresh");
+    act(&mut e, "note next");
+    assert_eq!(e.review_freshness(&records(&e)[0]), Freshness::Stale);
+    assert!(e.message.contains("no automatic attachment"));
+    assert_eq!(e.document.path(), Some(r.path("a").as_path()));
+    assert_eq!(fs::read_to_string(r.path("gone")).unwrap(), "unrelated\n");
+}
+#[test]
+fn bounded_context_and_note_limits_do_not_persist_an_unsaved_source_copy() {
+    let (r, _) = fixture();
+    let mut e = editor(&r);
+    e.handle_key(Key::Char('i'));
+    e.paste(&"秘密".repeat(4000));
+    e.handle_key(Key::Escape);
+    settle(&mut e);
+    act(&mut e, "diff");
+    e.git.diff_view.as_mut().unwrap().selected = 2;
+    e.execute_command("note new").unwrap();
+    e.handle_key(Key::Char('i'));
+    e.paste(&"x".repeat(editor_pro::review::MAX_NOTE + 1));
+    assert!(e.document.buffer.text().len_bytes() <= editor_pro::review::MAX_NOTE);
+    e.paste("short note");
+    e.handle_key(Key::Escape);
+    act(&mut e, "note save");
+    assert!(records(&e)[0].context.excerpt.len() <= editor_pro::review::MAX_CONTEXT);
+    let bytes = fs::read(r.path(".git/editor-pro-review.json")).unwrap();
+    assert!(bytes.len() < 8000);
+    assert_eq!(fs::read_to_string(r.path("a")).unwrap(), "new\n");
+}
+#[cfg(unix)]
+#[test]
+fn executable_mode_changes_invalidate_and_export_symlinks_do_not_clobber() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let (r, d) = fixture();
+    let rec = mark(&d, 0, "file");
+    fs::set_permissions(r.path("a"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        rec.freshness(Some(&r.diff("a", Comparison::Head))),
+        Freshness::Stale
+    );
+    let repo = &d.identity.as_ref().unwrap().repository;
+    let (store, _) = review_store::apply(
+        repo,
+        &Change {
+            expected: None,
+            replacement: Some(rec),
+        },
+    )
+    .unwrap();
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("target");
+    fs::write(&target, "preserve").unwrap();
+    let link = dir.path().join("feedback");
+    symlink(&target, &link).unwrap();
+    let export = Export {
+        store: Arc::new(store),
+        freshness: vec![],
+        destination: link,
+        protected: vec![],
+        scope: "Test".into(),
+    };
+    assert!(review_store::export(&export).is_err());
+    assert_eq!(fs::read_to_string(target).unwrap(), "preserve");
+    let path = review_store::store_path(repo);
+    fs::remove_file(&path).unwrap();
+    symlink(r.path("a"), &path).unwrap();
+    assert!(review_store::load(repo).is_err());
+    assert!(
+        review_store::apply(
+            repo,
+            &Change {
+                expected: None,
+                replacement: Some(mark(&d, 0, "file"))
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read_to_string(r.path("a")).unwrap(), "new\n");
+}
+#[test]
+fn repeated_note_navigation_and_all_filters_have_explicit_empty_states() {
+    let (r, _) = fixture();
+    let mut e = editor(&r);
+    act(&mut e, "diff");
+    for text in ["first note", "second note"] {
+        e.execute_command("note file").unwrap();
+        e.handle_key(Key::Char('i'));
+        e.paste(text);
+        e.handle_key(Key::Escape);
+        act(&mut e, "note save");
+    }
+    act(&mut e, "note next");
+    let first = e.review.focused_record;
+    act(&mut e, "note next");
+    assert_ne!(e.review.focused_record, first);
+    act(&mut e, "note prev");
+    assert_eq!(e.review.focused_record, first);
+    assert!(
+        e.execute_command("review next hunk attention")
+            .unwrap_err()
+            .to_string()
+            .contains("No attention")
+    );
+    act(&mut e, "review list attention");
+    assert!(e.review_records().is_empty());
+    assert!(e.execute_command("review file reviewed").is_err());
+    assert!(e.execute_command("note file").is_err());
+    e.handle_key(Key::Enter);
+    assert!(e.message.contains("No matching"));
+}
+
+#[test]
+fn identical_hunks_in_different_files_do_not_share_displayed_marks() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let r = Repo::new();
+    r.write("a", "old\n");
+    r.write("b", "old\n");
+    r.commit();
+    r.write("a", "new\n");
+    r.write("b", "new\n");
+    let mut e = editor(&r);
+    act(&mut e, "diff");
+    act(&mut e, "review hunk reviewed");
+    e.open_diff(r.path("b"), Comparison::Head);
+    settle(&mut e);
+    let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    terminal
+        .draw(|f| editor_pro::ui::render(f, &mut e, &editor_pro::theme::Theme::night()))
+        .unwrap();
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(rendered.contains("Hunk unreviewed"), "{rendered}");
+    e.execute_command("note file").unwrap();
+    e.handle_key(Key::Escape);
+    assert!(e.note_edit.is_none());
+    settle(&mut e);
+    e.execute_command("note file").unwrap();
+    e.handle_key(Key::Char('i'));
+    e.paste("draft");
+    e.handle_key(Key::Escape);
+    e.handle_key(Key::Escape);
+    assert!(e.note_edit.is_some());
+    assert!(e.message.contains("Unsaved note"));
+    e.execute_command("note cancel").unwrap();
+    assert_eq!(e.view, View::Diff);
+}
+#[test]
+fn obsolete_record_revision_cannot_borrow_new_record_validation() {
+    let (r, _) = fixture();
+    let mut e = editor(&r);
+    act(&mut e, "review file reviewed");
+    let old = records(&e)[0].clone();
+    act(&mut e, "review file attention");
+    assert_ne!(e.review_freshness(&old), Freshness::Fresh);
+    assert_eq!(e.review_freshness(&records(&e)[0]), Freshness::Fresh);
+}
+#[test]
+fn bounded_batch_prioritizes_current_path_and_reports_unvalidated_progress() {
+    let r = Repo::new();
+    r.write("a", "old\n");
+    for n in 0..35 {
+        r.write(&format!("b{n:02}"), "old\n");
+    }
+    r.commit();
+    r.write("a", "new\n");
+    for n in 0..35 {
+        r.write(&format!("b{n:02}"), "new\n");
+    }
+    let d = r.diff("a", Comparison::Head);
+    let base = mark(&d, 0, "file");
+    let repo = &base.identity.repository;
+    let mut store = editor_pro::review::Store::empty(repo.clone());
+    for name in std::iter::once("a".into()).chain((0..35).map(|n| format!("b{n:02}"))) {
+        let mut rec = base.clone();
+        rec.id = store.next_id;
+        rec.identity.old_path = name.clone().into();
+        rec.identity.new_path = name.into();
+        store.records.push(rec);
+        store.next_id += 1;
+    }
+    fs::write(
+        review_store::store_path(repo),
+        serde_json::to_vec(&store).unwrap(),
+    )
+    .unwrap();
+    let mut e = editor(&r);
+    assert!(e.git.snapshot.as_ref().unwrap().review_limited);
+    assert_eq!(
+        records(&e)
+            .iter()
+            .filter(|r| e.review_freshness(r) == Freshness::Fresh)
+            .count(),
+        32
+    );
+    let last = records(&e).pop().unwrap();
+    assert_eq!(e.review_freshness(&last), Freshness::Unavailable);
+    e.open_diff(r.path("b34"), Comparison::Head);
+    settle(&mut e);
+    assert_eq!(e.review_freshness(&last), Freshness::Fresh);
+    assert!(e.review_summary().contains("validation limited"));
+}
+#[test]
+fn concurrent_store_writers_never_silently_lose_independent_records() {
+    let (_r, d) = fixture();
+    let repo = &d.identity.as_ref().unwrap().repository;
+    let a = Change {
+        expected: None,
+        replacement: Some(mark(&d, 0, "file")),
+    };
+    let mut note = mark(&d, 0, "file");
+    note.state = None;
+    note.note = Some("concurrent note".into());
+    let b = Change {
+        expected: None,
+        replacement: Some(note),
+    };
+    let barrier = std::sync::Barrier::new(2);
+    let (one, two) = thread::scope(|scope| {
+        let x = scope.spawn(|| {
+            barrier.wait();
+            review_store::apply(repo, &a)
+        });
+        let y = scope.spawn(|| {
+            barrier.wait();
+            review_store::apply(repo, &b)
+        });
+        (x.join().unwrap(), y.join().unwrap())
+    });
+    for (result, change) in [(one, &a), (two, &b)] {
+        if let Err(e) = result {
+            assert!(e.contains("lock"), "{e}");
+            review_store::apply(repo, change).unwrap();
+        }
+    }
+    let store = review_store::load(repo).unwrap();
+    assert_eq!(store.records.len(), 2);
+    assert_ne!(store.records[0].id, store.records[1].id);
+}
+
+#[test]
+fn switching_repositories_cannot_discard_a_failed_pending_annotation() {
+    let (a, _) = fixture();
+    let (b, _) = fixture();
+    let mut e = editor(&a);
+    let lock = a.path(".git/editor-pro-review.json.lock");
+    fs::write(&lock, "held").unwrap();
+    e.execute_command("review file reviewed").unwrap();
+    e.open_buffer(&b.path("a")).unwrap();
+    wait_io(&mut e);
+    assert!(e.review.error.as_ref().unwrap().contains("lock"));
+    assert!(e.execute_command("q").is_err());
+    fs::remove_file(lock).unwrap();
+    e.execute_command("review retry").unwrap();
+    wait_io(&mut e);
+    settle(&mut e);
+    assert!(records(&e).is_empty());
+    e.open_buffer(&a.path("a")).unwrap();
+    settle(&mut e);
+    assert_eq!(records(&e).len(), 1);
+    assert_eq!(e.review_freshness(&records(&e)[0]), Freshness::Fresh);
 }

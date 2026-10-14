@@ -18,6 +18,7 @@ use std::{
 pub struct ReviewState {
     pub store: Option<Arc<Store>>,
     pub repository: Option<Repository>,
+    pub generation: u64,
     pub busy: bool,
     pub error: Option<String>,
     pub status: String,
@@ -65,6 +66,52 @@ impl ReviewState {
         Ok(())
     }
 }
+#[derive(Default)]
+pub struct FileProgress {
+    pub state: Option<State>,
+    pub hunks: usize,
+    pub attention: usize,
+    pub historical_attention: bool,
+    pub notes: usize,
+    pub stale: usize,
+}
+impl FileProgress {
+    fn include(&mut self, record: &Record, fresh: Freshness) {
+        self.historical_attention |= record.state == Some(State::Attention);
+        if record.note.is_some() {
+            self.notes += 1;
+        }
+        if fresh != Freshness::Fresh {
+            self.stale += 1;
+            return;
+        }
+        if record.attachment == Attachment::File && record.state.is_some() {
+            self.state = record.state;
+        }
+        if record.state == Some(State::Attention) {
+            self.attention += 1;
+        }
+        if matches!(record.attachment, Attachment::Hunk { .. })
+            && record.state == Some(State::Reviewed)
+        {
+            self.hunks += 1;
+        }
+    }
+    pub fn label(&self) -> String {
+        format!(
+            "{} H{} !{} N{}{}",
+            self.state.unwrap_or(State::Unreviewed).label(),
+            self.hunks,
+            self.attention,
+            self.notes,
+            if self.stale > 0 {
+                format!(" stale/unavailable:{}", self.stale)
+            } else {
+                String::new()
+            }
+        )
+    }
+}
 fn error(s: impl std::fmt::Display) -> io::Error {
     io::Error::other(s.to_string())
 }
@@ -72,14 +119,21 @@ impl Editor {
     pub(crate) fn tick_review(&mut self) -> bool {
         let mut changed = false;
         if let Some(reply) = self.review.worker.as_ref().and_then(Worker::poll) {
+            let selected_id = self
+                .review_records()
+                .get(self.review.selected)
+                .map(|r| r.id);
             self.review.busy = false;
             match reply {
                 Ok(Outcome::Loaded(store)) => {
+                    self.review.generation = self.review.generation.wrapping_add(1);
+                    self.review.repository = Some(store.repository.clone());
                     self.review.status = format!("Review loaded: {} records", store.records.len());
                     self.review.store = Some(store);
                     self.review.failed = None;
                 }
                 Ok(Outcome::Saved(store, id)) => {
+                    self.review.generation = self.review.generation.wrapping_add(1);
                     self.review.status = format!("Review saved #{id}");
                     self.review.store = Some(store);
                     self.review.failed = None;
@@ -97,6 +151,11 @@ impl Editor {
                 }
             }
             self.review.note_saving = false;
+            let visible = self.review_records();
+            self.review.selected = selected_id
+                .and_then(|id| visible.iter().position(|r| r.id == id))
+                .unwrap_or(self.review.selected)
+                .min(visible.len().saturating_sub(1));
             let msg = self.review.status.clone();
             if self.review.error.is_some() {
                 self.error(&msg);
@@ -107,12 +166,16 @@ impl Editor {
         }
         let repo = self.git.snapshot.as_ref().map(|s| s.repository.clone());
         if !self.review.busy
+            && self.review.failed.is_none()
+            && !(self.review.error.is_some() && self.review.store.is_some())
             && self.note_edit.is_none()
             && repo != self.review.repository
             && let Some(repo) = repo
         {
             self.review.repository = Some(repo.clone());
-            self.review.store = None;
+            if self.review.store.take().is_some() {
+                self.review.generation = self.review.generation.wrapping_add(1);
+            }
             self.review.failed = None;
             if let Err(e) = self.review.submit(Job::Load(repo)) {
                 self.review.error = Some(e.to_string());
@@ -166,16 +229,25 @@ impl Editor {
             .filter(|d| d.identity.is_some())
     }
     pub fn review_freshness(&self, record: &Record) -> Freshness {
-        if !self.git_current() {
+        self.review_freshness_with(record, self.git_current())
+    }
+    fn review_freshness_with(&self, record: &Record, ready: bool) -> Freshness {
+        if !ready {
             return Freshness::Unavailable;
         }
         self.git
             .snapshot
             .as_ref()
             .and_then(|s| s.review_freshness.get(&record.id))
-            .copied()
+            .map(|(revision, freshness)| {
+                if *revision == record.revision {
+                    *freshness
+                } else {
+                    Freshness::Unavailable
+                }
+            })
             .unwrap_or_else(|| {
-                let current = self.review_diff().filter(|d| {
+                let current = self.git.diff().filter(|d| {
                     d.identity.as_ref().is_some_and(|i| {
                         i.repository == record.identity.repository
                             && i.new_path == record.identity.new_path
@@ -201,6 +273,17 @@ impl Editor {
             .ok_or_else(|| error("Review store loading or unavailable"))
     }
     fn review_target(&self, target: &str) -> io::Result<Record> {
+        if !matches!(self.view, View::Editing | View::Diff | View::Changes) {
+            return Err(error(
+                "Inspect a comparison before annotating; Enter opens the selected review record",
+            ));
+        }
+        if target != "file" && self.view != View::Diff {
+            return Err(error(
+                "Open :diff and select a hunk/line before attaching there",
+            ));
+        }
+
         let diff = self
             .review_diff()
             .ok_or_else(|| error("Wait for a fresh supported Git comparison; use :diff"))?;
@@ -485,57 +568,55 @@ impl Editor {
                 .collect()
         })
     }
-    pub fn review_file_label(&self, path: &Path) -> String {
-        let Some(store) = &self.review.store else {
-            return "review unavailable".into();
-        };
-        let records: Vec<_> = store
-            .records
-            .iter()
-            .filter(|r| {
-                r.identity.repository.root.join(&r.identity.new_path) == path
-                    && r.identity.comparison == self.git.comparison
-            })
-            .collect();
-        let fresh: Vec<_> = records
-            .iter()
-            .filter(|r| self.review_freshness(r) == Freshness::Fresh)
-            .collect();
-        let file = fresh
-            .iter()
-            .find(|r| r.attachment == Attachment::File && r.state.is_some())
-            .and_then(|r| r.state);
-        let attention = fresh
-            .iter()
-            .filter(|r| r.state == Some(State::Attention))
-            .count();
-        let hunks = fresh
-            .iter()
-            .filter(|r| {
-                matches!(r.attachment, Attachment::Hunk { .. }) && r.state == Some(State::Reviewed)
-            })
-            .count();
-        let old = records.len() - fresh.len();
-        format!(
-            "{} H{hunks} !{attention}{}",
-            file.unwrap_or(State::Unreviewed).label(),
-            if old > 0 {
-                format!(" stale/unavailable:{old}")
-            } else {
-                String::new()
+    pub fn review_file_progress(&self, path: &Path) -> FileProgress {
+        let mut progress = FileProgress::default();
+        let ready = self.git_current();
+        if let Some(store) = &self.review.store
+            && let Ok(relative) = path.strip_prefix(&store.repository.root)
+        {
+            for r in store.records.iter().filter(|r| {
+                r.identity.new_path == relative && r.identity.comparison == self.git.comparison
+            }) {
+                progress.include(r, self.review_freshness_with(r, ready));
             }
-        )
+        }
+        progress
+    }
+    pub fn review_progress(&self) -> std::collections::BTreeMap<PathBuf, FileProgress> {
+        let mut progress = std::collections::BTreeMap::<PathBuf, FileProgress>::new();
+        let ready = self.git_current();
+        if let Some(store) = &self.review.store {
+            for r in store
+                .records
+                .iter()
+                .filter(|r| r.identity.comparison == self.git.comparison)
+            {
+                progress
+                    .entry(store.repository.root.join(&r.identity.new_path))
+                    .or_default()
+                    .include(r, self.review_freshness_with(r, ready));
+            }
+        }
+        progress
+    }
+    pub fn review_file_label(&self, path: &Path) -> String {
+        if self.review.store.is_none() {
+            "review unavailable".into()
+        } else {
+            self.review_file_progress(path).label()
+        }
     }
     pub fn review_summary(&self) -> String {
         let Some(store) = &self.review.store else {
             return self.review.status.clone();
         };
+        let ready = self.git_current();
         let mut files = 0;
         let mut hunks = 0;
         let mut attention = 0;
         let mut stale = 0;
         for r in &store.records {
-            if self.review_freshness(r) != Freshness::Fresh {
+            if self.review_freshness_with(r, ready) != Freshness::Fresh {
                 stale += 1;
                 continue;
             }
@@ -547,7 +628,12 @@ impl Editor {
             }
         }
         format!(
-            "Review F{files} H{hunks} attention:{attention} stale/unavailable:{stale} | {}",
+            "Review F{files} H{hunks} attention:{attention} stale/unavailable:{stale}{} | {}",
+            if self.git.snapshot.as_ref().is_some_and(|s| s.review_limited) {
+                " [validation limited]"
+            } else {
+                ""
+            },
             self.review.status
         )
     }
@@ -617,6 +703,8 @@ impl Editor {
                 return Err(error("Wait for fresh Git status"));
             }
             let files = self.changed_files();
+            let progress = self.review_progress();
+            let empty = FileProgress::default();
             let current = self
                 .git
                 .diff_view
@@ -633,21 +721,12 @@ impl Editor {
                     (start + step) % files.len()
                 };
                 let file = &files[n];
-                let label = self.review_file_label(&file.path);
+                let progress = progress.get(&file.path).unwrap_or(&empty);
                 let matches = match filter {
-                    "attention" => self.review.store.as_ref().is_some_and(|s| {
-                        s.records.iter().any(|r| {
-                            r.state == Some(State::Attention)
-                                && r.identity.repository.root.join(&r.identity.new_path)
-                                    == file.path
-                                && r.identity.comparison == self.git.comparison
-                        })
-                    }),
-                    "stale" => label.contains("stale/unavailable:"),
+                    "attention" => progress.historical_attention,
+                    "stale" => progress.stale > 0,
                     "unreviewed" => {
-                        !label.starts_with("reviewed")
-                            || label.contains("stale/unavailable:")
-                            || !label.contains("!0")
+                        progress.state != Some(State::Reviewed) || progress.attention > 0
                     }
                     _ => true,
                 };
@@ -666,6 +745,23 @@ impl Editor {
                 .as_ref()
                 .ok_or_else(|| error("Open :diff first"))?
                 .selected;
+            let mut states = std::collections::BTreeMap::<&str, (Option<State>, bool, bool)>::new();
+            if let Some(store) = &self.review.store {
+                for r in store.records.iter().filter(|r| {
+                    r.identity.new_path == diff.identity.as_ref().unwrap().new_path
+                        && r.identity.comparison == self.git.comparison
+                }) {
+                    if let Attachment::Hunk { fingerprint } = &r.attachment {
+                        let value = states.entry(fingerprint.as_str()).or_default();
+                        let fresh = self.review_freshness_with(r, true);
+                        if fresh == Freshness::Fresh && r.state.is_some() {
+                            value.0 = r.state;
+                        }
+                        value.1 |= r.state == Some(State::Attention);
+                        value.2 |= fresh != Freshness::Fresh;
+                    }
+                }
+            }
             let mut rows = diff.hunks.clone();
             if backward {
                 rows.reverse();
@@ -674,26 +770,17 @@ impl Editor {
                 .into_iter()
                 .partition(|i| if backward { *i < current } else { *i > current });
             for row in later.into_iter().chain(earlier) {
-                let attachment = diff.attachment(row, "hunk").ok().map(|v| v.0);
-                let records: Vec<_> = self.review.store.as_ref().map_or_else(Vec::new, |s| {
-                    s.records
-                        .iter()
-                        .filter(|r| {
-                            Some(&r.attachment) == attachment.as_ref()
-                                && r.identity.new_path == diff.identity.as_ref().unwrap().new_path
-                                && r.identity.comparison == self.git.comparison
-                        })
-                        .collect()
-                });
-                let fresh = records
-                    .iter()
-                    .find(|r| self.review_freshness(r) == Freshness::Fresh && r.state.is_some());
+                let state = diff
+                    .locations
+                    .hunks
+                    .get(&row)
+                    .and_then(|key| states.get(key.as_str()))
+                    .copied()
+                    .unwrap_or_default();
                 let matches = match filter {
-                    "attention" => records.iter().any(|r| r.state == Some(State::Attention)),
-                    "stale" => records
-                        .iter()
-                        .any(|r| self.review_freshness(r) != Freshness::Fresh),
-                    "unreviewed" => fresh.is_none_or(|r| r.state != Some(State::Reviewed)),
+                    "attention" => state.1,
+                    "stale" => state.2,
+                    "unreviewed" => state.0 != Some(State::Reviewed),
                     _ => true,
                 };
                 if matches {
@@ -755,12 +842,13 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &Editor, theme: &crate::th
             Attachment::Line { .. } => "new line",
         };
         let text = format!(
-            "#{} {} {} {} {} old:{} new:{} {}",
+            "#{} {} {} {} {} [{}] old:{} new:{} {}",
             r.id,
             freshness.label(),
             r.state.map_or("note", State::label),
             kind,
             crate::git::display_path(&r.identity.new_path),
+            r.identity.comparison.label(),
             r.context
                 .old_line
                 .map_or("-".into(), |n| (n + 1).to_string()),
@@ -803,8 +891,11 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &Editor, theme: &crate::th
         );
     }
     let command = format!(":{}", editor.command);
+    let command_cells = crate::text::display_column(&command, command.chars().count());
+    let offset = command_cells.saturating_sub(area.width.saturating_sub(1) as usize);
+    let command_display = crate::text::visible_text(&command, offset, area.width as usize);
     let text = if editor.mode == Mode::Command {
-        command.as_str()
+        command_display.as_str()
     } else {
         &editor.message
     };
@@ -819,9 +910,7 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &Editor, theme: &crate::th
     );
     if editor.mode == Mode::Command && area.width > 0 && area.height > 0 {
         frame.set_cursor_position((
-            area.x
-                + crate::text::display_column(&command, command.chars().count())
-                    .min(area.width as usize - 1) as u16,
+            area.x + (command_cells - offset).min(area.width as usize - 1) as u16,
             area.bottom() - 1,
         ));
     }
