@@ -9,7 +9,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    editor::{Editor, Mode},
+    editor::{Editor, Mode, View},
     search::SearchMatch,
     syntax::{HighlightSpan, highlight_at},
     text::{cell_width, display_column, display_grapheme, visible_text},
@@ -169,11 +169,72 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
     }
-    if !matches!(editor.mode, Mode::Command | Mode::Search) && height > 0 && text_width > 0 {
+    if editor.view == View::Editing
+        && !matches!(editor.mode, Mode::Command | Mode::Search)
+        && height > 0
+        && text_width > 0
+    {
         frame.set_cursor_position((
             area.x + gutter + (cursor_cell - editor.viewport.left) as u16,
             area.y + (cursor_line - editor.viewport.top) as u16,
         ));
+    }
+    if let View::Buffers { selected } = editor.view {
+        render_buffers(
+            frame,
+            editor,
+            theme,
+            Rect::new(area.x, area.y, area.width, height),
+            selected,
+        );
+        if area.height >= 2 {
+            frame.render_widget(
+                Paragraph::new(visible_text(
+                    "Buffers: ↑/↓ or j/k  Enter open  Esc return",
+                    0,
+                    usize::from(area.width),
+                ))
+                .style(base),
+                Rect::new(area.x, status_y + 1, area.width, 1),
+            );
+        }
+    }
+}
+
+fn render_buffers(
+    frame: &mut Frame<'_>,
+    editor: &Editor,
+    theme: &Theme,
+    area: Rect,
+    selected: usize,
+) {
+    let style = Style::default().fg(theme.foreground).bg(theme.background);
+    frame.render_widget(Block::default().style(style), area);
+    let infos = editor.buffer_infos();
+    let top = selected.saturating_sub(usize::from(area.height).saturating_sub(1));
+    for (row, info) in infos
+        .iter()
+        .skip(top)
+        .take(usize::from(area.height))
+        .enumerate()
+    {
+        let line = format!(
+            "{} {:>3} {}{} {}",
+            if info.active { '%' } else { ' ' },
+            info.id,
+            if info.modified { '+' } else { ' ' },
+            if info.external_changed { '!' } else { ' ' },
+            info.name
+        );
+        let style = if row + top == selected {
+            style.bg(theme.selection)
+        } else {
+            style
+        };
+        frame.render_widget(
+            Paragraph::new(visible_text(&line, 0, usize::from(area.width))).style(style),
+            Rect::new(area.x, area.y + row as u16, area.width, 1),
+        );
     }
 }
 

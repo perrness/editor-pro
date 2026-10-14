@@ -66,3 +66,12 @@ Unicode boundaries, cancellation, cache invalidation after edits/history,
 Visual selections and narrow prompt rendering. Search is case-sensitive and
 single-line, with at most 100,000 results; truncation is reported. `:noh` hides
 matches and `n`/`N` restores them.
+
+## M2 slice 4 — Multiple buffers
+
+Formatting, Clippy, all 78 Rust tests and the extended PTY test passed. Checks
+cover independent histories, dirty text/cursor/viewport preservation, path alias
+deduplication, failed-open rollback, save-as identity collisions, inactive disk
+conflicts, all-buffer quit protection, and a separate buffer-list view. The PTY
+workflow edits two files, verifies refusal to quit with an inactive dirty buffer,
+and saves both. `:e path` now retains the buffer being left behind.

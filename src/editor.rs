@@ -1,6 +1,7 @@
-use std::{io, path::Path};
+use std::{collections::BTreeMap, io, path::Path};
 
 use crate::{
+    buffers::BufferSlot,
     file::{Document, MAX_FILE_BYTES},
     input::Key,
     motion::{self, Motion, Selection},
@@ -31,7 +32,7 @@ impl Mode {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Viewport {
     pub top: usize,
     pub left: usize,
@@ -61,8 +62,21 @@ pub struct Register {
     pub linewise: bool,
 }
 
+#[derive(Default, Debug, PartialEq, Eq)]
+pub enum View {
+    #[default]
+    Editing,
+    Buffers {
+        selected: usize,
+    },
+}
+
 pub struct Editor {
     pub document: Document,
+    pub active_buffer_id: usize,
+    pub(crate) next_buffer_id: usize,
+    pub(crate) buffers: BTreeMap<usize, BufferSlot>,
+    pub view: View,
     pub mode: Mode,
     pub viewport: Viewport,
     pub command: String,
@@ -82,6 +96,10 @@ impl Editor {
     pub fn new(document: Document) -> Self {
         Self {
             document,
+            active_buffer_id: 1,
+            next_buffer_id: 2,
+            buffers: BTreeMap::new(),
+            view: View::Editing,
             mode: Mode::Normal,
             viewport: Viewport::default(),
             command: String::new(),
@@ -99,6 +117,10 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if matches!(self.view, View::Buffers { .. }) {
+            self.buffer_list_key(key);
+            return;
+        }
         if matches!(key, Key::Ctrl('c') | Key::Ctrl('[')) {
             self.escape();
             return;
@@ -632,7 +654,7 @@ impl Editor {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if self.mode != Mode::Insert {
+        if self.view != View::Editing || self.mode != Mode::Insert {
             self.info("Enter Insert mode before pasting");
             return;
         }
@@ -736,32 +758,37 @@ impl Editor {
                 } else {
                     Some(Path::new(argument))
                 };
-                self.document.save(path)?;
+                self.save_current(path)?;
                 self.info("Written");
                 if name == "wq" {
+                    self.ensure_all_saved(false)?;
                     self.quit = true;
                 }
             }
             "q" | "q!" if argument.is_empty() => {
-                self.ensure_can_discard(name == "q!")?;
+                self.ensure_all_saved(name == "q!")?;
                 self.quit = true;
             }
-            "e" | "e!" => {
-                self.ensure_can_discard(name == "e!")?;
-                let path = if argument.is_empty() {
-                    self.document
-                        .path()
-                        .ok_or_else(|| io::Error::other("No file name"))?
-                } else {
-                    Path::new(argument)
-                };
-                let document = Document::open(path)?;
-                self.document = document;
-                self.search.invalidate();
-                self.viewport = Viewport::default();
-                self.pending = Pending::default();
-                self.selection_anchor = None;
-                self.info("Opened");
+            "e" | "e!" => self.edit_command(argument, name == "e!")?,
+            "enew" if argument.is_empty() => self.new_buffer(),
+            "bn" | "bnext" if argument.is_empty() => self.cycle_buffer(false)?,
+            "bp" | "bprevious" if argument.is_empty() => self.cycle_buffer(true)?,
+            "b" | "buffer" => {
+                let id = argument
+                    .parse()
+                    .map_err(|_| io::Error::other("Use :b BUFFER_NUMBER; :ls lists buffers"))?;
+                self.switch_buffer(id)?;
+            }
+            "bd" | "bdelete" | "bd!" | "bdelete!" if argument.is_empty() => {
+                self.close_buffer(name.ends_with('!'))?
+            }
+            "ls" | "buffers" if argument.is_empty() => {
+                let selected = self
+                    .buffer_infos()
+                    .iter()
+                    .position(|info| info.active)
+                    .unwrap();
+                self.view = View::Buffers { selected };
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
@@ -773,7 +800,7 @@ impl Editor {
         Ok(())
     }
 
-    fn ensure_can_discard(&self, force: bool) -> io::Result<()> {
+    pub(crate) fn ensure_can_discard(&self, force: bool) -> io::Result<()> {
         if self.document.buffer.is_modified() && !force {
             Err(io::Error::other(
                 "Unsaved changes. Use :w to save or add ! to discard",
@@ -783,26 +810,22 @@ impl Editor {
         }
     }
 
-    pub fn check_external(&mut self) {
-        let was_changed = self.document.external_changed;
-        match self.document.check_external() {
-            Ok(true) if !was_changed => {
-                self.error("File changed on disk. :e! reloads; :w NEW_PATH preserves your edits")
-            }
-            Err(error) => {
-                self.document.external_changed = true;
-                self.error(&format!("Cannot check file on disk: {error}"));
-            }
-            _ => {}
-        }
+    pub(crate) fn reset_context(&mut self) {
+        self.mode = Mode::Normal;
+        self.pending = Pending::default();
+        self.selection_anchor = None;
+        self.command.clear();
+        self.view = View::Editing;
+        self.search.invalidate();
+        self.document.buffer.clamp_cursor(false);
     }
 
-    fn info(&mut self, message: &str) {
+    pub(crate) fn info(&mut self, message: &str) {
         self.message = message.into();
         self.message_is_error = false;
     }
 
-    fn error(&mut self, message: &str) {
+    pub(crate) fn error(&mut self, message: &str) {
         self.message = message.into();
         self.message_is_error = true;
     }

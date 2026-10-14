@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod buffers;
 pub mod editor;
 pub mod file;
 pub mod input;

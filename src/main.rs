@@ -67,9 +67,7 @@ fn run() -> io::Result<()> {
         }
         _ => first.map(PathBuf::from),
     };
-    if args.next().is_some() {
-        return Err(io::Error::other("Milestone 1 opens one file at a time"));
-    }
+    let additional: Vec<_> = args.map(PathBuf::from).collect();
     let document = path
         .as_deref()
         .map_or_else(|| Ok(Document::default()), Document::open)?;
@@ -79,6 +77,10 @@ fn run() -> io::Result<()> {
         ));
     }
     let mut editor = Editor::new(document);
+    for path in additional {
+        editor.open_buffer(&path)?;
+    }
+    editor.switch_buffer(1)?;
     let theme = Theme::night();
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -148,9 +150,7 @@ fn event_loop(
             }
         }
         if last_check.elapsed() >= Duration::from_secs(2) {
-            let before = editor.document.external_changed;
-            editor.check_external();
-            redraw |= before != editor.document.external_changed;
+            redraw |= editor.check_external();
             last_check = Instant::now();
         }
     }

@@ -171,7 +171,7 @@ impl Document {
     }
 }
 
-fn absolute_path(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     if path.as_os_str().is_empty() {
         return Err(io::Error::other("Empty file name"));
     }
@@ -198,7 +198,7 @@ fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
             return Err(io::Error::other("Expected a regular file"));
         }
         Ok(metadata) if metadata.len() > MAX_FILE_BYTES => {
-            return Err(io::Error::other("Milestone 1 supports files up to 64 MiB"));
+            return Err(io::Error::other("Supports files up to 64 MiB"));
         }
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -208,7 +208,7 @@ fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(io::Error::other("Milestone 1 supports files up to 64 MiB"));
+        return Err(io::Error::other("Supports files up to 64 MiB"));
     }
     Ok(Some(bytes))
 }

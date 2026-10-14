@@ -109,6 +109,14 @@ def main():
         path.write_bytes(b"one x one\r\none")
         run_session(binary, path, [b"/one\r", b"nNcwT", b"\x1b", b":wq\r"],
                     b"one x T\r\none")
+        second = Path(directory) / "second.kt"
+        path.write_bytes(b"alpha\r\n")
+        second.write_bytes(b"beta\n")
+        run_session(binary, path, [b"iA", b"\x1b", f":e {second}\r".encode(),
+                                  b"iB", b"\x1b", b":q\r", b":w\r", b":q\r",
+                                  b":ls\r", b"\x1b", b":bp\r", b":wq\r"],
+                    b"Aalpha\r\n")
+        assert second.read_bytes() == b"Bbeta\n"
     print("PASS: real terminal editing, undo/redo, saving, dirty quit guard, and restoration")
     return 0
 

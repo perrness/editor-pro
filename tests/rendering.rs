@@ -123,3 +123,31 @@ fn search_highlight_and_prompt_preserve_selection_and_narrow_cursor() {
     let cursor = terminal.get_cursor_position().unwrap();
     assert!(cursor.x < 8 && cursor.y == 2);
 }
+
+#[test]
+fn buffer_list_renders_dirty_inactive_documents_in_tiny_terminals() {
+    use editor_pro::input::Key;
+    let mut editor = Editor::new(Document::default());
+    editor.document.buffer.insert("dirty");
+    editor.new_buffer();
+    editor.execute_command("ls").unwrap();
+    editor.handle_key(Key::Up);
+    for (width, height) in [(1, 1), (1, 3), (40, 6)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| ui::render(f, &mut editor, &Theme::night()))
+            .unwrap();
+        if width == 40 {
+            let output: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(output.contains("[No Name]"));
+            assert!(output.contains('+'));
+            assert!(output.contains("Buffers:"));
+        }
+    }
+}
