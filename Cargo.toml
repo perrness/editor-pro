@@ -11,7 +11,14 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 tempfile = "3.23"
 tree-sitter = "0.25.10"
+tree-sitter-c-sharp = "0.23.5"
+tree-sitter-java = "0.23.5"
+tree-sitter-json = "0.24"
+tree-sitter-kotlin = { package = "tree-sitter-kotlin-sg", version = "0.4.1" }
+tree-sitter-md = "0.5"
 tree-sitter-rust = "0.24.0"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-yaml = "0.7"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 

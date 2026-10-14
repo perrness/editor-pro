@@ -115,3 +115,123 @@ fn unknown_and_large_documents_fall_back_without_altering_text() {
     assert!(parsed.fallback.as_ref().unwrap().contains("2 MiB"));
     assert_eq!(large.text().len_bytes(), MAX_SYNTAX_BYTES + 1);
 }
+
+#[test]
+fn every_supported_grammar_compiles_its_queries_and_highlights_a_fixture() {
+    let fixtures = [
+        (
+            "Example.java",
+            "class Example { String name = \"界\"; }\n",
+            "class",
+            Highlight::Keyword,
+        ),
+        (
+            "Main.kt",
+            "fun main() { println(\"界\") }\n",
+            "fun",
+            Highlight::Keyword,
+        ),
+        (
+            "Example.cs",
+            "class Example { string name = \"界\"; }\n",
+            "class",
+            Highlight::Keyword,
+        ),
+        (
+            "data.json",
+            "{\"name\": \"界\", \"count\": 42}\r\n",
+            "42",
+            Highlight::Number,
+        ),
+        (
+            "config.yaml",
+            "name: \"界\"\ncount: 42\n",
+            "42",
+            Highlight::Number,
+        ),
+        (
+            "config.toml",
+            "name = \"界\"\ncount = 42\n",
+            "42",
+            Highlight::Number,
+        ),
+        (
+            "notes.md",
+            "# Heading 界\n\nSome **strong** and `code`.\n",
+            "Heading",
+            Highlight::Heading,
+        ),
+    ];
+    for (path, source, token, expected) in fixtures {
+        let mut buffer = Buffer::new(source);
+        let mut parsed = syntax(path, &mut buffer);
+        assert!(parsed.fallback.is_none(), "{path}: {:?}", parsed.fallback);
+        assert!(!parsed.tree().unwrap().root_node().has_error(), "{path}");
+        let spans = parsed.highlights(buffer.text(), 0..source.len());
+        assert_eq!(
+            highlight_at(&spans, source.find(token).unwrap()),
+            Some(expected),
+            "{path}"
+        );
+        buffer.insert("\n");
+        let edits = buffer.take_edits();
+        parsed.update(buffer.text(), &edits);
+        let fresh = syntax(path, &mut buffer);
+        assert_eq!(
+            parsed.tree().unwrap().root_node().to_sexp(),
+            fresh.tree().unwrap().root_node().to_sexp(),
+            "{path}"
+        );
+        let range = 0..buffer.text().len_bytes();
+        assert_eq!(
+            parsed.highlights(buffer.text(), range.clone()),
+            fresh.highlights(buffer.text(), range),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn markdown_inline_ranges_exclude_fenced_code_after_edits() {
+    let source = "**strong**\n\n```\n**code**\n```\n";
+    let mut buffer = Buffer::new(source);
+    let mut parsed = syntax("notes.md", &mut buffer);
+    let spans = parsed.highlights(buffer.text(), 0..source.len());
+    assert_eq!(
+        highlight_at(&spans, source.find("strong").unwrap()),
+        Some(Highlight::Emphasis)
+    );
+    assert_ne!(
+        highlight_at(&spans, source.find("code").unwrap()),
+        Some(Highlight::Emphasis)
+    );
+    buffer.goto_line(2, false);
+    buffer.delete(false);
+    buffer.delete(false);
+    buffer.delete(false);
+    let edits = buffer.take_edits();
+    parsed.update(buffer.text(), &edits);
+    let fresh = syntax("notes.md", &mut buffer);
+    let range = 0..buffer.text().len_bytes();
+    assert_eq!(
+        parsed.highlights(buffer.text(), range.clone()),
+        fresh.highlights(buffer.text(), range)
+    );
+}
+
+#[test]
+fn kotlin_query_predicates_do_not_color_every_identifier_as_a_constant() {
+    let source = "enum class Kind { UPPERCASE }\nval lowercase = 1\n";
+    let mut buffer = Buffer::new(source);
+    let parsed = syntax("main.kts", &mut buffer);
+    assert!(parsed.fallback.is_none(), "{:?}", parsed.fallback);
+    let spans = parsed.highlights(buffer.text(), 0..source.len());
+    assert_ne!(
+        highlight_at(&spans, source.find("lowercase").unwrap()),
+        Some(Highlight::Constant)
+    );
+    assert_eq!(
+        highlight_at(&spans, source.find("UPPERCASE").unwrap()),
+        Some(Highlight::Constant)
+    );
+}

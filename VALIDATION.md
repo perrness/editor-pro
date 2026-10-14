@@ -38,3 +38,13 @@ Formatting and Clippy passed; all 38 Rust tests and the PTY smoke test passed.
 Regression checks compare incremental trees/captures against fresh parses after
 Unicode/CRLF edits and undo/redo, verify multiline viewport captures, and verify
 unknown/oversized-file fallback. Cursor movement reuses the existing tree.
+
+## M2 slice 1b — Remaining languages
+
+Formatting, Clippy, all 41 Rust tests and the PTY smoke test passed. Fixtures
+exercise Java, Kotlin, C#, JSON, YAML, TOML and Markdown grammar/query loading,
+semantic captures and incremental/fresh equivalence. Markdown inline ranges
+exclude fenced code, including after edits. Kotlin uses the published
+`tree-sitter-kotlin-sg` package of the fwcd grammar and its compatible upstream
+queries. Unsupported query predicates trigger fallback rather than silently
+matching everything. Language injections and semantic LSP tokens are not included.
