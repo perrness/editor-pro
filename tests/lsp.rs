@@ -1273,6 +1273,72 @@ fn automatic_completion_popup_preserves_source_cursor_and_handles_small_screens(
 }
 
 #[test]
+fn automatic_completion_popup_covers_source_text_and_restores_it_on_dismissal() {
+    let source_lines = format!("// {}\r\n", "界e\u{301}x ".repeat(24)).repeat(3);
+    for above in [false, true] {
+        let text = if above {
+            format!("{source_lines}value.")
+        } else {
+            format!("value.\r\n{source_lines}")
+        };
+        let mut f = auto_completion_fixture("auto-completion", &text);
+        if above {
+            let end = f.editor.document.buffer.text().len_chars();
+            f.editor.document.buffer.set_cursor(end, true);
+        }
+        type_completion(&mut f, "le");
+        wait_completion(&mut f);
+
+        let theme = Theme::night();
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        let menu = f.editor.lsp.completion.take();
+        let source = terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &theme))
+            .unwrap()
+            .buffer
+            .clone();
+        let cursor = terminal.get_cursor_position().unwrap();
+        f.editor.lsp.completion = menu;
+
+        let top = if above { 0 } else { 1 };
+        for selected in 0..2 {
+            terminal
+                .draw(|frame| ui::render(frame, &mut f.editor, &theme))
+                .unwrap();
+            assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
+            let cells = terminal.backend().buffer();
+            let hint = format!(
+                " {}/2 Tab/Enter accept  ↑↓ select  Ctrl-e dismiss",
+                selected + 1
+            );
+            for (row, label) in [" length", " lengthSquared", &hint].iter().enumerate() {
+                let y = top + row as u16;
+                let rendered: String = (11..75).map(|x| cells[(x, y)].symbol()).collect();
+                assert_eq!(rendered, format!("{label:<64}"), "above={above}, row={row}");
+                for x in 11..75 {
+                    assert_eq!(
+                        cells[(x, y)].bg,
+                        if row == selected {
+                            theme.selection
+                        } else {
+                            theme.status
+                        }
+                    );
+                }
+            }
+            f.editor.handle_key(Key::Down);
+        }
+
+        f.editor.handle_key(Key::Ctrl('e'));
+        let restored = terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &theme))
+            .unwrap();
+        assert_eq!(restored.buffer, &source);
+        assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
+    }
+}
+
+#[test]
 fn completion_commands_require_selection_approval_and_a_separate_server_edit_preview() {
     let mut f = Fixture::new("completion-command");
     f.ready();

@@ -386,7 +386,10 @@ def main():
         messages = [json.loads(line) for line in log.read_text().splitlines()]
         assert sum(m.get("method") == "workspace/executeCommand" for m in messages) == 1
         assert any(m.get("id") == 777 and m.get("result", {}).get("applied") for m in messages)
-        language_source.write_text("value.\r\n")
+        completion_source = ("value.\r\n" + (
+            "// Text beneath the menu: 界e\u0301 " + "value.length + " * 5 + "\r\n"
+        ) * 3).encode()
+        language_source.write_bytes(completion_source)
         log = lsp_root / "automatic-completion.jsonl"
         environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
             sys.executable, str(fake.resolve()), "--log", str(log),
@@ -397,7 +400,7 @@ def main():
             resize(3, 1), resize(24, 100), b"\t", (b"inserted", 10),
             b"\x1b", b"u", b"A\x7fe", (b"Tab/Enter accept", 10),
             b"\x05", b"\x1b", b":q!\r",
-        ], b"value.\r\n", environment)
+        ], completion_source, environment)
         messages = [json.loads(line) for line in log.read_text().splitlines()]
         assert sum(m.get("method") == "textDocument/completion" for m in messages) >= 2
         assert any(m.get("method") == "completionItem/resolve" for m in messages)

@@ -1250,3 +1250,20 @@ Release preparation for v0.2.3 updated the Cargo package/lockfile version and
 passed the CLI version/symlink tests, release packager tests, stable-tag validation,
 formatting and whitespace checks. Native macOS acceptance is gated by the release
 workflow before publication.
+
+### Completion popup overlay fix
+
+2026-10-15, Linux x86_64. The completion popup now clears its full rectangle before
+painting its background, candidates and hint. A regression reproduced underlying
+source characters appearing after suggestion labels before the fix. It now passes
+for menus above and below the cursor, both selections, long Unicode/CRLF source
+lines, cursor preservation and complete source-frame restoration on dismissal.
+The PTY completion fixture also places populated source lines beneath the menu.
+
+Formatting, Clippy with warnings denied, the debug build, all **271 Rust tests**
+(seven opt-in tests ignored), all **14 Python tests**, and all **29 PTY sessions**
+passed. The full Rust suite required localhost socket access for the existing
+installer fixtures after the sandbox denied their binds. Cargo used the same
+offline cache as the completion validation above. Terminal capture:
+`/tmp/editor-pro-completion-overlay-terminal/automatic-completion.ansi`.
+macOS and physical terminals were not tested.

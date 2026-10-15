@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    widgets::{Block, Paragraph},
+    widgets::{Block, Clear, Paragraph},
 };
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
@@ -363,6 +363,8 @@ pub(crate) fn render(
         height,
     );
     let base = Style::default().fg(theme.foreground).bg(theme.status);
+    // Styling a block does not erase the source characters beneath the popup.
+    frame.render_widget(Clear, rect);
     frame.render_widget(Block::default().style(base), rect);
     let rows = usize::from(height - 1);
     let top = menu.selected.saturating_sub(rows - 1);

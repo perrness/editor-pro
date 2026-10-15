@@ -547,8 +547,10 @@ No dynamic capability registration, watched-file registration,
 semantic tokens or virtual/decompiled documents are advertised.
 
 Language results use one contextual list with source-preserving scroll/selection.
-Insert-mode completion additionally uses a cursor-adjacent popup. Actual character
-edits and deletions schedule one replaceable request after 120 ms of quiet;
+Insert-mode completion additionally uses a cursor-adjacent popup. Its full area is
+cleared before drawing so source text cannot show through the suggestions or hint;
+dismissal restores the source on the next frame. Actual character edits and
+deletions schedule one replaceable request after 120 ms of quiet;
 identifier prefixes and negotiated trigger characters drive requests, including
 incomplete-list refresh context. Results are filtered by filterText/label and the
 server edit range, sorted by sortText, and bounded by the existing 4,096-item cap.
