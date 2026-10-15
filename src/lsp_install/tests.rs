@@ -27,6 +27,8 @@ impl Server {
                     }
                     Err(e) => panic!("{e}"),
                 };
+                // Accepted sockets inherit O_NONBLOCK on macOS, unlike Linux.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();

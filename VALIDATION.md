@@ -1186,3 +1186,14 @@ build, all **257 Rust tests** (seven opt-in tests ignored), the release version
 check and `git diff --check`. The failed v0.2.0 tag is preserved; v0.2.1 runs the
 release pipeline again. Native real-server installation on macOS remains outside
 this CI suite; the Linux real-server evidence above remains separate.
+
+The new fragmented-request regression then exposed that accepted sockets on
+macOS inherit the listening socket's nonblocking mode. The fixture now makes each
+accepted socket blocking before applying read/write timeouts, so a partial
+request waits for the remaining bytes instead of closing on `WouldBlock`.
+This is consistent with [Apple's accept documentation](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/accept.2.html).
+The v0.2.1 release run was cancelled before publication. Version v0.2.2 retains
+this regression and the corrected fixture; its release tag is created only after
+the main-branch CI suite passes.
+The final socket correction passed all 12 local library tests, formatting,
+Clippy with warnings denied, the debug build and the release version check.
