@@ -40,6 +40,16 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         if cwd is not None:
             os.chdir(cwd)
         argv = [str(path)] if arguments is None else [str(arg) for arg in arguments]
+        # Keep the session leader alive while checking restoration. macOS
+        # revokes the slave terminal when its controlling session leader exits.
+        editor_pid = os.fork()
+        if editor_pid:
+            _, status = os.waitpid(editor_pid, 0)
+            if termios.tcgetattr(0) != original:
+                os.write(2, b"Terminal settings were not restored\n")
+                os._exit(1)
+            code = os.waitstatus_to_exitcode(status)
+            os._exit(code if code >= 0 else 128 - code)
         os.execv(str(binary), [str(binary), *argv])
     output = bytearray()
     reaped = False
@@ -110,10 +120,10 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
             exited, status = os.waitpid(pid, os.WNOHANG)
             if exited:
                 reaped = True
-                assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors="replace")
+                code = os.waitstatus_to_exitcode(status)
+                assert code == 0, f"Editor exited with status {code}: {output.decode(errors='replace')}"
                 break
         assert reaped, f"Editor did not exit: {output[-4000:]!r}"
-        assert termios.tcgetattr(slave) == original, "Terminal settings were not restored"
         assert b"\x1b[?1049l" in output, "Alternate screen was not left"
         assert b"\x1b[?2004l" in output, "Bracketed paste was not disabled"
         assert path.read_bytes() == expected, path.read_bytes()
@@ -197,7 +207,7 @@ def main():
         def resize(rows, columns):
             def apply_resize(master, slave, pid):
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
-                os.kill(pid, signal.SIGWINCH)
+                os.killpg(pid, signal.SIGWINCH)
             return apply_resize
 
         wide = (("\t界👩‍💻e\u0301\r\n" * 50) + "\t界" * 200).encode()
