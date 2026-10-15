@@ -124,6 +124,15 @@ impl Freshness {
     }
 }
 impl Record {
+    pub fn matches_diff(&self, diff: &Diff) -> bool {
+        diff.identity.as_ref().is_some_and(|i| {
+            self.identity.repository == i.repository
+                && (self.identity.comparison == i.comparison
+                    || diff.review_base.as_ref() == Some(&self.identity.comparison))
+                && (self.identity.new_path == i.new_path
+                    || diff.renamed_from.as_ref() == Some(&self.identity.new_path))
+        })
+    }
     pub fn freshness(&self, current: Option<&Diff>) -> Freshness {
         let Some(diff) = current else {
             return Freshness::Unavailable;
@@ -132,7 +141,26 @@ impl Record {
             return Freshness::Unavailable;
         };
         if self.identity != *identity {
-            return Freshness::Stale;
+            // Only immutable review baselines permit content reattachment. The
+            // whole old side and modes stay exact; a unique local signature is
+            // evidence for a hunk/line, never for the rest of a changed file.
+            let same_base = identity.comparison.is_review()
+                && self.matches_diff(diff)
+                && self.identity.resolved_base == identity.resolved_base
+                && self.identity.old_path == identity.old_path
+                && self.identity.old == identity.old
+                && self.identity.old_blob == identity.old_blob
+                && self.identity.old_mode == identity.old_mode
+                && self.identity.new_mode == identity.new_mode
+                && self.identity.new.present == identity.new.present;
+            if !same_base
+                || !diff.has_attachment(&self.attachment)
+                || (self.attachment == Attachment::File
+                    && (self.identity.new != identity.new
+                        || self.identity.new_path != identity.new_path))
+            {
+                return Freshness::Stale;
+            }
         }
         if diff.has_attachment(&self.attachment) {
             Freshness::Fresh
@@ -148,6 +176,8 @@ pub struct Store {
     pub repository: Repository,
     pub next_id: u64,
     pub records: Vec<Record>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<crate::review_snapshot::History>,
 }
 impl Store {
     pub fn empty(repository: Repository) -> Self {
@@ -156,10 +186,11 @@ impl Store {
             repository,
             next_id: 1,
             records: Vec::new(),
+            history: None,
         }
     }
     pub fn validate(&self, repo: &Repository) -> Result<(), String> {
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 2) || (self.version == 1 && self.history.is_some()) {
             return Err("Unsupported review store version; original preserved".into());
         }
         if self.repository != *repo {
@@ -167,6 +198,9 @@ impl Store {
         }
         if self.next_id == 0 || self.records.len() > MAX_RECORDS {
             return Err("Review store exceeds 4096 records".into());
+        }
+        if let Some(history) = &self.history {
+            history.validate()?;
         }
         let mut ids = BTreeSet::new();
         let mut marks = BTreeSet::new();
@@ -198,6 +232,11 @@ impl Store {
                 || matches!(record.attachment, Attachment::Line { .. }) && record.state.is_some()
                 || !valid_identity(&record.identity)
                 || !valid_attachment(&record.attachment)
+                || (record.identity.comparison.is_review()
+                    && self
+                        .history
+                        .as_ref()
+                        .is_none_or(|h| h.files(&record.identity.comparison).is_err()))
             {
                 return Err("Invalid review record; original preserved".into());
             }

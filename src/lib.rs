@@ -16,6 +16,7 @@ pub mod navigation;
 pub mod picker;
 pub mod project_search;
 pub mod review;
+pub mod review_snapshot;
 pub mod review_store;
 pub mod review_view;
 pub mod search;

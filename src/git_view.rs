@@ -149,7 +149,7 @@ impl Editor {
     pub fn refresh_git(&mut self) {
         self.git.invalidate();
     }
-    fn git_request(&self) -> Option<Request> {
+    pub(crate) fn git_request(&self) -> Option<Request> {
         let path = self
             .git
             .diff_view
@@ -309,7 +309,15 @@ impl Editor {
                 .and_then(|v| self.git.diff().and_then(|d| d.rows.get(v.selected)))
                 .is_some_and(|r| r.kind == crate::diff::Kind::Header);
             match reply.result {
-                Ok(Some(snapshot)) => {
+                Ok(Some(mut snapshot)) => {
+                    if let Some(previous) = &self.git.snapshot
+                        && previous.repository == snapshot.repository
+                        && previous.disk_revision.is_some()
+                        && snapshot.disk_revision.is_some()
+                    {
+                        snapshot.disk_revised = previous.disk_revised
+                            || previous.disk_revision != snapshot.disk_revision;
+                    }
                     if let Some(view) = &mut self.git.diff_view
                         && let Ok(diff) = &snapshot.diff
                     {
@@ -346,8 +354,12 @@ impl Editor {
             return Vec::new();
         };
         let root = &snapshot.repository.root;
-        let mut files: Vec<_> = snapshot
-            .entries
+        let entries = if self.git.comparison.is_review() {
+            &snapshot.review_changes
+        } else {
+            &snapshot.entries
+        };
+        let mut files: Vec<_> = entries
             .iter()
             .map(|e| ChangedFile {
                 path: root.join(&e.path),
@@ -377,7 +389,7 @@ impl Editor {
                 if let Some(file) = files.iter_mut().find(|f| f.path == path) {
                     file.label.push_str(&format!("  B{id}+ UNSAVED"));
                     file.deleted = false;
-                } else {
+                } else if !self.git.comparison.is_review() {
                     files.push(ChangedFile {
                         path: path.into(),
                         label: format!(
@@ -401,7 +413,11 @@ impl Editor {
         self.view = View::Changes;
         self.git.selected = 0;
         self.refresh_git();
-        self.info("Changes: XY = index/disk; B+ = unsaved buffer. Enter source/history; d diff");
+        self.info(if self.git.comparison.is_review() {
+            "Changes from review baseline: A/M/D/R; B+ = unsaved buffer. Enter source; d diff"
+        } else {
+            "Changes: XY = index/disk; B+ = unsaved buffer. Enter source/history; d diff"
+        });
     }
     pub fn open_diff(&mut self, path: PathBuf, comparison: Comparison) {
         if self.git.diff_view.is_none() {
@@ -453,7 +469,7 @@ impl Editor {
         self.refresh_git();
     }
     pub fn jump_diff_source(&mut self) -> io::Result<()> {
-        if !self.git.ready() {
+        if !self.git_current() {
             return Err(io::Error::other("Wait for a fresh Git comparison"));
         }
         let view = self
@@ -538,6 +554,16 @@ impl Editor {
                     self.document.buffer.generation(),
                     self.document.buffer.is_modified(),
                 ))
+        {
+            return None;
+        }
+        if self.git.comparison.is_review()
+            && !self.document.buffer.is_modified()
+            && self.git.snapshot.as_ref().is_some_and(|s| {
+                s.external_paths
+                    .iter()
+                    .any(|p| Some(s.repository.root.join(p).as_path()) == self.document.path())
+            })
         {
             return None;
         }

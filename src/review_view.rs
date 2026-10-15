@@ -141,6 +141,14 @@ impl Editor {
                         self.finish_note();
                     }
                 }
+                Ok(Outcome::SnapshotSaved(store, id)) => {
+                    self.review.generation = self.review.generation.wrapping_add(1);
+                    self.review.repository = Some(store.repository.clone());
+                    self.review.store = Some(store);
+                    self.review.failed = None;
+                    self.review.status =
+                        format!("Review snapshot #{id} saved; :review full / :review since");
+                }
                 Ok(Outcome::Exported(path)) => {
                     self.review.status =
                         format!("Review exported: {}", crate::git::display_path(&path));
@@ -193,6 +201,12 @@ impl Editor {
                 .and_then(|s| s.records.iter().find(|r| r.id == id))
                 .cloned();
             if let Some(record) = record {
+                let path = self.review_record_path(&record);
+                if self.git.diff_view.as_ref().is_some_and(|v| v.path != path) {
+                    self.review.pending_jump = Some(id);
+                    self.open_diff(path, self.git.comparison.clone());
+                    return true;
+                }
                 let fresh = self.review_freshness(&record);
                 if fresh == Freshness::Fresh {
                     if let Some(row) = self
@@ -247,13 +261,7 @@ impl Editor {
                 }
             })
             .unwrap_or_else(|| {
-                let current = self.git.diff().filter(|d| {
-                    d.identity.as_ref().is_some_and(|i| {
-                        i.repository == record.identity.repository
-                            && i.new_path == record.identity.new_path
-                            && i.comparison == record.identity.comparison
-                    })
-                });
+                let current = self.git.diff().filter(|d| record.matches_diff(d));
                 record.freshness(current)
             })
     }
@@ -355,11 +363,25 @@ impl Editor {
     pub fn review_command(&mut self, argument: &str) -> io::Result<()> {
         let words: Vec<_> = argument.split_whitespace().collect();
         match words.as_slice() {
-            [] | ["help"] => self.info("Review: :review file|hunk reviewed|attention|unreviewed|clear; :note file|hunk|old|new; :notes; :review list [all|stale|attention|unreviewed|notes]; :review revalidate ID TARGET; :review clear ID; :review next file|hunk [FILTER]; :review export /outside/worktree/new.md"),
+            ["snapshot"] => {
+                self.review_ready()?;
+                let request = self.git_request().ok_or_else(|| error("Name a source file before capturing"))?;
+                self.review.submit(Job::Snapshot(Box::new(request)))?;
+                self.info("Review snapshot pending: capturing disk and unsaved buffers; source files are not saved");
+            }
+            ["full"] => self.open_review_comparison(None, false)?,
+            ["since"] => self.open_review_comparison(None, true)?,
+            ["since", id] => self.open_review_comparison(Some(id), true)?,
+            ["snapshots"] => {
+                let store = self.review_ready()?;
+                let history = store.history.as_ref().ok_or_else(|| error("No snapshots; :review snapshot creates the first"))?;
+                self.info(&format!("Review snapshots #1–#{}; latest #{} ({} files). :review since ID; full base {} stays fixed", history.latest(), history.latest(), history.checkpoints.last().unwrap().files.len(), history.baseline.comparison.label()));
+            }
+            [] | ["help"] => self.info("Review: :review snapshot; :review full|since [ID]; :review snapshots; :review file|hunk reviewed|attention|unreviewed|clear; :note file|hunk|old|new; :notes; :review list [FILTER]; :review revalidate ID TARGET; :review clear ID; :review next file|hunk [FILTER]; :review export /outside/worktree/new.md"),
             ["file" | "hunk", state] => {
                 let mut record = self.review_target(words[0])?;
                 let store = self.review_ready()?;
-                let expected = store.records.iter().find(|r| r.state.is_some() && r.identity == record.identity && r.attachment == record.attachment).cloned();
+                let expected = store.records.iter().find(|r| r.state.is_some() && r.attachment == record.attachment && self.review_diff().is_some_and(|d| r.matches_diff(d)) && self.review_freshness(r) == Freshness::Fresh).cloned();
                 if *state == "clear" {
                     let expected = expected.ok_or_else(|| error("No mark on this exact content; :review clear ID removes a stale mark"))?;
                     return self.save_review_change(Change { expected: Some(expected), replacement: None });
@@ -390,6 +412,36 @@ impl Editor {
             _ if argument.starts_with("export ") => self.export_review(argument[7..].trim())?,
             _ => return Err(error("Use :review help for commands")),
         }
+        Ok(())
+    }
+    fn open_review_comparison(&mut self, id: Option<&str>, since: bool) -> io::Result<()> {
+        let store = self.review_ready()?;
+        let history = store
+            .history
+            .as_ref()
+            .ok_or_else(|| error("No review snapshot; use :review snapshot first"))?;
+        let comparison = if since {
+            let id = id
+                .map(|s| {
+                    s.parse::<u64>()
+                        .map_err(|_| error("Use a checkpoint ID from :review snapshots"))
+                })
+                .transpose()?
+                .unwrap_or_else(|| history.latest());
+            let comparison = Comparison::ReviewSince(id);
+            history.files(&comparison).map_err(error)?;
+            comparison
+        } else {
+            Comparison::ReviewFull
+        };
+        let path = self
+            .git
+            .diff_view
+            .as_ref()
+            .map(|v| v.path.clone())
+            .or_else(|| self.document.path().map(PathBuf::from))
+            .ok_or_else(|| error("Name a file before comparing"))?;
+        self.open_diff(path, comparison);
         Ok(())
     }
     pub fn note_command(&mut self, argument: &str) -> io::Result<()> {
@@ -568,14 +620,36 @@ impl Editor {
                 .collect()
         })
     }
+    fn review_record_in_comparison(&self, record: &Record) -> bool {
+        record.identity.comparison == self.git.comparison
+            || (self.git.comparison == Comparison::ReviewFull
+                && self
+                    .review
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.history.as_ref())
+                    .is_some_and(|h| h.baseline.comparison == record.identity.comparison))
+    }
+    fn review_record_path(&self, record: &Record) -> PathBuf {
+        let path = self
+            .git
+            .snapshot
+            .as_ref()
+            .filter(|s| s.repository == record.identity.repository)
+            .and_then(|s| {
+                s.review_renames
+                    .iter()
+                    .find(|(_, from)| **from == record.identity.new_path)
+            })
+            .map_or(&record.identity.new_path, |(to, _)| to);
+        record.identity.repository.root.join(path)
+    }
     pub fn review_file_progress(&self, path: &Path) -> FileProgress {
         let mut progress = FileProgress::default();
         let ready = self.git_current();
-        if let Some(store) = &self.review.store
-            && let Ok(relative) = path.strip_prefix(&store.repository.root)
-        {
+        if let Some(store) = &self.review.store {
             for r in store.records.iter().filter(|r| {
-                r.identity.new_path == relative && r.identity.comparison == self.git.comparison
+                self.review_record_path(r) == path && self.review_record_in_comparison(r)
             }) {
                 progress.include(r, self.review_freshness_with(r, ready));
             }
@@ -589,10 +663,10 @@ impl Editor {
             for r in store
                 .records
                 .iter()
-                .filter(|r| r.identity.comparison == self.git.comparison)
+                .filter(|r| self.review_record_in_comparison(r))
             {
                 progress
-                    .entry(store.repository.root.join(&r.identity.new_path))
+                    .entry(self.review_record_path(r))
                     .or_default()
                     .include(r, self.review_freshness_with(r, ready));
             }
@@ -641,14 +715,14 @@ impl Editor {
         let record = self.review_record(&id.to_string())?;
         self.review.pending_jump = Some(id);
         self.review.focused_record = Some(id);
-        self.open_diff(
-            record
-                .identity
-                .repository
-                .root
-                .join(&record.identity.new_path),
-            record.identity.comparison,
-        );
+        let comparison =
+            if self.git.comparison.is_review() && self.review_record_in_comparison(&record) {
+                self.git.comparison.clone()
+            } else {
+                record.identity.comparison.clone()
+            };
+        let path = self.review_record_path(&record);
+        self.open_diff(path, comparison);
         Ok(())
     }
     pub(crate) fn review_key(&mut self, key: Key) {
@@ -747,10 +821,7 @@ impl Editor {
                 .selected;
             let mut states = std::collections::BTreeMap::<&str, (Option<State>, bool, bool)>::new();
             if let Some(store) = &self.review.store {
-                for r in store.records.iter().filter(|r| {
-                    r.identity.new_path == diff.identity.as_ref().unwrap().new_path
-                        && r.identity.comparison == self.git.comparison
-                }) {
+                for r in store.records.iter().filter(|r| r.matches_diff(diff)) {
                     if let Attachment::Hunk { fingerprint } = &r.attachment {
                         let value = states.entry(fingerprint.as_str()).or_default();
                         let fresh = self.review_freshness_with(r, true);
@@ -848,7 +919,7 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &Editor, theme: &crate::th
             r.state.map_or("note", State::label),
             kind,
             crate::git::display_path(&r.identity.new_path),
-            r.identity.comparison.label(),
+            r.identity.comparison.description(),
             r.context
                 .old_line
                 .map_or("-".into(), |n| (n + 1).to_string()),

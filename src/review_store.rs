@@ -16,7 +16,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub const STORE_LIMIT: u64 = 4 * 1024 * 1024;
+pub const STORE_LIMIT: u64 = 32 * 1024 * 1024;
 pub fn store_path(repo: &Repository) -> PathBuf {
     repo.git_dir.join("editor-pro-review.json")
 }
@@ -32,7 +32,7 @@ fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
                 return Err("Review store is not a regular file".into());
             }
             if m.len() > STORE_LIMIT {
-                return Err("Review store exceeds 4 MiB; original preserved".into());
+                return Err("Review store exceeds 32 MiB; original preserved".into());
             }
         }
     }
@@ -43,7 +43,7 @@ fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
         .read_to_end(&mut bytes)
         .map_err(fail)?;
     if bytes.len() as u64 > STORE_LIMIT {
-        return Err("Review store exceeds 4 MiB; original preserved".into());
+        return Err("Review store exceeds 32 MiB; original preserved".into());
     }
     Ok(Some(bytes))
 }
@@ -140,12 +140,63 @@ pub fn apply(repo: &Repository, change: &Change) -> Result<(Store, u64), String>
         store.records.push(replacement);
         id
     };
+    persist(repo, &path, before, &store)?;
+    Ok((store, id))
+}
+
+pub fn save_snapshot(
+    repo: &Repository,
+    capture: crate::review_snapshot::Capture,
+) -> Result<(Store, u64), String> {
+    let path = store_path(repo);
+    let _lock = lock(&path)?;
+    let before = read_bytes(&path)?;
+    let mut store = decode(before.as_deref(), repo)?;
+    if store.history.as_ref().map_or(0, |h| h.latest()) != capture.expected_latest
+        || store
+            .history
+            .as_ref()
+            .is_some_and(|h| h.baseline != capture.baseline)
+    {
+        return Err("Review snapshot conflict: baseline advanced in another instance; :review reload before capturing again".into());
+    }
+    let history = store
+        .history
+        .get_or_insert_with(|| crate::review_snapshot::History {
+            baseline: capture.baseline,
+            checkpoints: Vec::new(),
+        });
+    let id = history.latest() + 1;
+    history
+        .checkpoints
+        .push(crate::review_snapshot::Checkpoint {
+            id,
+            files: capture.files,
+        });
+    store.version = 2;
+    persist(repo, &path, before, &store)?;
+    Ok((store, id))
+}
+
+fn persist(
+    repo: &Repository,
+    path: &Path,
+    before: Option<Vec<u8>>,
+    store: &Store,
+) -> Result<(), String> {
+    if fs::metadata(&repo.git_dir)
+        .map_err(fail)?
+        .permissions()
+        .readonly()
+    {
+        return Err("Review metadata directory is read-only".into());
+    }
     store.validate(repo)?;
     let bytes = serde_json::to_vec_pretty(&store).map_err(fail)?;
     if bytes.len() as u64 > STORE_LIMIT {
-        return Err("Review store would exceed 4 MiB; previous data preserved".into());
+        return Err("Review store would exceed 32 MiB; previous data preserved".into());
     }
-    if let Ok(m) = fs::symlink_metadata(&path) {
+    if let Ok(m) = fs::symlink_metadata(path) {
         if m.permissions().readonly() {
             return Err("Review store is read-only".into());
         }
@@ -160,19 +211,19 @@ pub fn apply(repo: &Repository, change: &Change) -> Result<(Store, u64), String>
     let mut temporary = tempfile::NamedTempFile::new_in(&repo.git_dir).map_err(fail)?;
     temporary.write_all(&bytes).map_err(fail)?;
     temporary.as_file().sync_all().map_err(fail)?;
-    if read_bytes(&path)? != before {
+    if read_bytes(path)? != before {
         return Err("Review store changed during save; original preserved".into());
     }
     if before.is_some() {
-        temporary.persist(&path).map_err(|e| fail(e.error))?;
+        temporary.persist(path).map_err(|e| fail(e.error))?;
     } else {
         temporary
-            .persist_noclobber(&path)
+            .persist_noclobber(path)
             .map_err(|e| fail(e.error))?;
     }
     #[cfg(unix)]
     File::open(&repo.git_dir).and_then(|d| d.sync_all()).map_err(|e| format!("Review replaced but directory sync failed; durability uncertain: {e}. Reload before retry"))?;
-    Ok((store, id))
+    Ok(())
 }
 
 pub struct Export {
@@ -231,6 +282,9 @@ pub fn markdown(export: &Export) -> String {
     let mut out = String::from("# Code review feedback\n\n");
     out.push_str(&format!("Repository: {}\n\nWorktree Git directory: {}\n\nCoverage: {}. All persisted marks and notes loaded by this session at export request, including other bases and unresolved records. Concurrent additions require :review reload. Freshness is sampled, not an atomic filesystem snapshot. No source buffers were saved.\n\n",
         escape(&path_text(&export.store.repository.root)), escape(&path_text(&export.store.repository.git_dir)), escape(&export.scope)));
+    if let Some(history) = &export.store.history {
+        out.push_str(&format!("Immutable review baseline: {}; resolved base: {}. {} checkpoints retained; latest #{}. Snapshot source contents are not included in this report. Fresh snapshot hunk/line attachments may be reanchored by unique content; stored coordinates remain historical.\n\n", escape(history.baseline.comparison.label()), escape(history.baseline.resolved_base.as_deref().unwrap_or("captured index or unborn HEAD")), history.checkpoints.len(), history.latest()));
+    }
     let status: std::collections::BTreeMap<_, _> = export.freshness.iter().copied().collect();
     let fresh = |r: &Record| status.get(&r.id).copied().unwrap_or(Freshness::Unavailable);
     let reviewed_files = export
@@ -288,7 +342,7 @@ pub fn markdown(export: &Export) -> String {
             r.state.map_or("note", |s| s.label())
         ));
         out.push_str(&format!("Old path: {}\n\nNew path: {}\n\nComparison: {}; resolved base: {}; old blob: {}; new blob: {}\n\n",
-            escape(&path_text(&i.old_path)), escape(&path_text(&i.new_path)), escape(i.comparison.label()), escape(i.resolved_base.as_deref().unwrap_or("index or unborn HEAD")), escape(i.old_blob.as_deref().unwrap_or("absent")), escape(i.new_blob.as_deref().unwrap_or("working content or absent"))));
+            escape(&path_text(&i.old_path)), escape(&path_text(&i.new_path)), escape(&i.comparison.description()), escape(i.resolved_base.as_deref().unwrap_or("index or unborn HEAD")), escape(i.old_blob.as_deref().unwrap_or("absent")), escape(i.new_blob.as_deref().unwrap_or("working content or absent"))));
         out.push_str(&format!("Content SHA-256: old {} ({} bytes, {}); new {} ({} bytes, {}). Annotated from unsaved content: {}.\n\nAttachment: {}. Old line: {}; new line: {}. Coordinates are historical hints, not identity.\n\n",
             i.old.sha256, i.old.bytes, if i.old.present { "present" } else { "missing" }, i.new.sha256, i.new.bytes, if i.new.present { "present" } else { "missing" }, r.unsaved,
             escape(&format!("{:?}", r.attachment)), r.context.old_line.map_or("—".into(), |n| (n+1).to_string()), r.context.new_line.map_or("—".into(), |n| (n+1).to_string())));
@@ -345,11 +399,13 @@ pub enum Job {
     Load(Repository),
     Change(Repository, Box<Change>),
     Export(Box<Export>),
+    Snapshot(Box<crate::git::Request>),
 }
 pub enum Outcome {
     Loaded(Arc<Store>),
     Saved(Arc<Store>, u64),
     Exported(PathBuf),
+    SnapshotSaved(Arc<Store>, u64),
 }
 pub struct Worker {
     tx: Option<SyncSender<Job>>,
@@ -370,6 +426,15 @@ impl Worker {
                             apply(&repo, &change).map(|(s, id)| Outcome::Saved(Arc::new(s), id))
                         }
                         Job::Export(request) => export(&request).map(Outcome::Exported),
+                        Job::Snapshot(request) => crate::git::capture_review(
+                            &request,
+                            &crate::git::Config {
+                                timeout: std::time::Duration::from_secs(30),
+                                ..Default::default()
+                            },
+                        )
+                        .and_then(|(repo, capture)| save_snapshot(&repo, capture))
+                        .map(|(store, id)| Outcome::SnapshotSaved(Arc::new(store), id)),
                     };
                     if done.send(result).is_err() {
                         break;

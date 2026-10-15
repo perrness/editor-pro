@@ -30,7 +30,14 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             frame,
             body,
             0,
-            "Changes — XY: index/disk; B+: unsaved buffer",
+            &if editor.git.comparison.is_review() {
+                format!(
+                    "Changes — {}; A/M/D/R: snapshot delta; B+: unsaved buffer",
+                    editor.git.comparison.description()
+                )
+            } else {
+                "Changes — XY: index/disk; B+: unsaved buffer".into()
+            },
             style.fg(theme.normal),
         );
         line(
@@ -95,7 +102,14 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 frame,
                 body,
                 3,
-                "No disk/index changes or unsaved buffers",
+                editor
+                    .git
+                    .problem()
+                    .unwrap_or(if editor.git.comparison.is_review() {
+                        "No changes from the selected review baseline"
+                    } else {
+                        "No disk/index changes or unsaved buffers"
+                    }),
                 style.fg(theme.muted),
             );
         }
@@ -198,8 +212,7 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
                 .and_then(|s| {
                     s.records.iter().find(|r| {
                         r.attachment == a
-                            && editor.git.diff().and_then(|d| d.identity.as_ref())
-                                == Some(&r.identity)
+                            && editor.git.diff().is_some_and(|d| r.matches_diff(d))
                             && r.state.is_some()
                             && editor.review_freshness(r) == crate::review::Freshness::Fresh
                     })

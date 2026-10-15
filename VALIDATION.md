@@ -841,3 +841,76 @@ result validates its line, not an atomic whole-project snapshot. Existing source
 file loads remain synchronous under the 64 MiB limit. Workspace queries use the
 current project/language session; calls retain at most 16 parents. Virtual sources,
 dynamic registrations and later review/AI milestones remain outside this slice.
+
+
+## M7 immutable review snapshots
+
+2026-10-15: inspected the implementation before selecting the next incomplete
+milestone. The existing Git `Snapshot` and M4 content hashes did not retain source
+baselines. All 205 starting deterministic Rust tests passed before implementation.
+M7 adds immutable trees to the existing review store/worker and uses the existing
+Git diff projection and request guards. No dependency or AI integration was added.
+
+### Automated evidence
+
+The following passed on Linux with stable Rust. Cargo used the existing verified
+`/tmp/editor-pro-m3-cargo` cache and `CARGO_NET_OFFLINE=true`; initial default
+registry access failed DNS. No lockfile/dependency changes were needed.
+
+```sh
+cargo fmt
+cargo fmt --check
+CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true cargo clippy --locked --all-targets -- -D warnings
+CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true cargo test --locked --all-targets
+CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true cargo build --locked
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-m7-terminal python3 tools/terminal_smoke.py
+git diff --check
+```
+
+There are **219 passing deterministic Rust tests**, including **14 new snapshot
+tests** in `tests/review_snapshots.rs`. The six opt-in real-server tests remain
+ignored by this command. Eight Python probe tests and **22 PTY sessions** pass.
+The terminal harness adds two real-editor workflows: capture/review an external
+revision while retaining clean and dirty source, then restart and append a second
+checkpoint while retaining the first full baseline. Saved file and index bytes,
+checkpoint contents and terminal restoration are asserted. ANSI captures are
+`/tmp/editor-pro-m7-terminal/m7-live-review.ansi` and
+`/tmp/editor-pro-m7-terminal/m7-checkpoint-resume.ansi`.
+
+| Invariant | Evidence |
+| --- | --- |
+| Capture does not modify source, index or refs | Exact byte/status assertions, unsaved Rope capture, and PTY index/source checks. |
+| Checkpoints and the full baseline stay immutable | Multiple captures, external commits, restart, pinned checkpoint IDs, and removal of the original loose Git commit. |
+| Disk revisions cannot silently retain file progress | Same-size writes with restored mtime, periodic refresh, and changed whole-file mark staleness. |
+| Unsaved source and location survive | Dirty and clean loaded documents, external-save refusal, cursor/viewport/undo, and source mapping to retained bytes. |
+| Content reattachment is conservative | Unique hunk/old/new-line notes, Unicode/CRLF and shifted coordinates; changed/repeated signatures are stale and never attached by ordinal. |
+| Scope and persistence remain bounded | Concurrent checkpoint CAS plus merged annotations, version-1 retention, corrupt hashes, invalid paths, 512-path and 32-checkpoint limits, unsupported binary/symlink refusal. |
+| Renames/deletions remain inspectable | Renamed content after commit, deleted and empty files, additions, unborn/index baselines, and lossless raw Unix filenames. |
+| Async content stays guarded | Edits during capture preserve request-time text; later buffer mutations immediately reject obsolete review actions/source jumps. |
+| Rendering remains source-independent | Narrow/paired TestBackend and PTY layouts plus source preservation. |
+
+### Limits and manual verification
+
+This run did not rerun real language servers, earlier performance examples,
+release timing workloads, macOS, minimum Rust 1.88 or hosted CI. Existing real-server
+observations remain separate evidence. No claim of atomic filesystem capture or
+physical-terminal appearance is made.
+
+Capture is all-or-nothing for supported text: 512 paths across current/retained
+trees, 2 MiB per file, 8 MiB per tree, 32 checkpoints, 24 MiB retained source and
+32 MiB serialized metadata. Binary/non-UTF-8 files, symlinks, submodules and
+conflicts refuse capture. Capture has a cooperative 30-second Git deadline;
+serialization/fsync and filesystem stalls are not hard-time bounded. There is one
+full baseline per worktree store, with no pruning/reset UI. Ordinary annotation
+validation still samples the current path and up to 31 others. Renames without
+Git hints or unique exact content can remain additions/deletions, and changed or
+ambiguous attachments require explicit correction.
+
+On a disposable text repository, mark/note a hunk, run `:review snapshot`, then
+`:review full`. Modify and commit another hunk externally. Verify that the first
+unique hunk remains reviewed, the whole-file mark is stale, and `:review since`
+shows only the newer revision. Capture again and restart; compare both checkpoint
+IDs. Repeat with a dirty source, a rename/deletion, paired/narrow layouts, and a
+save conflict. Check source cursor/scroll/undo and labels on a physical Linux and
+macOS terminal, then assess responsiveness on your representative repository.

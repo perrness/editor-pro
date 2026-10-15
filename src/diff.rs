@@ -33,6 +33,8 @@ pub enum Mark {
 #[derive(Clone, Debug, Default)]
 pub struct Diff {
     pub identity: Option<crate::review::Identity>,
+    pub renamed_from: Option<std::path::PathBuf>,
+    pub review_base: Option<crate::git::Comparison>,
     pub locations: crate::review::Locations,
     pub left_label: String,
     pub right_label: String,

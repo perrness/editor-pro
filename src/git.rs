@@ -1,8 +1,11 @@
 //! Read-only Git CLI inspection. One worker, one pending request and one result;
 //! subprocesses never run in input dispatch or rendering.
 use crate::diff::Diff;
+#[path = "git_snapshot.rs"]
+mod snapshots;
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
+pub use snapshots::capture_review;
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
@@ -26,6 +29,8 @@ pub enum Comparison {
     Index,
     Revision(String),
     Staged,
+    ReviewFull,
+    ReviewSince(u64),
 }
 impl Comparison {
     pub fn label(&self) -> &str {
@@ -34,6 +39,8 @@ impl Comparison {
             Self::Index => "index",
             Self::Revision(s) => s,
             Self::Staged => "staged HEAD → index",
+            Self::ReviewFull => "review full",
+            Self::ReviewSince(_) => "since review",
         }
     }
     pub fn parse(s: &str) -> Self {
@@ -42,6 +49,15 @@ impl Comparison {
             "index" => Self::Index,
             "staged" => Self::Staged,
             _ => Self::Revision(s.into()),
+        }
+    }
+    pub fn is_review(&self) -> bool {
+        matches!(self, Self::ReviewFull | Self::ReviewSince(_))
+    }
+    pub fn description(&self) -> String {
+        match self {
+            Self::ReviewSince(id) => format!("since review #{id}"),
+            _ => self.label().into(),
         }
     }
 }
@@ -93,11 +109,17 @@ pub struct Snapshot {
     pub diff: Result<Diff, String>,
     pub review_freshness: std::collections::BTreeMap<u64, (u64, crate::review::Freshness)>,
     pub review_limited: bool,
+    pub review_files: Option<Vec<crate::review_snapshot::File>>,
+    pub review_changes: Vec<Entry>,
+    pub review_renames: std::collections::BTreeMap<PathBuf, PathBuf>,
+    pub external_paths: Vec<PathBuf>,
+    pub disk_revision: Option<String>,
+    pub disk_revised: bool,
 }
 impl Snapshot {
     pub fn summary(&self) -> String {
         format!(
-            "{} S{} W{} ?{} !{}{}",
+            "{} S{} W{} ?{} !{}{}{}{}",
             self.branch,
             self.entries
                 .iter()
@@ -111,6 +133,19 @@ impl Snapshot {
             self.entries.iter().filter(|e| e.conflict).count(),
             if self.filters_disabled {
                 " [filters off]"
+            } else {
+                ""
+            },
+            if self.external_paths.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " [disk differs:{}; buffers retained]",
+                    self.external_paths.len()
+                )
+            },
+            if self.disk_revised {
+                " [disk revised]"
             } else {
                 ""
             }
@@ -505,9 +540,20 @@ fn inspect_with(runner: &Runner<'_>, request: &Request) -> Result<Option<Snapsho
         diff: Ok(Diff::default()),
         review_freshness: Default::default(),
         review_limited: false,
+        review_files: None,
+        review_changes: Vec::new(),
+        review_renames: Default::default(),
+        external_paths: Vec::new(),
+        disk_revision: None,
+        disk_revised: false,
     };
     if request.inspect {
-        snapshot.diff = comparison(&runner, request, &snapshot);
+        snapshot.diff = if request.comparison.is_review() {
+            snapshots::inspect_tree(&runner, request, &mut snapshot)
+                .and_then(|()| comparison(&runner, request, &snapshot))
+        } else {
+            comparison(&runner, request, &snapshot)
+        };
     }
     // Detect an index/ref/status change during the multi-command snapshot.
     if raw != runner.git(&snapshot.repository.root, &refs(&status_args))? {
@@ -525,25 +571,45 @@ fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snaps
     if store.repository != snapshot.repository {
         return;
     }
+    let selected = |r: &crate::review::Record| {
+        r.identity.comparison == request.comparison
+            || (request.comparison == Comparison::ReviewFull
+                && store
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| h.baseline.comparison == r.identity.comparison))
+    };
+    let current_path = |r: &crate::review::Record| {
+        let path = snapshot
+            .review_renames
+            .iter()
+            .find(|(_, from)| **from == r.identity.new_path)
+            .map_or(&r.identity.new_path, |(to, _)| to);
+        snapshot.repository.root.join(path)
+    };
     let mut paths = std::collections::BTreeSet::new();
     for r in &store.records {
         snapshot
             .review_freshness
             .insert(r.id, (r.revision, Freshness::Unavailable));
-        if r.identity.comparison == request.comparison {
-            paths.insert(snapshot.repository.root.join(&r.identity.new_path));
+        if selected(r) {
+            paths.insert(current_path(r));
         }
     }
-    // The active comparison is always covered, even after the bounded auxiliary
-    // validation budget. Other annotated files are sampled in deterministic order.
-    for r in &store.records {
-        if snapshot.repository.root.join(&r.identity.new_path) == request.path
-            && r.identity.comparison == request.comparison
-        {
-            snapshot
-                .review_freshness
-                .insert(r.id, (r.revision, r.freshness(snapshot.diff.as_ref().ok())));
-        }
+    let record_paths: std::collections::BTreeMap<_, _> = store
+        .records
+        .iter()
+        .map(|r| (r.id, current_path(r)))
+        .collect();
+    // The active comparison is covered before the bounded auxiliary budget.
+    for r in store
+        .records
+        .iter()
+        .filter(|r| selected(r) && record_paths[&r.id] == request.path)
+    {
+        snapshot
+            .review_freshness
+            .insert(r.id, (r.revision, r.freshness(snapshot.diff.as_ref().ok())));
     }
     paths.remove(&request.path);
     for (n, path) in paths.into_iter().enumerate() {
@@ -564,7 +630,7 @@ fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snaps
             buffer,
             comparison: request.comparison.clone(),
             inspect: true,
-            review: None,
+            review: request.review.clone(),
             review_buffers: Vec::new(),
             review_generation: 0,
         };
@@ -572,17 +638,18 @@ fn validate_reviews(runner: &Runner<'_>, request: &Request, snapshot: &mut Snaps
         if Instant::now() >= runner.deadline {
             snapshot.review_limited = true;
         }
-        for r in &store.records {
-            if snapshot.repository.root.join(&r.identity.new_path) == path
-                && r.identity.comparison == request.comparison
-            {
-                snapshot
-                    .review_freshness
-                    .insert(r.id, (r.revision, r.freshness(diff.as_ref().ok())));
-            }
+        for r in store
+            .records
+            .iter()
+            .filter(|r| selected(r) && record_paths[&r.id] == path)
+        {
+            snapshot
+                .review_freshness
+                .insert(r.id, (r.revision, r.freshness(diff.as_ref().ok())));
         }
     }
 }
+
 fn parse_status(raw: &[u8]) -> Result<(String, Option<String>, Vec<Entry>), String> {
     let mut records = raw.split(|b| *b == 0).filter(|r| !r.is_empty());
     let mut branch = String::new();
@@ -820,6 +887,9 @@ fn compare_bytes(runner: &Runner<'_>, old: &[u8], new: &[u8]) -> Result<Diff, St
     Diff::parse(std::str::from_utf8(&result.bytes).map_err(err)?)
 }
 fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Result<Diff, String> {
+    if request.comparison.is_review() {
+        return snapshots::comparison(runner, request, snapshot);
+    }
     let repo = &snapshot.repository;
     let relative = request.path.strip_prefix(&repo.root).map_err(err)?;
     let entry = snapshot.entries.iter().find(|e| e.path == relative);
@@ -843,6 +913,7 @@ fn comparison(runner: &Runner<'_>, request: &Request, snapshot: &Snapshot) -> Re
                 .map_err(|e| format!("Unavailable revision {value}: {e}"))?;
             Some(std::str::from_utf8(line(&bytes)).map_err(err)?.into())
         }
+        Comparison::ReviewFull | Comparison::ReviewSince(_) => unreachable!(),
     };
     let mut old_path = if request.comparison != Comparison::Index {
         entry

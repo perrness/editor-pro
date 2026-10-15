@@ -11,10 +11,13 @@ and file safety remain independent of terminal rendering.
 **M6 code comprehension** adds a symbol outline, workspace symbols and call
 hierarchy when supported, asynchronous ripgrep project search, recent files,
 and backward/forward source navigation.
+**M7 review snapshots** add immutable checkpoints, full/since-review comparisons,
+live disk revision detection and conservative note reattachment.
 
-**Validation:** 205 Rust tests (including 42 LSP regressions), eight Python harness
-tests, formatting, Clippy and debug/release builds pass on Linux. The terminal harness
-covers 20 sessions, including project search, history, symbols/calls and LSP edit previews.
+**Validation:** 219 Rust tests (including 14 snapshot and 42 LSP regressions),
+eight Python harness tests, formatting, Clippy and the debug build pass on Linux.
+The terminal harness covers 22 sessions, including snapshots/live revisions,
+project search, history, symbols/calls and LSP edit previews.
 M6 passed three extended real-server fixtures; M5's six-fixture acceptance and
 independent Kotlin feasibility probe remain recorded separately. See
 [VALIDATION.md](VALIDATION.md) for build results, earlier performance measurements
@@ -269,10 +272,11 @@ includes unsaved text, CRLF and final-newline differences; empty and absent file
 are different. Timestamps, file size alone, Git status, row numbers, abbreviated
 display IDs and approximate navigation anchors never establish freshness. Hunk
 and line signatures must be unique within the exact comparison; repeated
-signatures are refused with a suggestion to annotate the file. Any containing
-comparison change conservatively makes its marks and notes stale. No automatic
-reanchoring across changed content occurs. Explicit correction can move a record
-to a selected current location; otherwise the original annotation is retained.
+signatures are refused with a suggestion to annotate the file. Ordinary Git
+comparisons conservatively stale attachments after a containing change. Immutable
+review baselines additionally support the content reattachment described below.
+Explicit correction can move a record to a selected current location; the original
+annotation otherwise remains stored with its historical identity.
 
 Known edits, buffer/base changes and pending refreshes immediately withhold fresh
 progress. **Undo back to identical bytes can restore freshness only after a new
@@ -299,8 +303,9 @@ list also keeps annotations on files no longer present in that list.
 Progress lives in **`<absolute-git-dir>/editor-pro-review.json`**, outside tracked
 files and the index; linked worktrees have separate stores. Inspection alone does
 not create it. Version 1 stores fingerprints, marks, note text and at most 512
-bytes of context per record, never an automatic source snapshot. Limits: 4 MiB
-per store, 4,096 records and 16 KiB per note. New files are private on Unix.
+bytes of context per record. Explicit snapshot creation upgrades the store to
+version 2, retaining those records and adding immutable source trees. Limits:
+32 MiB per store, 4,096 records and 16 KiB per note. New files are private on Unix.
 `Review pending`, `Review saved #ID` and errors report durability. Quit waits for
 you to resolve pending actions; a failed mark can be retried, discarded by an
 explicit reload, or abandoned with `:q!`. A note draft has its own save/cancel guard.
@@ -338,6 +343,78 @@ A terminal-only walkthrough (wait for comparison/loading and pending writes):
 :review list stale               inspect unresolved progress after code changes
 :review export /tmp/feedback-1.md use a new path for every export
 ```
+
+## Review snapshots
+
+Use checkpoints to review successive revisions, including changes written by an
+external agent. No AI integration is required, and the editor does not infer who
+made a disk change.
+
+| Command | Action |
+| --- | --- |
+| `:review snapshot` | Capture the worktree's current text and dirty buffers as a new immutable checkpoint |
+| `:review full` | Compare the first captured full baseline against current text |
+| `:review since [ID]` | Compare a checkpoint against current text; defaults to the latest checkpoint |
+| `:review snapshots` | Show the retained checkpoint range and latest file count |
+
+The **first** checkpoint also captures your selected HEAD, index or revision as
+an immutable full baseline. Start from `:gitbase HEAD`, `:gitbase index`, or
+`:gitbase REV`; a first checkpoint from a staged comparison is refused. Later
+checkpoints append current trees and preserve the original full baseline. Creating
+a checkpoint records a review boundary; it does not mark files or hunks reviewed.
+After finishing a revision, capture again, then use `:review since` to see only
+subsequent changes. `:review since ID` pins that comparison until you select another
+checkpoint, even if a later checkpoint is created. `:review full` always uses the
+original baseline, including after commits or branch movement.
+
+Capture includes tracked files, non-ignored untracked files, previously captured
+paths, and named dirty buffers in the worktree. Dirty buffers supply their exact
+request-time text; other files are read from disk. All source bytes, presence,
+Unix executable modes and raw filenames are retained. Capture never saves source,
+changes HEAD or writes the index. Disk is sampled twice and a changing sample is
+refused. This is **not an atomic filesystem snapshot**; writes can still occur
+between observations. Capture runs in the review worker with a cooperative
+30-second deadline. Wait for `Review snapshot #ID saved`; a failed capture leaves
+previous checkpoints intact. Use `:review reload` after an error or another
+instance advances the checkpoint, then capture again.
+
+The existing diff view, paired layout, hunk navigation, `n`/`p` and `:changes` work
+with either review comparison. The changed-file list labels its entries as
+**snapshot deltas**, including committed changes, additions, deletions and mode
+changes. Git-reported renames and unique nonempty exact-content moves are matched;
+ambiguous moves remain additions/deletions. Refresh polls every two seconds and on
+focus/`r`/`:gitrefresh`. It hashes disk bytes, including files hidden by dirty
+buffers, and reports `disk revised` when a later sample differs. `disk differs`
+means disk and an open buffer disagree; unsaved edits can also cause this label.
+
+**Open documents are never reloaded automatically.** A clean open document can
+retain earlier bytes while review displays current disk text. Enter maps the
+review location back into that retained source; the mapping is approximate after
+substantial changes. Source gutters are withheld when the clean source differs
+from the compared disk. Dirty buffers remain the compared text; external disk
+revisions remain visible in status and ordinary save-conflict protection still
+applies. Escape preserves source cursor, viewport and undo. Use `:e!` only when
+you explicitly want to reload.
+
+In a fixed review baseline, unchanged **unique hunk/line signatures** can stay
+fresh and follow moved line numbers or a recognized rename. Both sides' modes,
+the complete old content and baseline identity must still match. Changed file
+marks/notes become stale; changed or repeated attachment signatures never regain
+fresh progress. Existing annotations for the captured original comparison can
+also be validated in the full view. Other bases stay separate. Reattachment is
+derived during refresh: stored identities, notes and historical coordinates are
+not rewritten. Explicit `:note attach` / `:review revalidate` remain available.
+
+Limits are **512 paths** across current and retained trees, **2 MiB per file**,
+**8 MiB per tree**, **32 checkpoints**, **24 MiB of retained source text**, and
+**32 MiB of serialized metadata**. Binary/non-UTF-8 content, symlinks, submodules,
+conflicts and exceeded limits fail visibly; no partial checkpoint is saved.
+There is one baseline per worktree store, with no automatic pruning/reset. Full snapshot
+trees are stored privately in Git metadata and omitted from Markdown feedback
+exports; ordinary annotation excerpts remain included. Older editor versions refuse the version-2 store. Snapshot
+writes reuse the annotation lock and atomic persistence; competing checkpoints
+conflict while unrelated annotation changes merge. Validation still covers the
+current path plus up to 31 other annotated paths within Git's five-second budget.
 
 ## Language intelligence
 

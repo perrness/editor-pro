@@ -1,10 +1,10 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Milestones 1–6 are implemented;
+not only code or an advertised server capability. Milestones 1–7 are implemented;
 M5 and M6 have pinned real-server acceptance evidence on Linux. Platform and broader
 project limits remain explicit below. Editing modes remain independent of
-contextual views throughout. M7 has not been started.
+contextual views throughout. M8 has not been started.
 
 ## Milestone 1 — Minimal editor
 
@@ -107,8 +107,7 @@ progress refresh, notes, persistence and export. Exact final counts/timings are 
 [VALIDATION.md](VALIDATION.md). The automated M4 workflow is complete without AI
 or a language server. macOS, hosted CI, minimum-Rust and physical-terminal comfort
 remain unobserved; M5 now supplies the separate real Kotlin probe result.
-M7 immutable baselines and automatic reanchoring remain future
-work. Validation samples at most 32 annotated paths per refresh; excess paths and
+M7 adds immutable baselines and conservative content reattachment below. Validation samples at most 32 annotated paths per refresh; excess paths and
 other bases are visibly unavailable, and stale annotations require explicit action.
 
 ## Milestone 5 — Language intelligence
@@ -236,6 +235,10 @@ live-agent refresh, persistent navigation format or AI features were introduced.
 
 ## Milestone 7 — Review snapshots
 
+**Status:** implemented. Inspection confirmed that M1–6 code was present and all
+205 starting deterministic Rust tests passed; the existing Git `Snapshot` was a
+transient inspection result, not an immutable review baseline.
+
 Immutable review baselines, full versus since-last-review diffs, detect external
 agent revisions, preserve/re-anchor notes where valid and mark stale progress.
 Live filesystem/Git refresh must preserve unsaved text and viewport state.
@@ -243,6 +246,46 @@ Live filesystem/Git refresh must preserve unsaved text and viewport state.
 **Acceptance:** review successive revisions without re-reviewing unchanged code.
 Snapshot creation never changes the working tree. Content-based invalidation,
 renames/deletions, external refresh and dirty buffers have regression tests.
+
+**Delivered incrementally:**
+
+- `:review snapshot` captures the original HEAD/index/selected-revision baseline
+  once and appends immutable worktree checkpoints, including request-time dirty
+  buffer text. Captures preserve source files, HEAD and index. Version-1 records
+  remain readable; first capture upgrades the existing atomic store to version 2.
+  Concurrent checkpoint writers conflict without losing unrelated annotations.
+- `:review full`, `:review since [ID]`, and `:review snapshots` use the existing
+  contextual diff/list navigation. Full comparisons retain their original bytes
+  after commits, ref movement and Git object removal; since comparisons pin a
+  checkpoint. Added/deleted/renamed/empty/mode-only paths remain distinguishable.
+- Live review refresh hashes disk content independently of dirty buffers, labels
+  disk revisions, and derives snapshot changed-file lists. Clean source documents
+  retain their loaded bytes while review reads disk; dirty text, undo, cursor and
+  viewport are preserved. Source jumps map back into retained documents.
+- Unique unchanged hunk and old/new-line signatures can reattach under the same
+  immutable baseline, including shifted coordinates and recognized renames.
+  Changed file marks and changed/ambiguous attachments stay stale. Historical
+  notes/identities are retained without automatic persistence rewrites.
+
+**Acceptance evidence:** 219 deterministic Rust tests pass, including 14 new
+snapshot regressions; formatting, Clippy, eight Python probe tests and debug build
+pass. All 22 Linux PTY sessions pass, including live external revisions, dirty
+source retention, full/since comparisons, restart/resume, a second checkpoint,
+paired/narrow layouts and terminal restoration. Existing Git/review/LSP tests
+remain passing; no real-server compatibility claim is added. Details and terminal
+captures are recorded in [VALIDATION.md](VALIDATION.md).
+
+**Known limits:** text-only captures, 512 paths across current/retained trees,
+2 MiB per file, 8 MiB per tree, 32 checkpoints, 24 MiB retained text and 32 MiB
+serialized metadata. Unsupported content and limits refuse the whole capture.
+One full baseline per worktree store; no pruning/reset UI. Capture has a
+cooperative 30-second deadline; refresh retains Git's five-second budget and
+current-plus-31-path annotation validation. Disk sampling is not atomic, and
+navigation into retained older source is approximate. Ambiguous or unrecognized
+moves stay additions/deletions; reattachment never uses similarity or line numbers
+as freshness evidence. Older editor versions refuse version-2 metadata. macOS,
+minimum Rust, physical-terminal comfort and large production repositories remain
+manual validation. No M8 provider or AI features were introduced.
 
 ## Milestone 8 — AI-assisted comprehension
 

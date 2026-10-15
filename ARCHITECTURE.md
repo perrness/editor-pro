@@ -1,6 +1,6 @@
 # Architecture
 
-Decision record, 2026-10-14. Scope: Milestones 1–6, pinned real-server acceptance
+Decision record, 2026-10-15. Scope: Milestones 1–7, pinned real-server acceptance
 fixtures and an isolated Kotlin feasibility experiment.
 The product is one terminal editor for editing, navigation, Git review
 and eventual AI comprehension. There is no separate Review Mode.
@@ -24,10 +24,12 @@ picker.rs    cancellable discovery and Nucleo background matching
 navigation.rs session-local location history and recent-file view
 project_search.rs bounded ripgrep worker, disk-match validation and result view
 git.rs       repository/status discovery, bounded CLI worker, comparison snapshots
+git_snapshot.rs bounded immutable tree capture and live review comparisons (Git child module)
 diff.rs      unified coordinates, deletion anchors, paired alignment and source mapping
 git_view.rs  changed-file/diff navigation over existing documents
 git_ui.rs    contextual Git lists, inline rows and synchronized paired panes
 review.rs    versioned records, full content identities and unique attachment keys
+review_snapshot.rs bounded baseline/checkpoint schema and content validation
 review_store.rs bounded loading, record CAS, atomic persistence and Markdown worker
 review_view.rs  review commands, progress/navigation and contextual record list
 lsp.rs         protocol positions, immutable document stamps, capabilities and roots
@@ -264,7 +266,7 @@ an open document or alters its history, cursor or viewport.
 
 ## Durable review without another editor
 
-`review.rs` owns version-1 identities and records. Repository identity includes
+`review.rs` owns review identities and records; the store reads versions 1 and 2. Repository identity includes
 both worktree root and absolute Git directory. Each identity records comparison
 kind/requested revision, full resolved base/old/new blob IDs, old/new paths/modes,
 and each side's SHA-256, byte length and presence flag. Raw Unix path bytes are
@@ -279,8 +281,9 @@ row kinds, complete row text and final-newline metadata, excluding header line
 numbers. Line signatures add an old/new side and a bounded neighboring-row window.
 Duplicate signatures are removed from the actionable location map. Stored
 coordinates/excerpts are display hints only. Freshness requires an exact containing
-identity plus an unambiguous attachment key; changed comparisons conservatively
-stale every attachment. No M7 snapshots or cross-content reanchoring are performed.
+identity plus an unambiguous attachment key for ordinary Git comparisons. M7
+immutable baselines additionally allow the conservative content reattachment
+described below; navigation anchors never supply that evidence.
 
 Requests additionally hold an immutable `Arc<Store>` and cheap Rope snapshots of
 open documents. The request stamp covers a monotonic review generation and all captured
@@ -295,7 +298,7 @@ intact; auxiliary validations are further non-atomic samples. No filesystem-wide
 snapshot or protection from unobserved concurrent external writes is claimed.
 
 `review_store.rs` is a concrete worker with a bounded queue and one UI action in
-flight. Loads are read-only and capped at 4 MiB; absent metadata is an empty store.
+flight. Loads are read-only and capped at 32 MiB; absent metadata is an empty store.
 Records cap at 4,096, note text at 16 KiB, annotation context at 512 bytes. Parsing,
 validation, serialization, hashing and fsync run outside input/render. Metadata is
 `<absolute-git-dir>/editor-pro-review.json`; linked worktrees therefore separate
@@ -332,6 +335,56 @@ scope explicitly. HTML entities escape punctuation; controls use visible escapes
 and unusual path bytes use byte notation. New-file persistence refuses all existing
 outputs and destinations in the current worktree, Git metadata or open source
 paths. Export never saves source, changes the index or transmits feedback.
+
+## Immutable review baselines and live revisions
+
+M7 adds concrete tree capture/comparison functions in `git_snapshot.rs` and a
+bounded schema in `review_snapshot.rs`. No new worker, runtime, dependency or
+editing engine is introduced. `:review snapshot` sends an immutable Git request
+and open-buffer Ropes to the existing review I/O worker. It captures a full Git
+baseline once and appends current trees. `:review full` uses that fixed baseline;
+`:review since [ID]` pins one checkpoint. Trees contain exact UTF-8 bytes, raw paths,
+SHA-256, presence by membership, executable modes and unsaved provenance. Baseline
+Git object IDs are explanatory; stored bytes remain usable if Git prunes objects.
+
+Discovery includes tracked/non-ignored untracked paths, all retained paths and
+named dirty buffers. Dirty text comes from request-time Ropes; clean/unopened text
+comes from disk. Source documents, disk baselines, histories and viewports never
+change. Two content samples must agree before capture; the initial Git baseline
+is checked twice too. Bounds are 512 union paths, 2 MiB per file, 8 MiB per tree,
+32 checkpoints, 24 MiB retained source bytes and 32 MiB serialized metadata.
+Unsupported content or exceeded limits refuses the whole capture. This is sampled
+consistency, not a filesystem transaction. Capture has a cooperative 30-second
+Git deadline; filesystem stalls and serialization/fsync are not hard-time bounded.
+
+The first successful capture upgrades metadata to version 2, retaining all v1
+annotations. Trees live in the same private worktree-specific review JSON so an
+append and its baseline are one atomic write under the existing lock. The writer
+checks the expected latest checkpoint and baseline, merges unrelated records,
+validates content hashes/limits and fsyncs as before. Earlier checkpoints are
+never updated or automatically pruned. Pending capture participates in the
+existing quit guard; a failed capture requires reload/retry. No separate pointer,
+object store, garbage collector or cross-file persistence protocol is needed.
+
+The Git worker polls live trees for review comparisons, keeping the usual request,
+review-generation and open-buffer guards. A separate hash of sampled disk bytes
+and modes detects external revisions even under dirty buffers. This describes
+content changes, not their author. `:changes` projects deltas from the selected
+saved tree, separately from disk/index status. Git rename hints and unique
+nonempty content matches relate missing paths; unsupported/ambiguous moves remain
+additions/deletions. Original Git objects are optional rename hints. Source jumps
+map disk coordinates back through a diff into retained open documents; this is
+navigation only. Gutters are withheld for differing clean source buffers.
+
+Review reattachment requires the same repository/baseline, complete old content
+and blob identity, modes and presence, plus a unique unchanged hunk/line signature
+on the current comparison. Whole-file marks remain stale after content/path
+changes. Original-base annotations can be projected into the full snapshot view;
+other comparisons remain isolated. The stored record is not rewritten: current
+location/progress are derived and still guarded by record revision and sampled
+content. Repeated or changed signatures cannot count as fresh. Markdown exports
+include checkpoint metadata and historical annotation context, never the stored
+source trees. Validation keeps the current-plus-31-path budget.
 
 ## Persistence and terminal lifetime
 
@@ -465,7 +518,6 @@ invalidates Git/review derived state through the established paths.
   Kotlin/JDT/Roslyn servers on disposable Gradle/Maven/solution/project fixtures.
   Protocol doubles remain separate evidence. Broader workloads, platforms and
   physical-terminal comfort require additional observations. See the server report.
-- **M7:** Review snapshots record immutable content without altering the working tree.
 - **M8:** Context collection and provider integration stay independent of editing
   and review notes. Use a documented agent CLI, user-visible context and explicit
   edit approval. No provider dependencies or placeholder APIs in this milestone.
@@ -479,5 +531,5 @@ invalidates Git/review derived state through the established paths.
 | Project import and SDK mismatches | Real fixture checks supplement protocol tests; SDK targets and server runtimes are recorded separately. Larger/mixed projects still need validation. |
 | Server churn or proprietary protocol assumptions | Pinned standalone versions/checksums and opt-in editor checks expose compatibility failures; upgrades must rerun them. |
 | Stale async state | Picker queries, Git generations, and LSP session/request/document stamps guard acceptance. Versionless diagnostics remain explicitly unverified. |
-| Scope and architecture growth | M1–6 code only; no review snapshots, AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
+| Scope and architecture growth | M1–7 code only; no AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
 | Platform and responsiveness evidence | Linux check counts, real fixture results and import/restart timings are recorded in VALIDATION.md. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |

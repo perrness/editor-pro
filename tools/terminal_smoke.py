@@ -346,7 +346,55 @@ def main():
         assert (lsp_root / "Other.kt").read_bytes() == b"bad other\n"
         if capture_dir:
             (Path(capture_dir) / "m6-symbols-calls.ansi").write_bytes(output)
-    print("PASS: 20 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, and restoration")
+        # M7: immutable checkpoints, live external revisions, and retained source.
+        repo = Path(directory) / "snapshot project"
+        repo.mkdir()
+        git("init", "-b", "main")
+        git("config", "user.name", "PTY Snapshot Test")
+        git("config", "user.email", "snapshot@example.invalid")
+        git("config", "commit.gpgsign", "false")
+        git("config", "core.autocrlf", "false")
+        source = repo / "source.txt"
+        source.write_bytes(b"base revision\n")
+        git("add", "--all")
+        git("commit", "-m", "snapshot base")
+        source.write_bytes(b"first revision\n")
+        store = repo / ".git" / "editor-pro-review.json"
+        index_before = (repo / ".git" / "index").read_bytes()
+        def checkpoint_count(count):
+            return lambda: store.exists() and len(json.loads(store.read_text()).get("history", {}).get("checkpoints", [])) == count
+        output = run_session(binary, source, [
+            (b":review snapshots\r", b"No snapshots", 10),
+            b":review snapshot\r", (checkpoint_count(1), 30),
+            (b":review full\r", b"review full HEAD", 10),
+            (b":review file reviewed\r", saved(lambda rs: any(r["state"] == "Reviewed" for r in rs)), 10),
+            b":review since\r", (b"No textual changes", 10),
+            lambda master, slave, pid: source.write_bytes(b"later revision\n"),
+            b"\x1b[I", resize(24, 130), (b"later revision", 10),
+            b":review full\r", resize(24, 129), (b"base revision", 10),
+            b":review list stale\r", resize(24, 130), (b"STALE", 10),
+            b"\x1b", b"\x1b", resize(24, 129), (b"first revision", 10),
+            b"iLOCAL ", b"\x1b", b":review since\r", resize(24, 130), (b"UNSAVED", 10),
+            b"\t", resize(3, 1), resize(24, 130), b"\x1b", b"u", b":q\r",
+        ], b"later revision\n")
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        if capture_dir:
+            (Path(capture_dir) / "m7-live-review.ansi").write_bytes(output)
+        output = run_session(binary, source, [
+            (b":review since\r", b"review checkpoint #1", 10),
+            resize(24, 130), (b"first revision", 10),
+            b":review snapshot\r", (checkpoint_count(2), 30),
+            b":review since\r", (b"No textual changes", 10),
+            b":review full\r", resize(24, 129), (b"base revision", 10),
+            b":changes\r", resize(24, 130), (b"snapshot delta", 10), b"d", b"\x1b", b":q\r",
+        ], b"later revision\n")
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        history = json.loads(store.read_text())["history"]
+        assert history["baseline"]["files"][0]["text"] == "base revision\n"
+        assert [c["files"][0]["text"] for c in history["checkpoints"]] == ["first revision\n", "later revision\n"]
+        if capture_dir:
+            (Path(capture_dir) / "m7-checkpoint-resume.ansi").write_bytes(output)
+    print("PASS: 22 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, and restoration")
     return 0
 
 
