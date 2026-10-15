@@ -40,6 +40,8 @@ Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refre
 Review: :review help, :review file|hunk reviewed|attention|unreviewed, :notes\nNotes: :note file|hunk|old|new; :note save or :note cancel; :review export PATH\nThemes: :theme tokyo-night|catppuccin|gruvbox
 
 LSP: :LspInfo, :Doctor, :LspRestart, :Hover, :Definition, :References, :Diagnostics
+Code: :Outline, :WorkspaceSymbols QUERY, :Calls (i/o calls, Backspace parent)
+Project: :grep TEXT, :grepdir PATH, :recent, Ctrl-o/:back, Ctrl-i/:forward
 Language: :Complete (Insert Ctrl-n), :Signature, :Rename NAME, :CodeAction, :Format, :Symbols
 
 Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
@@ -141,6 +143,7 @@ fn event_loop(
             || editor.git.loading
             || editor.review.busy
             || editor.lsp.pending
+            || editor.project_search.pending
         {
             16
         } else {

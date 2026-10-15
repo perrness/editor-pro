@@ -72,6 +72,8 @@ pub enum View {
         selected: usize,
     },
     Files,
+    Recent,
+    ProjectSearch,
     Changes,
     Diff,
     Review,
@@ -88,6 +90,8 @@ pub struct Editor {
     pub git: crate::git_view::GitState,
     pub review: crate::review_view::ReviewState,
     pub lsp: crate::lsp_view::LspState,
+    pub navigation: crate::navigation::Navigation,
+    pub project_search: crate::project_search::ProjectSearch,
     pub note_edit: Option<Box<NoteEdit>>,
     pub theme: ThemeName,
     pub mode: Mode,
@@ -107,7 +111,7 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(document: Document) -> Self {
-        Self {
+        let mut editor = Self {
             document,
             active_buffer_id: 1,
             next_buffer_id: 2,
@@ -117,6 +121,8 @@ impl Editor {
             git: crate::git_view::GitState::default(),
             review: crate::review_view::ReviewState::default(),
             lsp: crate::lsp_view::LspState::default(),
+            navigation: crate::navigation::Navigation::default(),
+            project_search: crate::project_search::ProjectSearch::default(),
             note_edit: None,
             theme: ThemeName::default(),
             mode: Mode::Normal,
@@ -132,10 +138,20 @@ impl Editor {
             search: Search::default(),
             search_backward: false,
             search_mode: Mode::Normal,
-        }
+        };
+        editor.remember_file();
+        editor
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.view == View::ProjectSearch && self.mode != Mode::Command {
+            self.project_search_key(key);
+            return;
+        }
+        if self.view == View::Recent && self.mode != Mode::Command {
+            self.recent_key(key);
+            return;
+        }
         if self.view == View::Lsp && self.mode != Mode::Command {
             self.lsp_key(key);
             return;
@@ -395,6 +411,15 @@ impl Editor {
         }
         let count = self.pending.count.max(1);
         self.pending = Pending::default();
+        if self.mode == Mode::Normal && matches!(key, Key::Ctrl('o' | 'i') | Key::Tab) {
+            for _ in 0..count {
+                if let Err(e) = self.navigate_history(key == Key::Ctrl('o')) {
+                    self.error(&e.to_string());
+                    break;
+                }
+            }
+            return;
+        }
         let buffer = &mut self.document.buffer;
         match key {
             Key::Char('v' | 'V') => {
@@ -688,6 +713,9 @@ impl Editor {
     }
 
     fn escape(&mut self) {
+        if self.view == View::Editing && self.lsp.pending {
+            self.lsp.cancel();
+        }
         if self.mode == Mode::Search {
             self.mode = self.search_mode;
             self.command.clear();
@@ -875,6 +903,7 @@ impl Editor {
         match name {
             "LspInfo" | "LspRestart" | "LspLog" | "Doctor" | "Complete" | "Hover" | "Signature"
                 | "Definition" | "References" | "Rename" | "CodeAction" | "Format" | "Symbols"
+                | "Outline" | "WorkspaceSymbols" | "Calls"
                 | "Diagnostics" | "Dnext" | "Dprev" => self.lsp_command(name, argument)?,
             "w" | "wq" => {
                 let path = if argument.is_empty() {
@@ -896,6 +925,13 @@ impl Editor {
                 self.quit = true;
             }
             "e" | "e!" => self.edit_command(argument, name == "e!")?,
+            "back" | "forward" if argument.is_empty() => self.navigate_history(name == "back")?,
+            "recent" if argument.is_empty() => self.open_recent(),
+            "grep" => self.search_project(argument)?,
+            "grepdir" => {
+                self.project_search.config.root = if argument.is_empty() { None } else { Some(crate::file::absolute_path(Path::new(argument))?) };
+                self.info("Search root updated; :grep TEXT starts a new search");
+            }
             "files" => {
                 let root = if argument.is_empty() {
                     std::env::current_dir()?
@@ -956,7 +992,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "i insert  v/V select  d/c/y + motion  p paste  u undo  / search  n/N  Ctrl-p files  :ls buffers  :changes  :diff HEAD|index|REV|staged  :review help  :note file  :notes  :w save  :q quit; README.md has all keys",
+                "i insert  v/V select  d/c/y + motion  u undo  / search  Ctrl-p files  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :changes  :diff  :review help  :w save  :q quit; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),
@@ -976,6 +1012,7 @@ impl Editor {
 
     pub(crate) fn reset_context(&mut self) {
         self.lsp.cancel();
+        self.project_search.cancel();
         self.mode = Mode::Normal;
         self.pending = Pending::default();
         self.selection_anchor = None;

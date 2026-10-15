@@ -493,6 +493,308 @@ fn hover_signature_symbols_definitions_references_and_logs_use_contextual_views(
 }
 
 #[test]
+fn outline_and_workspace_symbols_preserve_source_and_record_navigation() {
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.document.buffer.set_cursor(4, false);
+    f.editor.viewport.left = 2;
+    let cursor = f.editor.document.buffer.cursor();
+    let viewport = f.editor.viewport.clone();
+    f.command("Outline");
+    let panel = f.editor.lsp.panel.as_ref().unwrap();
+    assert_eq!(panel.title, "Symbol outline");
+    assert_eq!(panel.rows[0].label, "outer");
+    assert_eq!(panel.rows[1].label, "  inner");
+    escape(&mut f.editor);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.viewport, viewport);
+    f.command("WorkspaceSymbols other");
+    assert!(
+        f.editor.lsp.panel.as_ref().unwrap().rows[0]
+            .label
+            .contains("other")
+    );
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(
+        f.editor.document.path().unwrap().file_name().unwrap(),
+        "Other.kt"
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    f.editor.execute_command("back").unwrap();
+    assert_eq!(
+        f.editor.document.path().unwrap().file_name().unwrap(),
+        "Main.kt"
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.viewport, viewport);
+    f.editor.execute_command("forward").unwrap();
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    let request = f
+        .log()
+        .into_iter()
+        .find(|v| v["method"] == "workspace/symbol")
+        .unwrap();
+    assert_eq!(request["params"], json!({"query":"other"}));
+}
+
+#[test]
+fn lazy_workspace_symbols_resolve_opaque_data_and_reuse_dirty_buffers() {
+    let mut f = Fixture::new("normal");
+    let path = f.directory.path().join("Other.kt");
+    f.editor.open_buffer(&path).unwrap();
+    f.editor.document.buffer.set_cursor(9, true);
+    f.editor.document.buffer.insert(" unsaved");
+    f.editor.document.buffer.commit();
+    f.editor.switch_buffer(1).unwrap();
+    f.ready();
+    f.command("WorkspaceSymbols lazy");
+    f.editor.handle_key(Key::Enter);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    assert_eq!(f.editor.document.path(), Some(path.as_path()));
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert!(
+        f.editor
+            .document
+            .buffer
+            .text()
+            .to_string()
+            .contains("unsaved")
+    );
+    assert_eq!(f.editor.buffer_count(), 2);
+    assert_eq!(fs::read_to_string(path).unwrap(), "bad other\n");
+    let init = f
+        .log()
+        .into_iter()
+        .find(|v| v["method"] == "initialize")
+        .unwrap();
+    assert_eq!(
+        init["params"]["capabilities"]["workspace"]["symbol"]["resolveSupport"]["properties"],
+        json!(["location.range"])
+    );
+}
+
+#[test]
+fn call_hierarchy_recurses_preserves_data_and_parent_selection_then_jumps_back() {
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.document.buffer.set_cursor(4, false);
+    f.editor.viewport.left = 2;
+    let viewport = f.editor.viewport.clone();
+    f.command("Calls");
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().rows[0].label, "start");
+    f.editor.handle_key(Key::Char('i'));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    let panel = f.editor.lsp.panel.as_ref().unwrap();
+    assert!(panel.title.contains("Incoming calls"));
+    assert_eq!(panel.rows[0].label, "caller");
+    assert!(panel.rows[0].detail.contains("2 call site(s)"));
+    f.editor.handle_key(Key::Right);
+    f.editor.handle_key(Key::Char('o'));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(
+        f.editor
+            .lsp
+            .panel
+            .as_ref()
+            .unwrap()
+            .title
+            .contains("Outgoing calls")
+    );
+    f.editor.handle_key(Key::Backspace);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().left, 4);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().rows[0].label, "caller");
+    for (w, h) in [(1, 1), (2, 2), (24, 8), (100, 24)] {
+        Terminal::new(TestBackend::new(w, h))
+            .unwrap()
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+    }
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert_eq!(f.editor.viewport, viewport);
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(
+        f.editor.document.path().unwrap().file_name().unwrap(),
+        "Other.kt"
+    );
+    f.editor.execute_command("back").unwrap();
+    assert_eq!(
+        f.editor.document.path().unwrap().file_name().unwrap(),
+        "Main.kt"
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert_eq!(f.editor.viewport, viewport);
+    let requests: Vec<_> = f
+        .log()
+        .into_iter()
+        .filter(|v| {
+            v["method"] == "callHierarchy/incomingCalls"
+                || v["method"] == "callHierarchy/outgoingCalls"
+        })
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["params"]["item"]["name"], "caller");
+}
+
+#[test]
+fn comprehension_reports_unsupported_empty_virtual_and_bounded_results() {
+    let mut unsupported = Fixture::new("unsupported");
+    unsupported.ready();
+    for command in ["Outline", "WorkspaceSymbols foo", "Calls"] {
+        assert!(
+            unsupported
+                .editor
+                .execute_command(command)
+                .unwrap_err()
+                .to_string()
+                .contains("does not support")
+        );
+    }
+    let mut f = Fixture::new("calls-empty");
+    f.ready();
+    f.command("WorkspaceSymbols empty");
+    assert_eq!(f.editor.view, View::Editing);
+    assert!(f.editor.message.contains("No language-server results"));
+    f.command("WorkspaceSymbols virtual");
+    assert!(
+        f.editor.lsp.panel.as_ref().unwrap().rows[0]
+            .detail
+            .contains("Unsupported virtual")
+    );
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(f.editor.active_buffer_id, 1);
+    escape(&mut f.editor);
+    f.command("WorkspaceSymbols many");
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().rows.len(), 4096);
+    assert!(
+        f.editor
+            .lsp
+            .panel
+            .as_ref()
+            .unwrap()
+            .title
+            .contains("result limit")
+    );
+    escape(&mut f.editor);
+    f.command("Calls");
+    f.editor.handle_key(Key::Char('o'));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(
+        f.editor.lsp.panel.as_ref().unwrap().rows[0]
+            .label
+            .contains("No calls")
+    );
+    f.editor.handle_key(Key::Backspace);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().rows[0].label, "start");
+}
+
+#[test]
+fn malformed_symbol_ranges_and_utf16_surrogates_never_move_source() {
+    let mut f = Fixture::new("normal");
+    fs::write(
+        f.directory.path().join("Other.kt"),
+        "bad other\r\n😀 e\u{301}\r\n",
+    )
+    .unwrap();
+    f.ready();
+    f.editor
+        .execute_command("WorkspaceSymbols malformed")
+        .unwrap();
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(f.editor.message_is_error);
+    assert_eq!(f.editor.active_buffer_id, 1);
+    f.command("WorkspaceSymbols surrogate");
+    f.editor.handle_key(Key::Enter);
+    assert!(f.editor.message_is_error);
+    assert_eq!(f.editor.active_buffer_id, 1);
+    assert_eq!(f.editor.buffer_count(), 1);
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+}
+
+#[test]
+fn comprehension_cancellation_and_document_guards_suppress_obsolete_results() {
+    let mut f = Fixture::new("comprehension-slow");
+    f.ready();
+    f.editor.execute_command("Calls").unwrap();
+    f.wait_log("textDocument/prepareCallHierarchy", 1);
+    escape(&mut f.editor);
+    settle(&mut f.editor);
+    assert_eq!(f.editor.view, View::Editing);
+    assert!(f.editor.lsp.panel.is_none());
+    f.editor.execute_command("WorkspaceSymbols old").unwrap();
+    f.wait_log("workspace/symbol", 1);
+    f.editor.execute_command("WorkspaceSymbols new").unwrap();
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert_eq!(
+        f.editor.lsp.panel.as_ref().unwrap().rows[0].label,
+        "new Project"
+    );
+    escape(&mut f.editor);
+    f.editor.execute_command("WorkspaceSymbols lazy").unwrap();
+    until(&mut f.editor, |e| !e.lsp.pending);
+    f.editor.handle_key(Key::Enter);
+    f.wait_log("workspaceSymbol/resolve", 1);
+    f.editor.document.buffer.insert("changed ");
+    settle(&mut f.editor);
+    assert_eq!(f.editor.active_buffer_id, 1);
+    assert_eq!(f.editor.view, View::Editing);
+    f.editor.document.buffer.set_cursor(0, false);
+    f.command("Calls");
+    f.editor.handle_key(Key::Char('i'));
+    f.wait_log("callHierarchy/incomingCalls", 1);
+    f.editor.handle_key(Key::Backspace);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().rows[0].label, "start");
+    settle(&mut f.editor);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().rows[0].label, "start");
+    f.editor.handle_key(Key::Char('o'));
+    escape(&mut f.editor);
+    f.editor.handle_key(Key::Char('i'));
+    f.editor.paste("still editable ");
+    escape(&mut f.editor);
+    settle(&mut f.editor);
+    assert!(
+        f.editor
+            .document
+            .buffer
+            .text()
+            .to_string()
+            .starts_with("still editable changed ")
+    );
+    assert_eq!(f.editor.view, View::Editing);
+}
+
+#[test]
+fn call_hierarchy_depth_is_bounded_and_unsupported_file_types_are_explicit() {
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.command("Calls");
+    for _ in 0..16 {
+        f.editor.handle_key(Key::Char('o'));
+        until(&mut f.editor, |e| !e.lsp.pending);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    }
+    f.editor.handle_key(Key::Char('o'));
+    assert!(f.editor.message.contains("depth limit"));
+    assert!(!f.editor.lsp.pending);
+    f.editor.handle_key(Key::Backspace);
+    f.editor.handle_key(Key::Char('i'));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    escape(&mut f.editor);
+    f.editor
+        .open_buffer(&f.directory.path().join("plain.txt"))
+        .unwrap();
+    assert!(
+        f.editor
+            .execute_command("WorkspaceSymbols")
+            .unwrap_err()
+            .to_string()
+            .contains("No language server for this file type")
+    );
+}
+
+#[test]
 fn completion_resolves_documentation_and_applies_undoable_preview_in_insert() {
     let mut f = Fixture::new("normal");
     f.ready();

@@ -728,3 +728,116 @@ and restart or terminate the server with unsaved text. Inspect narrow/normal
 layouts and terminal restoration on Linux and macOS. Snippets, virtual documents,
 watched-file registration and resource/annotated edits remain unsupported.
 No editing/Git/review performance workload was rerun in this follow-up.
+
+## M6 code comprehension
+
+Inspection of the implementation, tests and pinned-server fixtures confirmed M6
+as the next incomplete milestone. All **186** starting deterministic Rust tests
+passed. Nested document symbols already existed; the new outline presentation
+and alias reuse them. Work proceeded through source history/recent files,
+cancellable project search, then workspace symbols and call hierarchy. No new
+Cargo dependency, general service abstraction, review snapshot or AI feature was
+introduced.
+
+### Final automated checks
+
+Linux x86_64, Rust/Cargo 1.99.0, Python 3 and ripgrep 15.2.0. Cargo commands used
+the existing `/tmp/editor-pro-m3-cargo` cache with `CARGO_NET_OFFLINE=true`.
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt`, `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | **205 passed**, none failed; six opt-in real-server tests ignored. Includes 42 LSP, six navigation and six project-search regressions. |
+| `cargo build --locked` | Passed. |
+| `cargo build --locked --release --bin editor-pro` | Passed. |
+| Python probe unittest discovery | **Eight passed**; harness/double evidence. |
+| `python3 tools/terminal_smoke.py` | **20 sessions passed**, including restoration and the new search/navigation/comprehension workflows. |
+| Extended `lsp_real` tests, with `--ignored --nocapture --test-threads=1` | **Three passed**: `kotlin_maven`, `java_maven`, `csharp_project`. |
+| `git diff --check` | Passed. |
+
+Navigation coverage includes independent dirty buffers and undo, exact cursor and
+viewport restoration, branching forward history, save-as/close/reopen, inaccessible
+history entries, deleted parent directories, bounded stacks/recent paths and
+source-preserving narrow rendering. The existing buffer/file/Git/review suites
+remain green.
+
+Search tests run actual ripgrep on Unicode/CRLF text, repeated matches, literal
+metacharacters/option-like queries, ignore files, hidden files, binary files,
+symlinks, colon/newline/non-UTF-8 Unix filenames and automatic/explicit roots.
+They check byte-to-scalar jumps and exact return locations. Dirty-buffer and
+external-write mismatches refuse navigation without creating or replacing a
+buffer. A separate process double exercises delayed/obsolete results, cancellation,
+leaving the view, missing rg, malformed output, stderr failures, timeout/reaping
+and visible 4,096-result truncation. Input/escape/paste remain responsive while
+that double sleeps; this is not a large-project throughput benchmark.
+
+LSP regressions cover nested outline labels, workspace query parameters, lazy
+symbol resolution with opaque data, dirty-buffer reuse, recursive incoming/
+outgoing calls, caller-relative call-site details, parent selection/scroll,
+16-level limits, empty/unsupported/virtual results, malformed ranges, UTF-16
+surrogate rejection, cancellation before/after a result panel, and late replies
+after edits, newer queries or returning to a parent. All existing M5 tests remain.
+Review preserved failed diagnostic-list selections and eliminated a second
+unopened-target read between validating its position and activating it.
+
+The PTY harness adds a real-ripgrep search across files, back/forward with an
+unsaved edit and undo, recent-file selection, extreme resize, and a separate
+protocol-double outline/workspace-symbol/call-hierarchy workflow. Saved bytes
+and terminal restoration are checked. An older picker session's fixed Escape
+delay failed under concurrent load; it now waits for observable Normal mode.
+New checks force a full redraw where needed because Ratatui's incremental escape
+stream can omit unchanged spaces/characters even when the screen is correct.
+`EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-m6-terminal` retained
+`m6-search-history.ansi` and `m6-symbols-calls.ansi` from the passing run.
+
+### Real-server observations
+
+The installed pinned distributions from `tools/lsp/servers.json` were reused:
+official Kotlin 263.6379.0, JDT LS 1.60.0 and csharp-ls 0.28.0 with .NET 10.0.402.
+The extended fixture tests require a useful workspace symbol, a successful source
+jump, incoming and outgoing calls, and restoration of the original source
+cursor/viewport. They also retain the M5 completion, diagnostics, edits, undo,
+restart/resynchronization and unchanged-disk checks. All three advertised the
+new capabilities and passed; no unsupported branch was counted as real feature
+success. Lazy workspace-symbol resolution is additionally exercised by the double.
+
+| Fixture | Workspace symbols (ms) | Prepare calls (ms) | Incoming (ms) | Outgoing (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Kotlin Maven | 185 | 198 | 239 | 221 |
+| Java Maven | 10 | 20 | 63 | 53 |
+| C# project | 64 | 35 | 98 | 43 |
+
+These are single observed samples on small fixtures with cached dependencies,
+not performance guarantees. New-project first diagnostics took 37.16, 7.76 and
+9.21 seconds respectively; unsaved restart/resync took 7.22, 6.84 and 7.21 seconds.
+Reports are `/tmp/editor-pro-m6-real-final/{kotlin-maven,java-maven,csharp-project}.json`.
+
+Two sandboxed Kotlin attempts failed before useful project import: the native
+server/importer still tried to install its Maven plugin under read-only
+`/root/.m2`, despite copied writable dependencies and JVM cache overrides. Those
+180-second failures are preserved in `/tmp/editor-pro-m6-real` and
+`/tmp/editor-pro-m6-real-cached`. The successful runs used approved execution
+with the required local networking/cache access and disposable project roots.
+No source fixture was weakened to turn an import failure into a pass.
+
+### Limits and manual verification
+
+M6 did not rerun the Gradle or solution fixtures, the standalone Kotlin probe,
+or earlier editing/Git/review performance examples. Their M5/M4 observations above
+remain historical evidence. macOS, minimum Rust 1.88, hosted CI, large production
+projects and physical-terminal appearance remain unobserved.
+
+Install rg, open your project, try `:grep TEXT` and `:grepdir DIRECTORY`, cancel
+or replace a slow query, and open results with dirty buffers. Follow definitions,
+`:WorkspaceSymbols`, and `:Calls` (`i`/`o`, Backspace, Enter); use Ctrl-o/Ctrl-i
+to return through each source location. Check `:recent`, same-file jumps, undo,
+external-write conflicts, wide text and narrow layouts on Linux/macOS.
+
+History/recent files are session-local and scalar locations do not track moving
+symbols. Search uses literal case-sensitive disk text, a 2 MiB file limit,
+4,096 results, 16 MiB capture and a cooperative ten-second deadline. Selecting a
+result validates its line, not an atomic whole-project snapshot. Existing source
+file loads remain synchronous under the 64 MiB limit. Workspace queries use the
+current project/language session; calls retain at most 16 parents. Virtual sources,
+dynamic registrations and later review/AI milestones remain outside this slice.

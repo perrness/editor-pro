@@ -178,6 +178,84 @@ impl Project {
         })
     }
 
+    fn comprehension(&mut self) {
+        self.cursor("DEFINITION", "greet", 1);
+        let cursor = self.editor.document.buffer.cursor();
+        let viewport = self.editor.viewport.clone();
+        let capabilities = self.editor.lsp.servers[&self.editor.lsp.routes[&self.main]]
+            .capabilities
+            .clone();
+        if lsp::supports(&capabilities, "workspace/symbol") {
+            self.command("WorkspaceSymbols Greeter");
+            let index = self
+                .editor
+                .lsp
+                .panel
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .position(|r| {
+                    r.label.contains("Greeter")
+                        && r.detail
+                            .contains(self.other.file_name().unwrap().to_str().unwrap())
+                })
+                .expect("Workspace symbol must identify the fixture Greeter");
+            self.editor.lsp.panel.as_mut().unwrap().selected = index;
+            self.editor.handle_key(Key::Enter);
+            self.wait("workspace_symbol_source", |e| !e.lsp.pending);
+            assert!(!self.editor.message_is_error, "{}", self.state());
+            assert_eq!(self.editor.document.path(), Some(self.other.as_path()));
+            self.editor.execute_command("back").unwrap();
+            assert_eq!(self.editor.document.path(), Some(self.main.as_path()));
+            assert_eq!(self.editor.document.buffer.cursor(), cursor);
+            assert_eq!(self.editor.viewport, viewport);
+        } else {
+            assert!(
+                self.editor
+                    .execute_command("WorkspaceSymbols Greeter")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not support")
+            );
+            self.report["checks"]["workspace_symbols"] =
+                json!({"status":"unsupported; explicit response verified"});
+        }
+        if lsp::supports(&capabilities, "textDocument/prepareCallHierarchy") {
+            self.command("Calls");
+            assert!(self.panel_contains("greet"), "{}", self.state());
+            self.editor.handle_key(Key::Char('i'));
+            self.wait("incoming_calls", |e| !e.lsp.pending);
+            assert!(!self.editor.message_is_error, "{}", self.state());
+            assert!(
+                self.panel_contains(self.main.file_name().unwrap().to_str().unwrap()),
+                "{}",
+                self.state()
+            );
+            self.editor.handle_key(Key::Char('o'));
+            self.wait("outgoing_calls", |e| !e.lsp.pending);
+            assert!(!self.editor.message_is_error, "{}", self.state());
+            assert!(self.panel_contains("greet"), "{}", self.state());
+            self.editor.handle_key(Key::Backspace);
+            self.editor.handle_key(Key::Enter);
+            assert_eq!(self.editor.view, View::Editing);
+            self.editor.execute_command("back").unwrap();
+            assert_eq!(self.editor.document.path(), Some(self.main.as_path()));
+            assert_eq!(self.editor.document.buffer.cursor(), cursor);
+            assert_eq!(self.editor.viewport, viewport);
+        } else {
+            assert!(
+                self.editor
+                    .execute_command("Calls")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not support")
+            );
+            self.report["checks"]["call_hierarchy"] =
+                json!({"status":"unsupported; explicit response verified"});
+        }
+    }
+
     fn select_preview(&mut self, label: &str) -> bool {
         self.editor.handle_key(Key::Enter);
         self.wait(label, |e| !e.lsp.pending);
@@ -258,6 +336,8 @@ impl Project {
                 .as_ref()
                 .is_some_and(|p| !p.rows.is_empty())
         );
+
+        self.comprehension();
 
         self.cursor("DEFINITION", "greet(", "greet(".len());
         self.command("Signature");

@@ -8,11 +8,15 @@ and inline/paired diffs, persistent content-based review marks, notes and Markdo
 The **M5 language client is implemented and tested on Linux** against pinned
 Kotlin/JDT/Roslyn servers on six Maven, Gradle and .NET project fixtures. Editing
 and file safety remain independent of terminal rendering.
+**M6 code comprehension** adds a symbol outline, workspace symbols and call
+hierarchy when supported, asynchronous ripgrep project search, recent files,
+and backward/forward source navigation.
 
-**Validation:** 186 Rust tests (including 35 LSP regressions), eight Python harness
+**Validation:** 205 Rust tests (including 42 LSP regressions), eight Python harness
 tests, formatting, Clippy and debug/release builds pass on Linux. The terminal harness
-covers 18 sessions, including LSP completion commands/preview/undo/save/shutdown.
-Six opt-in real-server tests and the independent Kotlin feasibility probe also pass. See
+covers 20 sessions, including project search, history, symbols/calls and LSP edit previews.
+M6 passed three extended real-server fixtures; M5's six-fixture acceptance and
+independent Kotlin feasibility probe remain recorded separately. See
 [VALIDATION.md](VALIDATION.md) for build results, earlier performance measurements
 and exact scope. macOS, hosted CI, a minimum-Rust build, physical-terminal comfort
 and larger or mixed-language projects remain separate validation limits.
@@ -22,6 +26,8 @@ and larger or mixed-language projects remain separate validation limits.
 Use stable Rust with Cargo, rustfmt, and Clippy (Rust 1.88 or newer), and an
 interactive terminal on Linux or macOS. A truecolor terminal shows the intended
 palettes. The toolchain installed on the delivery VM is available globally.
+Install `rg` (ripgrep) on PATH for project search and its integration tests;
+editing and language commands do not require it.
 
 ```sh
 cargo build --locked --release
@@ -88,6 +94,54 @@ errors or its 100,000-file limit. Matching uses Nucleo's smart case/normalizatio
 
 `:ls` opens the buffer list; use `j`/`k` or arrows, Enter to switch, Escape to
 return. Switching preserves unsaved text, undo history, cursor and viewport.
+
+## Code comprehension and project navigation
+
+| Command/key | Action |
+| --- | --- |
+| `:Outline` or `:Symbols` | Hierarchical document symbol outline; Enter jumps |
+| `:WorkspaceSymbols [QUERY]` | Search symbols in the active file's language-server project; Enter resolves a lazy location if needed, then opens it |
+| `:Calls` | Prepare call hierarchy at the cursor; select a symbol, then `i` for incoming or `o` for outgoing calls |
+| `:grep TEXT` | Search project files on disk for literal, case-sensitive text |
+| `:grepdir DIRECTORY` | Set the root for subsequent searches; `:grepdir` resets automatic discovery |
+| `:recent` | List up to 100 recently visited paths in this session |
+| `Ctrl-o`, `:back` | Return to an earlier source buffer, cursor and viewport |
+| `Ctrl-i` (Tab), `:forward` | Return to the later location; a new jump clears forward history |
+
+Symbol and call lists use the existing LSP view. Unsupported capabilities are
+reported explicitly. In a call hierarchy, `i`/`o` follow the selected symbol
+recursively, Backspace restores the parent list and its selection, Enter opens
+the symbol's declaration, and Escape returns to the unchanged source. Details
+show call-site coordinates in the caller (one-based UTF-16 columns). Lists cap
+at 4,096 rows and 16 parent levels. Workspace queries use one active root/language,
+not an aggregation of all servers. Escape also cancels a pending source request.
+
+Project search runs ripgrep in a cancellable worker. It respects ignore files,
+includes non-ignored hidden files, and excludes VCS metadata and symlinks.
+The root is an explicit `:grepdir`, the current LSP project, or the nearest
+Cargo/Git boundary; language-specific build discovery applies to Kotlin/Java/C#
+even before their server is ready. Without a boundary it uses the file's parent,
+or the working directory for an unnamed buffer. The result heading shows the root.
+Use `j/k`, arrows or Page Up/Down to select, `h/l` to scroll, Enter to open,
+`r` to repeat the query, `:grep TEXT` to replace it, and Escape to cancel/return.
+
+Results describe **disk text**, with one-based line and UTF-8 byte columns;
+opening converts to the editor's grapheme cursor. An open dirty buffer is reused,
+and a result whose matching line differs from current text is refused. Search
+never reloads or saves buffers. It scans files up to 2 MiB, retains at most 4,096
+matches, bounds captured output to 16 MiB, and has a cooperative ten-second
+deadline. Limits and skipped non-UTF-8 result lines are visible. Binary detection
+uses ripgrep's defaults. Queries are single-line literals, not regexes or shell
+commands; spaces are literal within the trimmed command argument.
+
+History records file/buffer changes and explicit LSP, diagnostic, Git-source and
+project-result jumps, including same-file jumps. Normal cursor movement does not
+create entries. Both history directions cap at 256 locations. Named closed buffers
+can reopen; unavailable entries report an error and are skipped on the next
+attempt. Existing buffers retain unsaved edits and independent undo histories.
+Locations are stored scalar offsets, clamped after edits/reloads; they do not
+track moving symbols. Recent files and history are session-local. Ordinary file
+loading remains synchronous under the existing file-size limit.
 
 ## Git-aware editing
 
@@ -330,7 +384,8 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 | `:Rename NEW_NAME` | Propose a symbol rename, including edits to other files |
 | `:CodeAction` | List fixes/actions; Enter selects, resolving edits when supported |
 | `:Format` | Propose document formatting |
-| `:Symbols` | List document symbols, including nested symbols |
+| `:Symbols`, `:Outline` | List document symbols, including nested symbols |
+| `:WorkspaceSymbols [QUERY]`, `:Calls` | Project symbols and call hierarchy; see code comprehension above |
 | `:LspInfo`, `:LspLog`, `:Doctor` | Inspect capabilities, logs, roots and SDK/server discovery |
 | `:LspRestart` | Restart the current root/language session and resynchronize |
 

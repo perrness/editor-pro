@@ -636,6 +636,7 @@ async fn run(
             "window":{"workDoneProgress":true},
             "workspace":{"applyEdit":true,"workspaceFolders":true,"configuration":true,
                 "diagnostics":{"refreshSupport":true},
+                "symbol":{"dynamicRegistration":false,"resolveSupport":{"properties":["location.range"]}},
                 "workspaceEdit":{"documentChanges":true,"failureHandling":"abort","resourceOperations":[]}},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
@@ -645,6 +646,7 @@ async fn run(
                 "signatureHelp":{"signatureInformation":{"documentationFormat":["plaintext","markdown"],"parameterInformation":{"labelOffsetSupport":true}}},
                 "definition":{"linkSupport":true},
                 "documentSymbol":{"hierarchicalDocumentSymbolSupport":true},
+                "callHierarchy":{"dynamicRegistration":false},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":true},
                 "diagnostic":{"dynamicRegistration":false},
                 "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["","quickfix","refactor","source"]}},

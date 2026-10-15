@@ -1,10 +1,10 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Milestones 1–5 are implemented;
-M5 now has pinned real-server acceptance evidence on Linux. Platform and broader
+not only code or an advertised server capability. Milestones 1–6 are implemented;
+M5 and M6 have pinned real-server acceptance evidence on Linux. Platform and broader
 project limits remain explicit below. Editing modes remain independent of
-contextual views throughout. M6 has not been started.
+contextual views throughout. M7 has not been started.
 
 ## Milestone 1 — Minimal editor
 
@@ -184,12 +184,55 @@ JDT indexes are temporary per session. See README for setup and manual checks.
 
 ## Milestone 6 — Code comprehension
 
+**Status:** implemented. Inspection confirmed the M5 client and real-server
+fixtures, and all 186 starting deterministic Rust tests passed. The nested
+document-symbol list already existed; this milestone extends that implementation.
+
 Symbol outline, workspace symbols and call hierarchy where supported; ripgrep
 project search; recent files; backward/forward navigation preserving locations.
 
 **Acceptance:** follow a multi-file execution path and return to each starting
 location; search/navigation never blocks editing. Unsupported server features
 have an explicit, useful response.
+
+**Delivered incrementally:**
+
+- Source location history and recent files: `Ctrl-o`/`:back`, `Ctrl-i` (Tab)/
+  `:forward`, and `:recent`. Successful file/buffer/result jumps retain source
+  cursor and viewport; dirty documents and independent undo are preserved.
+- `:grep TEXT` runs literal disk searches in a bounded, cancellable ripgrep
+  worker. `:grepdir` selects a root. Results preserve raw Unix filenames,
+  convert byte columns safely, and validate the matched line before navigation.
+  Missing rg, errors, timeouts, limits and obsolete requests are handled explicitly.
+- `:Outline`/`:Symbols`, `:WorkspaceSymbols [QUERY]`, and `:Calls` reuse the LSP
+  view and capability/session/document guards. Workspace symbols support lazy
+  location resolution. Incoming/outgoing calls recurse with a bounded parent
+  stack; Backspace restores the parent selection and Enter opens source.
+
+**Acceptance evidence:** 205 deterministic Rust tests pass, including 42 LSP,
+six navigation and six project-search regressions. Tests cover cancellation,
+out-of-order responses, UTF-16/UTF-8/CRLF, unusual filenames, dirty/external edits,
+undo, history branching, closed/save-as buffers, limits and narrow rendering.
+Extended opt-in editor tests pass with pinned official Kotlin 263.6379.0 and
+JDT LS 1.60.0 on Maven projects, and csharp-ls 0.28.0 on a `.csproj` fixture.
+All three returned useful workspace symbols and incoming/outgoing calls and
+passed source-location restoration plus the existing M5 checks. Formatting,
+Clippy, eight Python tests, debug/release builds and 20 PTY sessions also pass.
+Protocol-double
+results remain distinct. See [VALIDATION.md](VALIDATION.md) for terminal evidence,
+commands, import environment and remaining validation.
+
+**Known limits:** history (256 locations per direction) and recent files (100)
+are session-local; scalar locations clamp after edits without tracking symbols.
+Search is literal, case-sensitive, disk-only, and limited to 2 MiB files,
+4,096 matches, 16 MiB captured output and a cooperative ten-second deadline.
+Its line check is not an atomic filesystem snapshot. Ordinary file loads remain
+synchronous under the existing size limit. Workspace symbols use the current
+project/language session; call lists cap at 4,096 rows and 16 parent levels.
+Virtual/decompiled documents remain unsupported. M6 real-server runs did not
+repeat the Gradle/solution fixtures; macOS, physical-terminal comfort and large
+production-project search/navigation remain manual validation. No M7 snapshots,
+live-agent refresh, persistent navigation format or AI features were introduced.
 
 ## Milestone 7 — Review snapshots
 

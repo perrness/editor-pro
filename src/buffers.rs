@@ -49,6 +49,13 @@ impl Editor {
     }
 
     pub fn switch_buffer(&mut self, id: usize) -> io::Result<()> {
+        let origin = self.source_location();
+        self.switch_buffer_unrecorded(id)?;
+        self.record_navigation(origin);
+        Ok(())
+    }
+
+    pub(crate) fn switch_buffer_unrecorded(&mut self, id: usize) -> io::Result<()> {
         if id == self.active_buffer_id {
             self.reset_context();
             return Ok(());
@@ -70,22 +77,48 @@ impl Editor {
         self.buffers.insert(self.active_buffer_id, old);
         self.active_buffer_id = id;
         self.reset_context();
+        self.remember_file();
     }
 
     pub fn open_buffer(&mut self, path: &Path) -> io::Result<()> {
-        let path = absolute_path(path)?;
+        let origin = self.source_location();
+        self.open_buffer_unrecorded(path)?;
+        self.record_navigation(origin);
+        Ok(())
+    }
+
+    pub(crate) fn has_open_path(&self, path: &Path) -> bool {
+        self.document.path() == Some(path)
+            || self
+                .buffers
+                .values()
+                .any(|slot| slot.document.path() == Some(path))
+    }
+
+    pub(crate) fn open_buffer_unrecorded(&mut self, path: &Path) -> io::Result<()> {
+        // Already-open identities survive deletion of their parent on disk.
+        let path = if self.has_open_path(path) {
+            path.to_path_buf()
+        } else {
+            absolute_path(path)?
+        };
         if self.document.path() == Some(&path) {
-            return self.switch_buffer(self.active_buffer_id);
+            return self.switch_buffer_unrecorded(self.active_buffer_id);
         }
         if let Some((&id, _)) = self
             .buffers
             .iter()
             .find(|(_, slot)| slot.document.path() == Some(&path))
         {
-            return self.switch_buffer(id);
+            return self.switch_buffer_unrecorded(id);
         }
         // Read successfully before changing any active/unsaved state.
         let document = Document::open(&path)?;
+        self.open_prepared_buffer(document);
+        Ok(())
+    }
+
+    pub(crate) fn open_prepared_buffer(&mut self, document: Document) {
         let id = self.next_buffer_id;
         self.next_buffer_id += 1;
         self.activate(
@@ -95,10 +128,10 @@ impl Editor {
                 viewport: Viewport::default(),
             },
         );
-        Ok(())
     }
 
     pub fn new_buffer(&mut self) {
+        let origin = self.source_location();
         let id = self.next_buffer_id;
         self.next_buffer_id += 1;
         self.activate(
@@ -108,6 +141,7 @@ impl Editor {
                 viewport: Viewport::default(),
             },
         );
+        self.record_navigation(origin);
     }
 
     pub fn close_buffer(&mut self, force: bool) -> io::Result<()> {
@@ -130,6 +164,7 @@ impl Editor {
             self.next_buffer_id += 1;
         }
         self.reset_context();
+        self.remember_file();
         Ok(())
     }
 
@@ -185,6 +220,7 @@ impl Editor {
             }
         }
         self.document.save(destination)?;
+        self.remember_file();
         self.refresh_git();
         Ok(())
     }

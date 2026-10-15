@@ -25,6 +25,7 @@ pub struct LspState {
     pub servers: BTreeMap<ServerKey, ServerInfo>,
     pub diagnostics: BTreeMap<PathBuf, DiagnosticSet>,
     pub panel: Option<Panel>,
+    call_history: Vec<Panel>,
     context: Option<Context>,
     serial: u64,
     pub pending: bool,
@@ -54,6 +55,7 @@ struct Context {
     key: ServerKey,
     epoch: u64,
     apply_resolved: bool,
+    call_item: Option<Value>,
 }
 pub struct Panel {
     pub title: String,
@@ -85,6 +87,8 @@ enum Item {
         resolved: bool,
     },
     Action(Value),
+    WorkspaceSymbol(Value),
+    Call(Value),
 }
 impl Panel {
     fn text(title: &str, text: &str) -> Self {
@@ -112,7 +116,7 @@ impl Panel {
     }
 }
 impl LspState {
-    pub fn cancel(&mut self) {
+    fn cancel_request(&mut self) {
         if let Some(context) = &self.context
             && let Some(worker) = &self.worker
         {
@@ -121,6 +125,10 @@ impl LspState {
         self.serial += 1;
         self.context = None;
         self.pending = false;
+    }
+    pub fn cancel(&mut self) {
+        self.cancel_request();
+        self.call_history.clear();
         if let Some(panel) = self.panel.take()
             && let Some((key, epoch, id)) = panel.reply
             && let Some(worker) = &self.worker
@@ -442,6 +450,9 @@ impl Editor {
                     | "CodeAction"
                     | "Format"
                     | "Symbols"
+                    | "Outline"
+                    | "WorkspaceSymbols"
+                    | "Calls"
             )
         {
             self.lsp.cancel();
@@ -503,7 +514,9 @@ impl Editor {
             "Rename" => "textDocument/rename",
             "CodeAction" => "textDocument/codeAction",
             "Format" => "textDocument/formatting",
-            "Symbols" => "textDocument/documentSymbol",
+            "Symbols" | "Outline" => "textDocument/documentSymbol",
+            "WorkspaceSymbols" => "workspace/symbol",
+            "Calls" => "textDocument/prepareCallHierarchy",
             _ => return Err(error("Unknown language command")),
         };
         if self.document.buffer.text().len_bytes() > lsp::MAX_DOCUMENT_BYTES {
@@ -551,8 +564,16 @@ impl Editor {
                 params["options"] = json!({"tabSize":4,"insertSpaces":false});
                 params.as_object_mut().unwrap().remove("position");
             }
-            "Symbols" => {
+            "Symbols" | "Outline" => {
                 params.as_object_mut().unwrap().remove("position");
+            }
+            "WorkspaceSymbols" => {
+                if argument.len() > 4096 || argument.chars().any(char::is_control) {
+                    return Err(error(
+                        "Workspace symbol query must be at most 4096 bytes without controls",
+                    ));
+                }
+                params = json!({"query":argument});
             }
             _ => {}
         }
@@ -575,6 +596,11 @@ impl Editor {
                 .to_path_buf();
             if let Some(message) = self.lsp.unavailable.get(&path) {
                 return Err(error(message));
+            }
+            if Language::for_path(&path).is_none() {
+                return Err(error(
+                    "No language server for this file type; supported languages: Kotlin, Java, C#",
+                ));
             }
             let key = self
                 .lsp
@@ -601,6 +627,7 @@ impl Editor {
                 key,
                 epoch: info.epoch,
                 apply_resolved: false,
+                call_item: None,
             }
         };
         if !self.lsp_context_current(&context) {
@@ -727,7 +754,95 @@ impl Editor {
                     }
                 }
             }
-            "textDocument/documentSymbol" => symbols(&result, &context.path, &mut panel.rows, 0)?,
+            "textDocument/documentSymbol" => {
+                panel.title = "Symbol outline".into();
+                if symbols(&result, &context.path, &mut panel.rows, 0)? {
+                    panel.title.push_str(" (outline truncated)");
+                }
+            }
+            "workspace/symbol" => {
+                panel.title = format!(
+                    "Workspace symbols · {}",
+                    crate::git::display_path(&context.key.root)
+                );
+                for item in result_items(&result)? {
+                    panel.rows.push(workspace_symbol_row(item.clone())?);
+                }
+                if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
+                    panel.title.push_str(" (4096 result limit)");
+                }
+            }
+            "workspaceSymbol/resolve" => {
+                let row = workspace_symbol_row(result)?;
+                if let Item::Jump { path, position, .. } = row.action {
+                    return self.jump_lsp_location(&path, position, None);
+                }
+                return Err(error(
+                    "Server did not resolve a local workspace symbol range",
+                ));
+            }
+            "textDocument/prepareCallHierarchy" => {
+                panel.title = "Call hierarchy · i incoming · o outgoing · Enter source".into();
+                for item in result_items(&result)? {
+                    panel.rows.push(call_row(item.clone(), "")?);
+                }
+                if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
+                    panel.title.push_str(" (4096 result limit)");
+                }
+            }
+            "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" => {
+                let incoming = method == "callHierarchy/incomingCalls";
+                let parent = context
+                    .call_item
+                    .as_ref()
+                    .ok_or_else(|| error("Missing call hierarchy item"))?;
+                panel.title = format!(
+                    "{} · {} · Backspace parent",
+                    if incoming {
+                        "Incoming calls"
+                    } else {
+                        "Outgoing calls"
+                    },
+                    parent["name"].as_str().unwrap_or("symbol")
+                );
+                for call in result_items(&result)? {
+                    let item = &call[if incoming { "from" } else { "to" }];
+                    let ranges: Vec<lsp_types::Range> =
+                        serde_json::from_value(call["fromRanges"].clone())
+                            .map_err(io::Error::other)?;
+                    if ranges.iter().any(|r| r.start > r.end) {
+                        return Err(error("Invalid call site range"));
+                    }
+                    let sites = ranges
+                        .iter()
+                        .take(16)
+                        .map(|r| {
+                            format!(
+                                "{}:{}",
+                                r.start.line.saturating_add(1),
+                                r.start.character.saturating_add(1)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let caller = if incoming { item } else { parent };
+                    let detail = format!(
+                        "{} call site(s) in {}: {}{}",
+                        ranges.len(),
+                        caller["uri"].as_str().unwrap_or(""),
+                        sites,
+                        if ranges.len() > 16 { "…" } else { "" }
+                    );
+                    panel.rows.push(call_row(item.clone(), &detail)?);
+                }
+                if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
+                    panel.title.push_str(" (4096 result limit)");
+                }
+                if panel.rows.is_empty() {
+                    panel.rows =
+                        Panel::text("", "No calls reported; Backspace returns to the parent").rows;
+                }
+            }
             "textDocument/codeAction" => {
                 if let Some(items) = result.as_array() {
                     for item in items.iter().take(lsp::MAX_ITEMS) {
@@ -949,6 +1064,24 @@ impl Editor {
             self.command.clear();
             return;
         }
+        if key == Key::Backspace
+            && let Some(panel) = self.lsp.call_history.pop()
+        {
+            self.lsp.cancel_request();
+            self.lsp.context = panel.context.clone();
+            self.lsp.panel = Some(panel);
+            self.info("Call hierarchy parent");
+            return;
+        }
+        if matches!(key, Key::Char('i' | 'o')) {
+            if let Err(e) = self.expand_calls(key == Key::Char('i')) {
+                self.error(&e.to_string());
+            }
+            return;
+        }
+        if self.lsp.pending {
+            return;
+        }
         let Some(panel) = &mut self.lsp.panel else {
             self.view = View::Editing;
             return;
@@ -1035,28 +1168,29 @@ impl Editor {
                 position,
                 stamp,
             } => {
-                if let Some(stamp) = stamp
-                    && self.lsp_edit_guards().get(&path) != Some(&stamp)
-                {
+                if let Err(e) = self.jump_lsp_location(&path, position, stamp.as_ref()) {
+                    row.action = Item::Jump {
+                        path,
+                        position,
+                        stamp,
+                    };
                     self.lsp.panel = Some(panel);
-                    return Err(error("Diagnostic location is stale"));
+                    return Err(e);
                 }
-                // Validate before activating a target, so malformed ranges cannot move source.
-                let current = self.lsp_edit_guards().get(&path).cloned();
-                let target = if current.is_some() {
-                    None
-                } else {
-                    Some(crate::file::Document::open(&path)?)
-                };
-                let document = if let Some(stamp) = &current {
-                    self.lsp_document(stamp.buffer_id).unwrap()
-                } else {
-                    target.as_ref().unwrap()
-                };
-                let scalar = lsp::scalar(document.buffer.text(), position)?;
-                self.open_buffer(&path)?;
-                self.document.buffer.set_cursor(scalar, false);
-                self.info("Language-server location");
+            }
+            Item::WorkspaceSymbol(value) => {
+                row.action = Item::WorkspaceSymbol(value.clone());
+                self.lsp.panel = Some(panel);
+                self.send_lsp("workspaceSymbol/resolve", value, context)?;
+            }
+            Item::Call(value) => {
+                let item: lsp_types::CallHierarchyItem =
+                    serde_json::from_value(value).map_err(io::Error::other)?;
+                self.jump_lsp_location(
+                    &lsp::uri_path(item.uri.as_str())?,
+                    item.selection_range.start,
+                    None,
+                )?;
             }
             Item::Completion { value, resolved } => {
                 let mut context = context.ok_or_else(|| error("Missing completion context"))?;
@@ -1085,6 +1219,99 @@ impl Editor {
             )?,
             Item::Text => self.lsp.panel = Some(panel),
         }
+        Ok(())
+    }
+    fn jump_lsp_location(
+        &mut self,
+        path: &Path,
+        position: Position,
+        stamp: Option<&Stamp>,
+    ) -> io::Result<()> {
+        let path = if self.has_open_path(path) {
+            path.to_path_buf()
+        } else {
+            crate::file::absolute_path(path)?
+        };
+        let current = self.lsp_edit_guards().get(&path).cloned();
+        if stamp.is_some() && current.as_ref() != stamp {
+            return Err(error("Diagnostic location is stale"));
+        }
+        let target = if current.is_some() {
+            None
+        } else {
+            if !path.is_file() {
+                return Err(error("Language-server target file is unavailable"));
+            }
+            Some(crate::file::Document::open(&path)?)
+        };
+        let document = if let Some(stamp) = &current {
+            self.lsp_document(stamp.buffer_id).unwrap()
+        } else {
+            target.as_ref().unwrap()
+        };
+        let scalar = lsp::scalar(document.buffer.text(), position)?;
+        let origin = self.source_location();
+        if let Some(document) = target {
+            self.open_prepared_buffer(document);
+        } else {
+            self.open_buffer_unrecorded(&path)?;
+        }
+        self.document.buffer.set_cursor(scalar, false);
+        self.record_navigation(origin);
+        self.info("Language-server location; Ctrl-o returns");
+        Ok(())
+    }
+    fn expand_calls(&mut self, incoming: bool) -> io::Result<()> {
+        if self.lsp.pending {
+            return Err(error(
+                "Wait for the call hierarchy response, or Escape cancels",
+            ));
+        }
+        if self.lsp.call_history.len() >= 16 {
+            return Err(error("Call hierarchy depth limit (16); Backspace returns"));
+        }
+        let panel = self
+            .lsp
+            .panel
+            .as_ref()
+            .ok_or_else(|| error("No call hierarchy open"))?;
+        let Some(Row {
+            action: Item::Call(value),
+            ..
+        }) = panel.rows.get(panel.selected)
+        else {
+            return Err(error(
+                "Select a call hierarchy item; :Calls starts at the source cursor",
+            ));
+        };
+        let value = value.clone();
+        let mut context = panel
+            .context
+            .clone()
+            .ok_or_else(|| error("Missing call context"))?;
+        context.call_item = Some(value.clone());
+        self.send_lsp(
+            if incoming {
+                "callHierarchy/incomingCalls"
+            } else {
+                "callHierarchy/outgoingCalls"
+            },
+            json!({"item":value}),
+            Some(context),
+        )?;
+        let panel = self.lsp.panel.take().unwrap();
+        let mut waiting = Panel::text(
+            if incoming {
+                "Incoming calls"
+            } else {
+                "Outgoing calls"
+            },
+            "Waiting for language server; Backspace returns, Escape closes",
+        );
+        waiting.return_mode = panel.return_mode;
+        waiting.context = self.lsp.context.clone();
+        self.lsp.call_history.push(panel);
+        self.lsp.panel = Some(waiting);
         Ok(())
     }
     fn lsp_information(&mut self, kind: &str) {
@@ -1116,6 +1343,9 @@ impl Editor {
                     "textDocument/codeAction",
                     "textDocument/formatting",
                     "textDocument/documentSymbol",
+                    "workspace/symbol",
+                    "workspaceSymbol/resolve",
+                    "textDocument/prepareCallHierarchy",
                     "textDocument/diagnostic",
                 ] {
                     text += &format!(
@@ -1257,7 +1487,9 @@ impl Editor {
                 .or(positions.first())
         };
         let target = *target.ok_or_else(|| error("No navigable diagnostics"))?;
+        let origin = self.source_location();
         self.document.buffer.set_cursor(target, false);
+        self.record_navigation(origin);
         Ok(())
     }
 }
@@ -1335,14 +1567,92 @@ fn location_row(path: PathBuf, position: Position, label: &str, stamp: Option<St
         },
     }
 }
-fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io::Result<()> {
-    if depth > 32 {
-        return Ok(());
+fn result_items(value: &Value) -> io::Result<impl Iterator<Item = &Value>> {
+    let items = if value.is_null() {
+        &[][..]
+    } else {
+        value
+            .as_array()
+            .ok_or_else(|| error("Invalid language-server result list"))?
+            .as_slice()
+    };
+    Ok(items.iter().take(lsp::MAX_ITEMS))
+}
+fn workspace_symbol_row(value: Value) -> io::Result<Row> {
+    let name = value["name"]
+        .as_str()
+        .ok_or_else(|| error("Missing workspace symbol name"))?;
+    let uri = value["location"]["uri"]
+        .as_str()
+        .ok_or_else(|| error("Missing workspace symbol URI"))?;
+    let label = format!("{} {}", name, value["containerName"].as_str().unwrap_or(""));
+    let Ok(path) = lsp::uri_path(uri) else {
+        return Ok(Row {
+            label,
+            detail: format!("Unsupported virtual/decompiled location: {uri}"),
+            action: Item::Text,
+        });
+    };
+    if let Some(range) = value["location"].get("range") {
+        let range: lsp_types::Range =
+            serde_json::from_value(range.clone()).map_err(io::Error::other)?;
+        if range.start > range.end {
+            return Err(error("Invalid symbol range"));
+        }
+        let mut row = location_row(path, range.start, &label, None);
+        row.detail = row.label;
+        row.label = label;
+        Ok(row)
+    } else {
+        Ok(Row {
+            label,
+            detail: format!(
+                "{} · Enter resolves location",
+                crate::git::display_path(&path)
+            ),
+            action: Item::WorkspaceSymbol(value),
+        })
     }
+}
+fn call_row(value: Value, sites: &str) -> io::Result<Row> {
+    let item: lsp_types::CallHierarchyItem =
+        serde_json::from_value(value.clone()).map_err(io::Error::other)?;
+    if item.range.start > item.selection_range.start
+        || item.selection_range.start > item.selection_range.end
+        || item.selection_range.end > item.range.end
+    {
+        return Err(error("Invalid call hierarchy selection range"));
+    }
+    let detail = format!(
+        "{}:{}:{} {}\n{}",
+        item.uri,
+        item.selection_range.start.line.saturating_add(1),
+        item.selection_range.start.character.saturating_add(1),
+        item.detail.as_deref().unwrap_or(""),
+        sites
+    );
+    if lsp::uri_path(item.uri.as_str()).is_err() {
+        return Ok(Row {
+            label: item.name,
+            detail: format!("Unsupported virtual/decompiled location: {}", item.uri),
+            action: Item::Text,
+        });
+    }
+    Ok(Row {
+        label: item.name,
+        detail,
+        action: Item::Call(value),
+    })
+}
+fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io::Result<bool> {
+    if depth > 32 {
+        return Ok(value.as_array().is_some_and(|items| !items.is_empty()));
+    }
+    let mut truncated = false;
     if let Some(items) = value.as_array() {
         for item in items {
             if rows.len() >= lsp::MAX_ITEMS {
-                break;
+                return Ok(true);
             }
             let location = item.get("location");
             let target = if let Some(location) = location {
@@ -1359,7 +1669,7 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
                 .unwrap_or(&item["selectionRange"]["start"]);
             let position: Position =
                 serde_json::from_value(position.clone()).map_err(io::Error::other)?;
-            rows.push(location_row(
+            let mut row = location_row(
                 target,
                 position,
                 &format!(
@@ -1368,11 +1678,18 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
                     item["name"].as_str().unwrap_or("")
                 ),
                 None,
-            ));
-            symbols(&item["children"], path, rows, depth + 1)?;
+            );
+            row.detail = row.label;
+            row.label = format!(
+                "{}{}",
+                "  ".repeat(depth),
+                item["name"].as_str().unwrap_or("")
+            );
+            rows.push(row);
+            truncated |= symbols(&item["children"], path, rows, depth + 1)?;
         }
     }
-    Ok(())
+    Ok(truncated)
 }
 
 pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate::theme::Theme) {
@@ -1424,6 +1741,8 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
             &command
         } else if editor.message_is_error {
             &editor.message
+        } else if panel.rows.iter().any(|r| matches!(r.action, Item::Call(_))) {
+            "j/k select  i incoming  o outgoing  Enter source  Backspace parent  Esc return"
         } else {
             "j/k select  h/l scroll  Enter open/apply  d completion docs  Esc return"
         };

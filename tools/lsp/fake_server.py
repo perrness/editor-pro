@@ -87,6 +87,20 @@ def edit(text="good"):
     return {"range": span(), "newText": text}
 
 
+def call_item(uri, name):
+    return {"uri": uri, "name": name, "kind": 12, "range": span(0, 9),
+            "selectionRange": span(0, 1), "detail": "test call item",
+            "data": {"opaque": [name, uri, 42]}}
+
+
+def comprehension_reply(ident, result):
+    message = {"id": ident, "result": result}
+    if args.scenario == "comprehension-slow":
+        later(message)
+    else:
+        send(message)
+
+
 def diagnostics(uri, version):
     items = [{"range": span(), "severity": 1, "message": "bad value"}] if documents[uri]["text"].startswith("bad") else []
     params = {"uri": uri, "version": version, "diagnostics": items}
@@ -130,6 +144,7 @@ while True:
                 "completionProvider": {"resolveProvider": True},
                 "signatureHelpProvider": {}, "renameProvider": True,
                 "documentFormattingProvider": True, "documentSymbolProvider": True,
+                "workspaceSymbolProvider": {"resolveProvider": True}, "callHierarchyProvider": True,
                 "codeActionProvider": {"resolveProvider": True},
                 "executeCommandProvider": {"commands": ["fake.fix"]}}
         if args.scenario == "unsupported":
@@ -221,6 +236,34 @@ while True:
     elif method == "textDocument/documentSymbol":
         send({"id": ident, "result": [{"name": "outer", "kind": 5, "range": span(), "selectionRange": span(0, 1),
               "children": [{"name": "inner", "kind": 6, "range": span(), "selectionRange": span(1, 2)}]}]})
+    elif method == "workspace/symbol":
+        if p["query"] == "empty":
+            comprehension_reply(ident, None)
+            continue
+        item = {"name": p["query"], "kind": 12, "containerName": "Project",
+                "location": {"uri": root + "/Other.kt", "range": span(4, 5)}, "data": [42, "keep"]}
+        if p["query"] == "lazy":
+            del item["location"]["range"]
+        if p["query"] == "virtual":
+            item["location"]["uri"] = "jdt://decompiled/Library"
+        if p["query"] == "malformed":
+            item["location"]["range"] = span(9, 2)
+        if p["query"] == "surrogate":
+            item["location"]["range"] = {"start": {"line": 1, "character": 1}, "end": {"line": 1, "character": 2}}
+        comprehension_reply(ident, [item] * (4100 if p["query"] == "many" else 1))
+    elif method == "workspaceSymbol/resolve":
+        assert p["data"] == [42, "keep"]
+        comprehension_reply(ident, {**p, "location": {**p["location"], "range": span(4, 5)}})
+    elif method == "textDocument/prepareCallHierarchy":
+        comprehension_reply(ident, [call_item(p["textDocument"]["uri"], "start")])
+    elif method in ("callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"):
+        item = p["item"]
+        assert item["data"] == {"opaque": [item["name"], item["uri"], 42]}
+        uri = root + ("/Main.kt" if item["uri"].endswith("/Other.kt") else "/Other.kt")
+        incoming = method == "callHierarchy/incomingCalls"
+        other = call_item(uri, "caller" if incoming else "callee")
+        result = [{"from" if incoming else "to": other, "fromRanges": [span(4, 5), span(6, 7)]}]
+        comprehension_reply(ident, None if args.scenario == "calls-empty" else result)
     elif method == "textDocument/rename":
         send({"id": ident, "result": {"documentChanges": [
             {"textDocument": {"uri": uri, "version": doc["version"]}, "edits": [edit(p["newName"])]}

@@ -18,7 +18,10 @@ The editor never installs software.
 - [Official Kotlin release](https://github.com/Kotlin/kotlin-lsp/releases/tag/kotlin-lsp/v263.6379.0):
   use `bin/intellij-server --stdio`. This archive bundles its JBR 25 runtime.
   `--system-path` selects disposable caches; `IJ_JAVA_OPTIONS=-Duser.home=...`
-  isolates Maven preferences/dependencies. Leave telemetry at its default `none`.
+  isolates server preferences where honored. The tested native launcher/importer
+  still writes Maven artifacts under the OS home even with `JAVA_TOOL_OPTIONS`
+  overrides; inspect its import log and provide a writable Maven cache. Leave
+  telemetry at its default `none`.
 - [JDT LS](https://github.com/eclipse-jdtls/eclipse.jdt.ls): use the archive's
   `bin/jdtls` with a Java 21+ runtime. The editor supplies a private `-data`
   directory; do not supply another. `JAVA_TOOL_OPTIONS=-Duser.home=...` can
@@ -66,6 +69,11 @@ diagnostic changes, formatting, multi-file rename, cancel/apply/undo, dirty quit
 protection and restart/resynchronization. Original source/build-file bytes must
 remain unchanged on disk. An unavailable server, timeout or failed feature fails
 the selected test; it is never converted to a skip or a successful empty result.
+M6 also exercises workspace-symbol navigation/lazy resolution and incoming/outgoing
+call hierarchy with location-history restoration. If a server does not advertise
+one of these optional capabilities, the test verifies the explicit unsupported
+response and records it separately. Advertised features must return useful fixture
+results and navigate correctly; an empty result does not pass those checks.
 
 Reports include the fixture fingerprint, command, platform, negotiated
 capabilities, bounded server logs, phase, per-check results and timings. They are

@@ -1,7 +1,7 @@
 # Architecture
 
-Decision record, 2026-10-14. Scope: Milestones 1–4, the M5 LSP client, pinned
-real-server acceptance fixtures and an isolated Kotlin feasibility experiment.
+Decision record, 2026-10-14. Scope: Milestones 1–6, pinned real-server acceptance
+fixtures and an isolated Kotlin feasibility experiment.
 The product is one terminal editor for editing, navigation, Git review
 and eventual AI comprehension. There is no separate Review Mode.
 
@@ -21,6 +21,8 @@ syntax.rs    incremental Tree-sitter state, viewport captures, plain fallback
 search.rs    literal matches, generation-based cache and navigation
 buffers.rs   buffer identities, inactive documents/viewports, guards and list
 picker.rs    cancellable discovery and Nucleo background matching
+navigation.rs session-local location history and recent-file view
+project_search.rs bounded ripgrep worker, disk-match validation and result view
 git.rs       repository/status discovery, bounded CLI worker, comparison snapshots
 diff.rs      unified coordinates, deletion anchors, paired alignment and source mapping
 git_view.rs  changed-file/diff navigation over existing documents
@@ -47,7 +49,7 @@ The unnamed register and last search are session-wide; the search cache is
 invalidated on every buffer switch.
 
 `Mode` (Normal, Insert, Visual, VisualLine, Command, Search) and `View` (Editing,
-Buffers, Files, Changes, Diff, Review, Lsp) are separate. Contextual views intercept their own keys and do not
+Buffers, Files, Recent, ProjectSearch, Changes, Diff, Review, Lsp) are separate. Contextual views intercept their own keys and do not
 edit the underlying text. Closing a picker/list returns to the originating
 location. M3 adds only a paired diff projection, not a general window framework.
 
@@ -62,7 +64,8 @@ location. M3 adds only a paired diff projection, not a general window framework.
 | Highlighting | Tree-sitter 0.26 with upstream grammar crates and queries for eight languages. The Markdown crate supplies its combined block/inline parser. Byte edit descriptions and old trees support incremental parsing. [Incremental parsing](https://tree-sitter.github.io/tree-sitter/using-parsers/3-advanced-parsing.html). |
 | File picker | Nucleo 0.5 supplies background fuzzy matching/ranking and immutable result snapshots. The `ignore` walker supplies ignore-file handling; a small discovery thread feeds Nucleo. [Nucleo](https://github.com/helix-editor/nucleo). |
 | Language services | Tokio process/I/O/timers/channels on one private runtime thread, plus `lsp-types` 0.95.1 for LSP 3.17 positions, edits, diagnostics and file URIs. No runtime enters the editing, Git or review core. |
-| Git | Git CLI subprocesses with porcelain-v2 NUL status, immutable blob reads, and internally generated no-index diffs. One bounded worker owns cancellation/timeouts. M3 added no dependencies; M4 adds the review dependencies below. Project search remains future work. |
+| Git | Git CLI subprocesses with porcelain-v2 NUL status, immutable blob reads, and internally generated no-index diffs. One bounded worker owns cancellation/timeouts. M3 added no dependencies; M4 adds the review dependencies below. |
+| Project search | Installed ripgrep CLI with literal patterns, NUL-terminated filenames and vimgrep byte columns. A concrete standard-library worker owns requests/processes; no new crate or generic process framework. |
 | Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
 | Configuration, later | A small serde/TOML schema when users need settings. M2 selects among three semantic palette values at runtime; no configuration framework. |
 
@@ -141,6 +144,43 @@ stale query snapshots cannot be shown or selected. Closing the picker sets a
 cancellation flag; no worker join blocks the editing thread. Opening a match uses
 the same guarded buffer-opening path as `:e`. No asynchronous service abstraction
 or process manager was introduced for these concrete requirements.
+
+## Comprehension navigation and project search
+
+Source history stores stable buffer ID, fallback path, scalar cursor and viewport.
+Public opens/switches and explicit result jumps record the departure only after a
+successful move. Restoring history uses the same activation path without recording
+another jump; it retains current documents and their histories. Save-as updates
+fallback paths for the same buffer ID. Closed named buffers can reopen; failed
+targets leave source untouched and remove only the inaccessible history entry.
+Back/forward stacks cap at 256 each, and new jumps clear the forward stack. Recent
+paths are unique, most-recent-first and capped at 100. Both are session-local.
+Scalar positions clamp to current graphemes after edits; no symbol tracking,
+persistent session format, or navigation transaction framework was introduced.
+
+Project search has one persistent worker with one running request, one replaceable
+pending request and one result slot. Request serials cancel obsolete jobs and
+suppress late results. Discovery, spawning, subprocess polling and result parsing
+run off the editing thread. Escape or leaving the view cancels without joining;
+shutdown joins after terminal restoration. Unix subprocesses have a separate
+process group, killed/reaped on cancellation or deadline. stdout/stderr use private
+temporary files with a 16 MiB capture limit and a cooperative ten-second deadline.
+Output can overshoot between polls; filesystem stalls remain outside hard timing
+guarantees, as with Git. There are no reader-thread or request-queue accumulations.
+
+Ripgrep runs without user CLI configuration or a shell, with raw-byte encoding,
+literal case-sensitive single-line patterns, ignore rules, hidden files and explicit
+VCS exclusions. It skips symlinks, uses default binary detection, and caps input
+files at 2 MiB. Controlled `--vimgrep --null` output separates raw path bytes from
+line/byte-column/text records, preserving non-UTF-8 Unix paths and unusual names.
+Non-UTF-8 matched lines are counted as skipped. At most 4,096 matches are retained,
+with visible truncation. Results explicitly describe disk contents, independently
+of unsaved text. Selection checks the complete matched line against the current
+target document before changing the active source, converts UTF-8 bytes to scalars,
+and records the jump. It never reloads an open buffer. This is a line check, not a
+filesystem snapshot; unobserved external changes elsewhere are not freshness proof.
+Prepared unopened targets are activated once, avoiding a second read between
+validation and navigation. Ordinary file loading remains synchronous and bounded.
 
 ## Git inspection and contextual diffs
 
@@ -389,8 +429,15 @@ refused. Advertised completion commands are shown in the initial edit preview
 and run only after approval. Their subsequent server edits require another
 guarded preview, reusing the code-action continuation path. Hover/signatures, definitions/references,
 document symbols and diagnostic navigation operate on the ordinary documents.
-No M6 workspace-symbol browser, call hierarchy, project search or navigation
-history was introduced.
+M6 reuses that list for the nested symbol outline, workspace symbols and call
+hierarchy. Workspace symbols use the active project/language session and negotiate
+lazy `location.range` resolution. Call items preserve the server's opaque data
+through incoming/outgoing requests; recursive browsing retains at most 16 parent
+panels and restores their selection/scroll. Enter jumps to declarations; call-site
+ranges are displayed in caller coordinates. Existing session/request/source/open-
+document guards apply before expansion, resolution or navigation. Capability
+absence and virtual/decompiled locations remain explicit. These are read-only
+features, with no new server-edit authorization path.
 
 Rename, formatting, completion and quick fixes create an edit proposal. Validate
 every URI, project boundary, known version, captured buffer stamp, scalar range,
@@ -418,8 +465,7 @@ invalidates Git/review derived state through the established paths.
   Kotlin/JDT/Roslyn servers on disposable Gradle/Maven/solution/project fixtures.
   Protocol doubles remain separate evidence. Broader workloads, platforms and
   physical-terminal comfort require additional observations. See the server report.
-- **M6–7:** Navigation history records buffer, cursor and viewport. Review
-  snapshots record immutable content without altering the working tree.
+- **M7:** Review snapshots record immutable content without altering the working tree.
 - **M8:** Context collection and provider integration stay independent of editing
   and review notes. Use a documented agent CLI, user-visible context and explicit
   edit approval. No provider dependencies or placeholder APIs in this milestone.
@@ -433,5 +479,5 @@ invalidates Git/review derived state through the established paths.
 | Project import and SDK mismatches | Real fixture checks supplement protocol tests; SDK targets and server runtimes are recorded separately. Larger/mixed projects still need validation. |
 | Server churn or proprietary protocol assumptions | Pinned standalone versions/checksums and opt-in editor checks expose compatibility failures; upgrades must rerun them. |
 | Stale async state | Picker queries, Git generations, and LSP session/request/document stamps guard acceptance. Versionless diagnostics remain explicitly unverified. |
-| Scope and architecture growth | M1–5 client code only; no AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
+| Scope and architecture growth | M1–6 code only; no review snapshots, AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
 | Platform and responsiveness evidence | Linux check counts, real fixture results and import/restart timings are recorded in VALIDATION.md. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |

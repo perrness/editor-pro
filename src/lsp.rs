@@ -353,6 +353,13 @@ pub fn supports(capabilities: &Value, method: &str) -> bool {
         }
         "textDocument/formatting" => "documentFormattingProvider",
         "textDocument/documentSymbol" => "documentSymbolProvider",
+        "workspace/symbol" => "workspaceSymbolProvider",
+        "workspaceSymbol/resolve" => {
+            return capabilities["workspaceSymbolProvider"]["resolveProvider"] == true;
+        }
+        "textDocument/prepareCallHierarchy"
+        | "callHierarchy/incomingCalls"
+        | "callHierarchy/outgoingCalls" => "callHierarchyProvider",
         "textDocument/diagnostic" => "diagnosticProvider",
         "workspace/executeCommand" => "executeCommandProvider",
         _ => return false,

@@ -473,11 +473,13 @@ impl Editor {
         let line = diff.rows.get(view.selected).map_or(0, |r| r.anchor);
         let path = view.path.clone();
         let staged = self.git.comparison == Comparison::Staged;
+        let origin = self.source_location();
         self.open_git_source(&path)?;
         if staged {
             self.git.comparison = Comparison::Head;
         }
         self.document.buffer.goto_line(line, false);
+        self.record_navigation(origin);
         self.view = View::Editing;
         self.git.diff_view = None;
         self.info("Source: deleted lines anchor to the following surviving line, or EOF");

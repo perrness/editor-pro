@@ -150,7 +150,7 @@ def main():
                     b"Aalpha\r\n")
         assert second.read_bytes() == b"Bbeta\n"
         run_session(binary, path, [f":files {directory}\r".encode(), b"secondkt", b"\r",
-                                  b"iC", b"\x1b", b":w\r", b":b 1\r", b":q\r"],
+                                  b"iC", b"\x1b", (b"NORMAL", 10), b":w\r", b":b 1\r", b":q\r"],
                     b"Aalpha\r\n")
         assert second.read_bytes() == b"CBbeta\n"
         output = run_session(binary, path, [b":theme catppuccin\r", b":theme gruvbox\r",
@@ -304,7 +304,49 @@ def main():
         messages = [json.loads(line) for line in log.read_text().splitlines()]
         assert sum(m.get("method") == "workspace/executeCommand" for m in messages) == 1
         assert any(m.get("id") == 777 and m.get("result", {}).get("applied") for m in messages)
-    print("PASS: 18 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP completion commands/hover/format/preview/undo/save/shutdown, and restoration")
+        # M6: disk search and a multi-file path with preserved location/undo.
+        navigation_root = Path(directory) / "navigation"
+        navigation_root.mkdir()
+        navigation_source = navigation_root / "source.txt"
+        navigation_target = navigation_root / "target.txt"
+        navigation_bytes = b"source row\n" * 80
+        navigation_source.write_bytes(navigation_bytes)
+        navigation_target.write_bytes("😀 needle target\r\n".encode())
+        output = run_session(binary, navigation_source, [
+            b"40G0", f":grepdir {navigation_root}\r".encode(), b":grep needle\r",
+            (b"target.txt:1:6", 10), resize(2, 1), resize(24, 100), b"\r",
+            resize(24, 101), (b"Project search location", 10), b"\x0f",
+            resize(24, 100), (b"Earlier location", 10),
+            b"iRETURN", b"\x1b", (b"NORMAL", 10), b"\t",
+            resize(24, 101), (b"Later location", 10),
+            b":back\r", b"u", b":recent\r", resize(24, 100), (b"Recent files", 10), b"j\r",
+            b":back\r", b":q\r",
+        ], navigation_bytes)
+        assert navigation_target.read_bytes() == "😀 needle target\r\n".encode()
+        capture_dir = os.environ.get("EDITOR_PRO_SMOKE_CAPTURE_DIR")
+        if capture_dir:
+            Path(capture_dir).mkdir(parents=True, exist_ok=True)
+            (Path(capture_dir) / "m6-search-history.ansi").write_bytes(output)
+
+        # The comprehension UI still uses a protocol double, separately from lsp_real.rs.
+        language_source.write_text("bad value\n")
+        (lsp_root / "Other.kt").write_text("bad other\n")
+        log = lsp_root / "comprehension.jsonl"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+            sys.executable, str(fake.resolve()), "--log", str(log),
+        ])}
+        output = run_session(binary, language_source, [
+            (server_ready, 10), b":Outline\r", resize(24, 100), (b"Symbol outline", 10), b"\x1b",
+            b":WorkspaceSymbols lazy\r", resize(24, 101), (b"lazy Project", 10), b"\r",
+            resize(24, 100), (b"Language-server location", 10), b"\x0f", b":Calls\r",
+            resize(24, 101), (b"Call hierarchy", 10), b"i", resize(24, 100), (b"caller", 10),
+            b"o", resize(24, 101), (b"callee", 10), b"\x7f", b"\r",
+            resize(24, 100), (b"Language-server location", 10), b"\x0f", b":q\r",
+        ], b"bad value\n", environment)
+        assert (lsp_root / "Other.kt").read_bytes() == b"bad other\n"
+        if capture_dir:
+            (Path(capture_dir) / "m6-symbols-calls.ansi").write_bytes(output)
+    print("PASS: 20 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, and restoration")
     return 0
 
 
