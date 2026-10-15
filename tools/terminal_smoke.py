@@ -479,7 +479,9 @@ def main():
             (Path(capture_dir) / "m8-ai-revisions.ansi").write_bytes(output)
         ai_environment["EDITOR_PRO_AI_MODEL"] = "followup"
         output = run_session(binary, source, [
-            f":ai load {conversation}\r".encode(), resize(24, 100), (b"Conversation restored", 10),
+            # The status headline can be split into ANSI diff writes. The
+            # restored turn is new content and confirms that loading finished.
+            f":ai load {conversation}\r".encode(), resize(24, 100), (b"Turn 1", 10),
             b":ai edits\r", resize(24, 101), (b"historical", 10),
             b":ai context file\r", b":ai ask Recall the previous discussion\r", b":ai send\r",
             (b"Completed", 10), b":ai save\r", (ai_turns(2), 10),
