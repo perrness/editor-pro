@@ -386,6 +386,23 @@ def main():
         messages = [json.loads(line) for line in log.read_text().splitlines()]
         assert sum(m.get("method") == "workspace/executeCommand" for m in messages) == 1
         assert any(m.get("id") == 777 and m.get("result", {}).get("applied") for m in messages)
+        language_source.write_text("value.\r\n")
+        log = lsp_root / "automatic-completion.jsonl"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+            sys.executable, str(fake.resolve()), "--log", str(log),
+            "--scenario", "auto-completion",
+        ])}
+        output = run_session(binary, language_source, [
+            (server_ready, 10), b"Ale", (b"Tab/Enter accept", 10),
+            resize(3, 1), resize(24, 100), b"\t", (b"inserted", 10),
+            b"\x1b", b"u", b"A\x7fe", (b"Tab/Enter accept", 10),
+            b"\x05", b"\x1b", b":q!\r",
+        ], b"value.\r\n", environment)
+        messages = [json.loads(line) for line in log.read_text().splitlines()]
+        assert sum(m.get("method") == "textDocument/completion" for m in messages) >= 2
+        assert any(m.get("method") == "completionItem/resolve" for m in messages)
+        if capture_dir:
+            (Path(capture_dir) / "automatic-completion.ansi").write_bytes(output)
         # M6: disk search and a multi-file path with preserved location/undo.
         navigation_root = Path(directory) / "navigation"
         navigation_root.mkdir()
@@ -513,7 +530,7 @@ def main():
         ], original, ai_environment)
         if capture_dir:
             (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
-    print("PASS: 28 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 29 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

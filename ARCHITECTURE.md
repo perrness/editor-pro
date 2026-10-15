@@ -38,6 +38,7 @@ lsp_worker.rs  bounded multi-project server lifecycle, transport and synchroniza
 lsp_install.rs pinned per-user server provisioning, runtime selection and installation jobs
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
+lsp_completion.rs Insert-mode completion scheduling and popup (LSP view child module)
 ai.rs          bounded captured context, structured answers and conversation schema
 ai_worker.rs   optional Codex exec lifecycle, JSONL progress and transcript I/O jobs
 ai_store.rs    private transcript loading, atomic persistence and conflict checks
@@ -546,6 +547,23 @@ No dynamic capability registration, watched-file registration,
 semantic tokens or virtual/decompiled documents are advertised.
 
 Language results use one contextual list with source-preserving scroll/selection.
+Insert-mode completion additionally uses a cursor-adjacent popup. Actual character
+edits and deletions schedule one replaceable request after 120 ms of quiet;
+identifier prefixes and negotiated trigger characters drive requests, including
+incomplete-list refresh context. Results are filtered by filterText/label and the
+server edit range, sorted by sortText, and bounded by the existing 4,096-item cap.
+Typing keeps the Editing view and Insert mode. Movement, paste, dismissal, mode
+and buffer changes cancel scheduled/pending work; ordinary context, session,
+cursor and all-document guards reject stale replies and resolution results.
+Server-reported automatic request failures stay in logs; explicit acceptance errors are
+visible. The event loop polls at 16 ms while completion is scheduled or pending.
+Tab/Enter accepts a selected popup item; arrows/Ctrl-n/Ctrl-p navigate, Ctrl-e
+dismisses, and Escape retains the ordinary exit from Insert. Only an explicitly
+accepted, single-line edit within the current identifier applies directly, using
+the same complete edit-plan validation, disk conflict checks and undo transaction
+as a preview. Additional edits, multiline replacements and server commands retain
+the preview path. Explicit :Complete/Ctrl-n without a popup retains the contextual
+list. Snippets and commit-character acceptance remain unsupported.
 Completion resolution supplies documentation and additional edits; snippets are
 refused. Advertised completion commands are shown in the initial edit preview
 and run only after approval. Their subsequent server edits require another
@@ -561,7 +579,7 @@ document guards apply before expansion, resolution or navigation. Capability
 absence and virtual/decompiled locations remain explicit. These are read-only
 features, with no new server-edit authorization path.
 
-Rename, formatting, completion and quick fixes create an edit proposal. Validate
+Rename, formatting, explicit completion and quick fixes create an edit proposal. Validate
 every URI, project boundary, known version, captured buffer stamp, scalar range,
 overlap and size before constructing a preview. All affected buffers and disk
 baselines are rechecked before any splice. Applying makes one undo group per

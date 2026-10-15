@@ -1197,3 +1197,56 @@ this regression and the corrected fixture; its release tag is created only after
 the main-branch CI suite passes.
 The final socket correction passed all 12 local library tests, formatting,
 Clippy with warnings denied, the debug build and the release version check.
+
+## Completion while typing
+
+2026-10-15, Linux x86_64. Insert-mode character edits now request completion after
+120 ms of quiet and display a popup beside the cursor. Tab/Enter selects an item;
+ordinary identifier replacements apply as one undoable edit. Additional edits,
+multiline replacements and server commands retain the existing preview workflow.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 270 passed; seven opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| Python tool/harness and Kotlin probe unit tests | All 14 passed. |
+| `python3 tools/terminal_smoke.py` | All 29 sessions passed. |
+| `git diff --check` | Passed. |
+
+Thirteen new deterministic completion regressions cover debounce and startup,
+server trigger characters, incomplete-list refresh, filtering/sorting, selection,
+Tab/Enter acceptance, optional resolution, server replacement ranges, Unicode
+graphemes/UTF-16 and CRLF, undo, disk conflicts, cancellation during requests and
+resolution, empty/error/timeout results, unsupported capabilities, and additional
+edit/command previews. Rendering checks cover a popup above/below the cursor,
+scrolling through candidates, wide characters and tiny terminals. The new PTY
+session types a prefix, resizes with suggestions open, accepts with Tab, undoes,
+dismisses, and verifies source bytes and terminal restoration. Its capture is
+`/tmp/editor-pro-autocomplete-terminal/automatic-completion.ansi`.
+
+The three extended real-server fixtures also passed with the existing pinned
+installations and cached project dependencies:
+
+| Fixture | Final elapsed time | Automatic completion behavior |
+| --- | --- | --- |
+| `csharp_project` | 11.24 s | Popup, direct Tab acceptance and undo passed. |
+| `java_maven` | 24.42 s | Popup, Tab acceptance through its required preview and undo passed. |
+| `kotlin_maven` | 55.80 s | Popup, Tab acceptance through both command/edit previews and undo passed. |
+
+These tests also retain explicit completion, diagnostics, navigation, rename,
+formatting and restart checks. Source/build files remained unchanged on disk.
+Reports and commands are in `/tmp/editor-pro-autocomplete-real`; the reproducible
+fixture interface is documented in `tools/lsp/README.md`. Cargo used
+`CARGO_HOME=/tmp/editor-pro-m3-cargo` and `CARGO_NET_OFFLINE=true`.
+
+The sandbox initially blocked the installer tests' localhost HTTP sockets and
+stalled the real C# project import; the final suites ran with normal socket/runtime
+access. The new PTY assertion was corrected to tolerate split ANSI screen updates
+before the full successful run. macOS and physical terminals were not tested.
+
+Release preparation for v0.2.3 updated the Cargo package/lockfile version and
+passed the CLI version/symlink tests, release packager tests, stable-tag validation,
+formatting and whitespace checks. Native macOS acceptance is gated by the release
+workflow before publication.

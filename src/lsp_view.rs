@@ -15,6 +15,11 @@ use std::{
     time::Instant,
 };
 
+#[path = "lsp_completion.rs"]
+mod completion;
+pub use completion::CompletionMenu;
+pub(crate) use completion::render as render_completion;
+
 #[derive(Default)]
 pub struct LspState {
     pub config: Config,
@@ -26,6 +31,8 @@ pub struct LspState {
     pub servers: BTreeMap<ServerKey, ServerInfo>,
     pub diagnostics: BTreeMap<PathBuf, DiagnosticSet>,
     pub panel: Option<Panel>,
+    pub completion: Option<CompletionMenu>,
+    completion_due: Option<completion::Scheduled>,
     call_history: Vec<Panel>,
     context: Option<Context>,
     serial: u64,
@@ -56,6 +63,7 @@ struct Context {
     key: ServerKey,
     epoch: u64,
     apply_resolved: bool,
+    inline_completion: bool,
     call_item: Option<Value>,
 }
 pub struct Panel {
@@ -130,6 +138,8 @@ impl LspState {
     }
     pub fn cancel(&mut self) {
         self.cancel_request();
+        self.completion = None;
+        self.completion_due = None;
         self.call_history.clear();
         if let Some(panel) = self.panel.take()
             && let Some((key, epoch, id)) = panel.reply
@@ -248,6 +258,8 @@ impl Editor {
                 .get(&context.key)
                 .is_some_and(|s| s.epoch == context.epoch && s.capabilities.is_object())
             && matches!(self.view, View::Editing | View::Lsp)
+            && (!context.inline_completion
+                || (self.view == View::Editing && self.mode == Mode::Insert))
     }
     pub(crate) fn tick_lsp(&mut self) -> bool {
         let snapshots = self.lsp_snapshots();
@@ -327,11 +339,18 @@ impl Editor {
                 t.elapsed() > self.lsp.config.request_timeout + std::time::Duration::from_secs(3)
             })
         {
-            self.lsp.pending = false;
-            self.lsp.context = None;
-            self.error("LSP request expired; :LspInfo or :LspRestart");
+            let quiet = self
+                .lsp
+                .context
+                .as_ref()
+                .is_some_and(|c| c.inline_completion && !c.apply_resolved);
+            self.lsp.cancel_request();
+            if !quiet {
+                self.error("LSP request expired; :LspInfo or :LspRestart");
+            }
             redraw = true;
         }
+        self.tick_completion();
         redraw
     }
     fn lsp_event(&mut self, event: Event) -> io::Result<()> {
@@ -463,6 +482,16 @@ impl Editor {
                     return Ok(());
                 };
                 self.lsp.pending = false;
+                if context.inline_completion
+                    && !context.apply_resolved
+                    && let Err(message) = &result
+                {
+                    self.lsp.cancel_request();
+                    return self.lsp_event(Event::Log {
+                        key,
+                        message: message.clone(),
+                    });
+                }
                 let result = result.map_err(io::Error::other)?;
                 self.lsp_response(&request.method, result, context, documents)?;
             }
@@ -523,6 +552,7 @@ impl Editor {
         if !matches!(self.view, View::Editing | View::Lsp) {
             return Err(error("Return to source before using language commands"));
         }
+        self.dismiss_completion();
         if matches!(name, "LspInstall" | "LspInstallCancel") {
             let language = match argument.trim() {
                 "" => self
@@ -716,46 +746,7 @@ impl Editor {
         let mut context = if let Some(context) = previous {
             context
         } else {
-            let path = self
-                .document
-                .path()
-                .ok_or_else(|| error("Name a source file first"))?
-                .to_path_buf();
-            if let Some(message) = self.lsp.unavailable.get(&path) {
-                return Err(error(message));
-            }
-            if Language::for_path(&path).is_none() {
-                return Err(error(
-                    "No language server for this file type; supported languages: Kotlin, Java, C#",
-                ));
-            }
-            let key = self
-                .lsp
-                .routes
-                .get(&path)
-                .ok_or_else(|| error("LSP discovery is pending; :LspInfo"))?
-                .clone();
-            let info = self
-                .lsp
-                .servers
-                .get(&key)
-                .ok_or_else(|| error("LSP is starting; :LspInfo"))?;
-            Context {
-                serial: 0,
-                stamp: Stamp {
-                    buffer_id: self.active_buffer_id,
-                    instance: self.document.buffer.instance(),
-                    generation: self.document.buffer.generation(),
-                },
-                path,
-                cursor: self.document.buffer.cursor(),
-                mode: self.mode,
-                guards: self.lsp_edit_guards(),
-                key,
-                epoch: info.epoch,
-                apply_resolved: false,
-                call_item: None,
-            }
+            self.lsp_request_context()?
         };
         if !self.lsp_context_current(&context) {
             return Err(error(
@@ -780,11 +771,57 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| error("LSP unavailable"))?
             .submit(Control::Request(request))?;
+        if !context.inline_completion {
+            self.info(&format!("LSP {method}…"));
+        }
         self.lsp.context = Some(context);
         self.lsp.pending = true;
         self.lsp.started = Some(Instant::now());
-        self.info(&format!("LSP {method}…"));
         Ok(())
+    }
+
+    fn lsp_request_context(&self) -> io::Result<Context> {
+        let path = self
+            .document
+            .path()
+            .ok_or_else(|| error("Name a source file first"))?
+            .to_path_buf();
+        if let Some(message) = self.lsp.unavailable.get(&path) {
+            return Err(error(message));
+        }
+        if Language::for_path(&path).is_none() {
+            return Err(error(
+                "No language server for this file type; supported languages: Kotlin, Java, C#",
+            ));
+        }
+        let key = self
+            .lsp
+            .routes
+            .get(&path)
+            .ok_or_else(|| error("LSP discovery is pending; :LspInfo"))?
+            .clone();
+        let info = self
+            .lsp
+            .servers
+            .get(&key)
+            .ok_or_else(|| error("LSP is starting; :LspInfo"))?;
+        Ok(Context {
+            serial: 0,
+            stamp: Stamp {
+                buffer_id: self.active_buffer_id,
+                instance: self.document.buffer.instance(),
+                generation: self.document.buffer.generation(),
+            },
+            path,
+            cursor: self.document.buffer.cursor(),
+            mode: self.mode,
+            guards: self.lsp_edit_guards(),
+            key,
+            epoch: info.epoch,
+            apply_resolved: false,
+            inline_completion: false,
+            call_item: None,
+        })
     }
 
     fn lsp_response(
@@ -823,6 +860,10 @@ impl Editor {
                 }
             }
             "textDocument/completion" => {
+                if context.inline_completion {
+                    self.show_completion(result, context, versions);
+                    return Ok(());
+                }
                 let items = result.as_array().or_else(|| result["items"].as_array());
                 if result["isIncomplete"] == true {
                     panel
@@ -1034,15 +1075,8 @@ impl Editor {
                 .ok_or_else(|| error("Invalid completion edit"))?;
             json!({"range":range,"newText":edit["newText"]})
         } else {
-            let mut start = context.cursor;
+            let start = self.completion_prefix_start(context.cursor);
             let text = self.document.buffer.text();
-            while start > 0 {
-                let previous = self.document.buffer.grapheme_start_before(start);
-                if !(text.char(previous).is_alphanumeric() || text.char(previous) == '_') {
-                    break;
-                }
-                start = previous;
-            }
             json!({"range":lsp_types::Range::new(lsp::position(text,start)?,lsp::position(text,context.cursor)?),
                 "newText":value["insertText"].as_str().or_else(||value["label"].as_str()).ok_or_else(||error("Completion has no text"))?})
         };
@@ -1051,7 +1085,22 @@ impl Editor {
             edits.extend(extra.iter().cloned());
         }
         let edit = json!({"changes":{lsp::file_uri(&context.path)?.as_str():edits}});
-        self.stage_lsp_edit(&edit, context, versions, command)
+        if context.inline_completion
+            && command.is_none()
+            && edits.len() == 1
+            && self.simple_completion_edit(&edits[0], &context)?
+        {
+            let plan =
+                self.prepare_lsp_edit(&edit, &context.key.root, &versions, &context.guards)?;
+            self.apply_lsp_edit(plan)?;
+            self.lsp.cancel();
+            self.info("Completion inserted");
+            Ok(())
+        } else {
+            let mut context = context;
+            context.inline_completion = false;
+            self.stage_lsp_edit(&edit, context, versions, command)
+        }
     }
     fn select_action(
         &mut self,
@@ -1163,6 +1212,7 @@ impl Editor {
                 action: Item::Text,
             });
         }
+        self.lsp.context = Some(context.clone());
         panel.context = Some(context);
         panel.versions = versions;
         panel.plan = Some(plan);

@@ -176,6 +176,13 @@ impl Editor {
         if self.view == View::Editing
             && self.note_edit.is_none()
             && self.mode == Mode::Insert
+            && self.completion_key(key)
+        {
+            return;
+        }
+        if self.view == View::Editing
+            && self.note_edit.is_none()
+            && self.mode == Mode::Insert
             && key == Key::Ctrl('n')
         {
             if let Err(e) = self.lsp_command("Complete", "") {
@@ -730,6 +737,7 @@ impl Editor {
     }
 
     fn escape(&mut self) {
+        self.dismiss_completion();
         if self.view == View::Editing && self.lsp.pending {
             self.lsp.cancel();
         }
@@ -749,6 +757,9 @@ impl Editor {
     }
 
     fn insert_key(&mut self, key: Key) {
+        let generation = self.document.buffer.generation();
+        let incomplete = self.lsp.completion_incomplete();
+        self.dismiss_completion();
         match key {
             Key::Escape => self.escape(),
             Key::Char(character) if !character.is_control() => {
@@ -776,6 +787,11 @@ impl Editor {
                 }
             }
             _ => {}
+        }
+        if self.document.buffer.generation() != generation
+            && matches!(key, Key::Char(_) | Key::Backspace | Key::Delete)
+        {
+            self.schedule_completion(key, incomplete);
         }
     }
 
@@ -806,6 +822,7 @@ impl Editor {
     }
 
     pub fn paste(&mut self, text: &str) {
+        self.dismiss_completion();
         if self.view != View::Editing || self.mode != Mode::Insert {
             self.info("Enter Insert mode before pasting");
             return;

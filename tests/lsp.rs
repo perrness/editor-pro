@@ -887,6 +887,391 @@ fn completion_resolves_documentation_and_applies_undoable_preview_in_insert() {
     );
 }
 
+fn auto_completion_fixture(scenario: &str, text: &str) -> Fixture {
+    let mut f = Fixture::new(scenario);
+    let path = f.directory.path().join("Main.kt");
+    fs::write(&path, text).unwrap();
+    f.editor.document = Document::open(&path).unwrap();
+    f.ready();
+    f.editor.handle_key(Key::Char('A'));
+    f
+}
+
+fn type_completion(f: &mut Fixture, text: &str) {
+    for ch in text.chars() {
+        f.editor.handle_key(Key::Char(ch));
+    }
+}
+
+fn wait_completion(f: &mut Fixture) {
+    until(&mut f.editor, |e| e.lsp.completion.is_some());
+    assert_eq!(f.editor.mode, Mode::Insert);
+    assert_eq!(f.editor.view, View::Editing);
+    assert!(f.editor.lsp.panel.is_none());
+}
+
+#[test]
+fn automatic_completion_waits_for_startup_and_cancels_before_debounce() {
+    let mut f = Fixture::new("auto-completion");
+    f.editor.handle_key(Key::Char('A'));
+    type_completion(&mut f, ".le");
+    wait_completion(&mut f);
+    assert_eq!(f.editor.lsp.completion.as_ref().unwrap().items.len(), 2);
+    f.editor.handle_key(Key::Ctrl('e'));
+    type_completion(&mut f, "n");
+    f.editor.handle_key(Key::Escape);
+    settle(&mut f.editor);
+    assert!(f.editor.lsp.completion.is_none());
+    assert_eq!(
+        f.log()
+            .iter()
+            .filter(|m| m["method"] == "textDocument/completion")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn automatic_completion_debounces_filters_and_accepts_in_insert_with_undo() {
+    for accept in [Key::Tab, Key::Enter] {
+        let mut f = auto_completion_fixture("auto-completion", "value.\r\n");
+        type_completion(&mut f, "le");
+        f.editor.tick();
+        assert!(!f.editor.lsp.pending);
+        wait_completion(&mut f);
+        let menu = f.editor.lsp.completion.as_ref().unwrap();
+        assert_eq!(
+            menu.items
+                .iter()
+                .map(|v| v["label"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["length", "lengthSquared"]
+        );
+        let requests: Vec<_> = f
+            .log()
+            .into_iter()
+            .filter(|m| m["method"] == "textDocument/completion")
+            .collect();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["params"]["context"]["triggerKind"], 1);
+        let cursor = f.editor.document.buffer.cursor();
+        for key in [Key::Down, Key::Ctrl('p'), Key::Ctrl('n'), Key::Up] {
+            f.editor.handle_key(key);
+        }
+        assert_eq!(f.editor.document.buffer.cursor(), cursor);
+        assert_eq!(f.editor.lsp.completion.as_ref().unwrap().selected, 0);
+        f.editor.handle_key(accept);
+        until(&mut f.editor, |e| !e.lsp.pending);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert_eq!(f.editor.mode, Mode::Insert);
+        assert_eq!(f.editor.view, View::Editing);
+        assert_eq!(
+            f.editor.document.buffer.text().to_string(),
+            "value.length\r\n"
+        );
+        assert_eq!(f.editor.document.buffer.cursor(), 12);
+        assert!(f.editor.document.buffer.undo());
+        assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
+        assert_eq!(
+            fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
+            "value.\r\n"
+        );
+    }
+}
+
+#[test]
+fn automatic_completion_honors_triggers_incomplete_results_and_backspace() {
+    let mut f = auto_completion_fixture("auto-completion", "value\n");
+    type_completion(&mut f, ".");
+    wait_completion(&mut f);
+    assert!(
+        f.editor
+            .lsp
+            .completion
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|v| v["insertTextFormat"] != 2)
+    );
+    let request = f
+        .log()
+        .into_iter()
+        .find(|m| m["method"] == "textDocument/completion")
+        .unwrap();
+    assert_eq!(
+        request["params"]["context"],
+        json!({"triggerKind":2,"triggerCharacter":"."})
+    );
+    type_completion(&mut f, "le");
+    wait_completion(&mut f);
+    assert_eq!(f.editor.lsp.completion.as_ref().unwrap().items.len(), 2);
+    let request = f
+        .log()
+        .into_iter()
+        .rev()
+        .find(|m| m["method"] == "textDocument/completion")
+        .unwrap();
+    assert_eq!(request["params"]["context"]["triggerKind"], 3);
+    f.editor.handle_key(Key::Backspace);
+    wait_completion(&mut f);
+    assert_eq!(f.editor.lsp.completion.as_ref().unwrap().items.len(), 3);
+    f.editor.handle_key(Key::Char(' '));
+    settle(&mut f.editor);
+    assert!(f.editor.lsp.completion.is_none());
+}
+
+#[test]
+fn automatic_completion_uses_filter_text_and_works_without_resolve() {
+    let mut f = auto_completion_fixture("auto-completion-no-resolve", "value.\n");
+    type_completion(&mut f, "met");
+    wait_completion(&mut f);
+    assert_eq!(
+        f.editor.lsp.completion.as_ref().unwrap().items[0]["label"],
+        "call method(int value)"
+    );
+    f.editor.handle_key(Key::Tab);
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "value.method\n"
+    );
+    assert!(
+        !f.log()
+            .iter()
+            .any(|m| m["method"] == "completionItem/resolve")
+    );
+}
+
+#[test]
+fn automatic_completion_preserves_unicode_graphemes_utf16_and_crlf() {
+    let mut f = auto_completion_fixture("auto-completion", "😀 \r\n");
+    type_completion(&mut f, "e\u{301}");
+    wait_completion(&mut f);
+    let request = f
+        .log()
+        .into_iter()
+        .find(|m| m["method"] == "textDocument/completion")
+        .unwrap();
+    assert_eq!(
+        request["params"]["position"],
+        json!({"line":0,"character":5})
+    );
+    f.editor.handle_key(Key::Tab);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "😀 e\u{301}clair\r\n"
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 9);
+    assert!(f.editor.document.buffer.undo());
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "😀 e\u{301}\r\n"
+    );
+}
+
+#[test]
+fn automatic_completion_applies_server_text_edit_over_identifier_suffix() {
+    let mut f = auto_completion_fixture("auto-completion-text-edit", "value.lnxx\r\n");
+    f.editor.document.buffer.set_cursor(7, true);
+    type_completion(&mut f, "e");
+    wait_completion(&mut f);
+    f.editor.handle_key(Key::Enter);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "value.length\r\n"
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 12);
+    assert_eq!(f.editor.view, View::Editing);
+}
+
+#[test]
+fn automatic_completion_cancels_on_movement_escape_dismissal_paste_and_buffer_switch() {
+    for action in 0..5 {
+        let mut f = auto_completion_fixture("auto-completion-slow", "value.\n");
+        type_completion(&mut f, "le");
+        f.wait_log("textDocument/completion", 1);
+        match action {
+            0 => f.editor.handle_key(Key::Left),
+            1 => f.editor.handle_key(Key::Escape),
+            2 => f.editor.handle_key(Key::Ctrl('e')),
+            3 => f.editor.paste("more"),
+            _ => f.editor.new_buffer(),
+        }
+        settle(&mut f.editor);
+        assert!(f.editor.lsp.completion.is_none());
+        assert!(!f.editor.lsp.pending);
+        assert_eq!(f.editor.view, View::Editing);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert_eq!(
+            f.log()
+                .iter()
+                .filter(|m| m["method"] == "textDocument/completion")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn automatic_completion_discards_old_results_after_more_typing() {
+    let mut f = auto_completion_fixture("auto-completion-slow", "value.\n");
+    type_completion(&mut f, "l");
+    f.wait_log("textDocument/completion", 1);
+    type_completion(&mut f, "e");
+    wait_completion(&mut f);
+    assert_eq!(f.editor.lsp.completion.as_ref().unwrap().items.len(), 2);
+    assert!(f.log().iter().any(|m| m["method"] == "$/cancelRequest"));
+    assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\n");
+}
+
+#[test]
+fn automatic_completion_cancels_resolve_when_typing_continues() {
+    let mut f = auto_completion_fixture("auto-completion-resolve-slow", "value.\n");
+    type_completion(&mut f, "le");
+    wait_completion(&mut f);
+    f.editor.handle_key(Key::Tab);
+    f.wait_log("completionItem/resolve", 1);
+    type_completion(&mut f, "x");
+    settle(&mut f.editor);
+    assert_eq!(f.editor.document.buffer.text().to_string(), "value.lex\n");
+    assert!(f.editor.lsp.completion.is_none());
+    assert!(!f.editor.message_is_error);
+}
+
+#[test]
+fn automatic_completion_keeps_additional_edits_and_commands_in_preview() {
+    for scenario in ["auto-completion-extra", "auto-completion-command"] {
+        let mut f = auto_completion_fixture(scenario, "value.\r\n");
+        type_completion(&mut f, "le");
+        wait_completion(&mut f);
+        f.editor.handle_key(Key::Tab);
+        until(&mut f.editor, |e| e.view == View::Lsp && !e.lsp.pending);
+        settle(&mut f.editor);
+        assert!(
+            f.editor
+                .lsp
+                .panel
+                .as_ref()
+                .unwrap()
+                .title
+                .starts_with("Apply")
+        );
+        assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
+        assert!(
+            !f.log()
+                .iter()
+                .any(|m| m["method"] == "workspace/executeCommand")
+        );
+        if scenario == "auto-completion-extra" {
+            f.editor.handle_key(Key::Enter);
+            assert_eq!(
+                f.editor.document.buffer.text().to_string(),
+                "import sample\r\nvalue.length\r\n"
+            );
+            assert!(f.editor.document.buffer.undo());
+            assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
+        } else {
+            f.editor.handle_key(Key::Escape);
+            assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
+        }
+        assert_eq!(f.editor.mode, Mode::Insert);
+    }
+}
+
+#[test]
+fn automatic_completion_checks_disk_conflicts_before_applying() {
+    let mut f = auto_completion_fixture("auto-completion", "value.\n");
+    type_completion(&mut f, "le");
+    wait_completion(&mut f);
+    fs::write(f.directory.path().join("Main.kt"), "external\n").unwrap();
+    f.editor.handle_key(Key::Tab);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(f.editor.message_is_error);
+    assert!(f.editor.message.contains("changed"));
+    assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\n");
+}
+
+#[test]
+fn automatic_completion_errors_and_unsupported_servers_do_not_interrupt_typing() {
+    for scenario in [
+        "unsupported",
+        "auto-completion-error",
+        "auto-completion-timeout",
+    ] {
+        let mut f = auto_completion_fixture(scenario, "value.\n");
+        f.editor.message = "typing".into();
+        type_completion(&mut f, "le");
+        if scenario != "unsupported" {
+            f.wait_log("textDocument/completion", 1);
+            until(&mut f.editor, |e| !e.lsp.pending);
+        }
+        settle(&mut f.editor);
+        assert!(!f.editor.message_is_error);
+        assert_eq!(f.editor.message, "typing");
+        assert_eq!(f.editor.mode, Mode::Insert);
+        assert!(f.editor.lsp.completion.is_none());
+    }
+}
+
+#[test]
+fn automatic_completion_popup_preserves_source_cursor_and_handles_small_screens() {
+    let mut f = auto_completion_fixture("auto-completion-many", "\t😀 \n");
+    type_completion(&mut f, "i");
+    wait_completion(&mut f);
+    for _ in 0..12 {
+        f.editor.handle_key(Key::Down);
+    }
+    for (width, height) in [(1, 1), (1, 3), (2, 2), (8, 4), (80, 8)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        if height > 2 {
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(cursor.x < width && cursor.y < height - 2);
+        }
+        if width == 80 {
+            let output: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(output.contains("item12"));
+            assert!(output.contains("INSERT"));
+            assert!(output.contains("Tab/Enter accept"));
+            assert_eq!(terminal.get_cursor_position().unwrap().y, 0);
+        }
+    }
+    f.editor.handle_key(Key::Ctrl('e'));
+    assert_eq!(f.editor.mode, Mode::Insert);
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(f.editor.document.buffer.text().to_string(), "\t😀 i\n\n");
+
+    let mut f = auto_completion_fixture("auto-completion-many", "first\nsecond\nthird\nlast ");
+    let end = f.editor.document.buffer.text().len_chars();
+    f.editor.document.buffer.set_cursor(end, true);
+    type_completion(&mut f, "i");
+    wait_completion(&mut f);
+    let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert_eq!(terminal.get_cursor_position().unwrap().y, 3);
+    let output: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(output.contains("item00"));
+    assert!(output.contains("last i"));
+}
+
 #[test]
 fn completion_commands_require_selection_approval_and_a_separate_server_edit_preview() {
     let mut f = Fixture::new("completion-command");

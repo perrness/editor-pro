@@ -16,11 +16,11 @@ live disk revision detection and conservative note reattachment.
 **M8 AI comprehension** adds optional Codex CLI context previews, conversations,
 cited navigation, persistent history and explicitly approved, undoable revisions.
 
-**Validation:** 257 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
+**Validation:** 270 Rust tests (including 18 AI, 14 snapshot and 56 LSP regressions),
 14 Python tests, formatting, Clippy and the debug build pass on Linux.
-The terminal harness covers 28 sessions, including installed `ep` directory/file
+The terminal harness covers 29 sessions, including installed `ep` directory/file
 startup, configuration, AI revisions/undo/resume, snapshots/live revisions,
-project search, history, symbols/calls, LSP edits and installation controls.
+project search, history, symbols/calls, LSP edits, automatic completion and installation controls.
 Automatic installation passed real Kotlin, Java and C# server fixtures on Linux.
 An opt-in fixture also passed against actual Codex CLI 0.162.1 and its provider.
 M6 passed three extended real-server fixtures; M5's six-fixture acceptance and
@@ -531,6 +531,8 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 
 | Command / key | Action |
 | --- | --- |
+| Insert typing | Show completion suggestions beside the cursor after a short pause |
+| Popup arrows / `Ctrl-n` / `Ctrl-p` | Select a suggestion; Tab or Enter accepts; `Ctrl-e` dismisses |
 | `:Complete`, Insert `Ctrl-n` | Request a completion list; `d` resolves documentation, Enter chooses |
 | `:Hover` | Read documentation at the cursor |
 | `:Signature` | Show signatures and the active parameter |
@@ -550,14 +552,25 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 Results use a contextual view: `j/k` or arrows select, Page Up/Down scroll,
 `h/l` scroll horizontally, and Escape returns without changing source location.
 Documentation is displayed as plain text, including Markdown source.
-Completion is requested manually; snippet expansion is unsupported. Advertised
-completion commands appear in the initial preview and run after approval. Any
+In Insert mode, typing an identifier or a server-advertised trigger such as `.`
+requests suggestions after a 120 ms pause. The popup keeps the source and cursor
+visible; continued typing and Backspace refresh it. Tab or Enter accepts the
+selected suggestion; arrows or `Ctrl-n`/`Ctrl-p` select, and `Ctrl-e` dismisses
+without leaving Insert. Escape leaves Insert as usual. Cursor movement, paste,
+buffer switches and newer edits cancel obsolete requests. Suggestions wait for
+the server to finish starting; they require a supported, named source file.
+With no popup, `Ctrl-n` still opens the explicit completion list. `:Complete`
+also remains available. Snippet expansion is unsupported. Advertised
+completion commands appear in an edit preview and run after approval. Any
 further text edits from that command require a second preview. Only negotiated
 features can be requested. JDT LS signature help is explicitly enabled during
 initialization and configuration.
 
-**Server edits open a preview. Enter applies; Escape cancels.** This includes
-completion, rename, formatting and quick fixes. All targets are validated before
+**Server edits open a preview. Enter applies; Escape cancels.** Selecting a plain
+popup completion applies its single edit to the current identifier directly.
+Completions with additional edits, multiline replacements or commands still open
+a preview, as do explicit `:Complete` results, rename, formatting and quick fixes.
+All targets are validated before
 the first change, with buffer versions and exact disk-baseline checks repeated
 at application. Applying produces unsaved edits with one undo group per buffer.
 An open target must have been synchronized by the requesting server; cross-server

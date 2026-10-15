@@ -149,6 +149,11 @@ while True:
                 "executeCommandProvider": {"commands": ["fake.fix"]}}
         if args.scenario == "unsupported":
             caps = {"textDocumentSync": 2}
+        if args.scenario.startswith("auto-completion"):
+            assert p["capabilities"]["textDocument"]["completion"]["contextSupport"]
+            caps["completionProvider"]["triggerCharacters"] = ["."]
+            if args.scenario == "auto-completion-no-resolve":
+                caps["completionProvider"]["resolveProvider"] = False
         if args.scenario.startswith("pull"):
             caps["diagnosticProvider"] = {"interFileDependencies": args.scenario == "pull-dependencies", "workspaceDiagnostics": False}
         if args.scenario == "encoding":
@@ -215,6 +220,34 @@ while True:
         else:
             send(report)
     elif method == "textDocument/completion":
+        if args.scenario.startswith("auto-completion"):
+            text = documents[p["textDocument"]["uri"]]["text"]
+            cursor = offset(text, p["position"])
+            assert text[cursor - 1:cursor] != "", "Request must use synchronized text"
+            items = [
+                {"label": "length", "sortText": "1", "data": 1},
+                {"label": "lengthSquared", "sortText": "2", "data": 2},
+                {"label": "lowercase", "sortText": "3", "data": 3},
+                {"label": "e\u0301clair", "data": 4},
+                {"label": "call method(int value)", "filterText": "method", "insertText": "method", "data": 5},
+                {"label": "snippet", "insertTextFormat": 2, "insertText": "${1:ignored}"},
+            ]
+            if args.scenario == "auto-completion-many":
+                items = [{"label": f"item{index:02d}"} for index in range(16)]
+            if args.scenario == "auto-completion-text-edit":
+                start = {**p["position"], "character": p["position"]["character"] - 2}
+                end = {**p["position"], "character": p["position"]["character"] + 3}
+                items = [{"label": "length", "textEdit": {"range": {"start": start, "end": end}, "newText": "length"}}]
+            response = {"id": ident, "result": {"isIncomplete": True, "items": items}}
+            if args.scenario == "auto-completion-error":
+                response = {"id": ident, "error": {"code": -32801, "message": "Indexing; retry later"}}
+            if args.scenario == "auto-completion-slow":
+                later(response)
+            elif args.scenario == "auto-completion-timeout":
+                pass
+            else:
+                send(response)
+            continue
         item = {"label": "good", "detail": "completion detail", "insertText": "good", "data": 42}
         if args.scenario.startswith("completion-command"):
             item["textEdit"] = {"range": span(0, 0), "newText": ""}
@@ -224,6 +257,13 @@ while True:
         ]}})
     elif method == "completionItem/resolve":
         item = {**p, "documentation": "Resolved completion documentation"}
+        if args.scenario == "auto-completion-extra":
+            item["additionalTextEdits"] = [{"range": span(0, 0), "newText": "import sample\r\n"}]
+        if args.scenario == "auto-completion-command":
+            item["command"] = {"title": "Complete with command", "command": "fake.fix", "arguments": [next(iter(documents))]}
+        if args.scenario == "auto-completion-resolve-slow":
+            later({"id": ident, "result": item})
+            continue
         if args.scenario.startswith("completion-command"):
             item["command"] = p["data"]
         send({"id": ident, "result": item})

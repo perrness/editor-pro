@@ -246,10 +246,18 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         && height > 0
         && text_width > 0
     {
-        frame.set_cursor_position((
+        let cursor = (
             area.x + gutter + (cursor_cell - editor.viewport.left) as u16,
             area.y + (cursor_line - editor.viewport.top) as u16,
-        ));
+        );
+        crate::lsp_view::render_completion(
+            frame,
+            editor,
+            theme,
+            Rect::new(area.x, area.y, area.width, height),
+            cursor,
+        );
+        frame.set_cursor_position(cursor);
     }
     if let View::Buffers { selected } = editor.view {
         render_buffers(

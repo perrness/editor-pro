@@ -52,7 +52,8 @@ Navigation: :Hover, :Definition, :References, :Diagnostics
 Code: :Outline, :WorkspaceSymbols QUERY, :Calls (i/o calls, Backspace parent)
 Project: :grep TEXT, :grepdir PATH, :recent, Ctrl-o/:back, Ctrl-i/:forward
 AI: :ai help; :ai context file, :ai ask QUESTION, :ai send; Visual Ctrl-g previews selection
-Language: :Complete (Insert Ctrl-n), :Signature, :Rename NAME, :CodeAction, :Format, :Symbols
+Language: suggestions while typing; Tab/Enter accepts, arrows select, Ctrl-e dismisses
+          :Complete (Insert Ctrl-n), :Signature, :Rename NAME, :CodeAction, :Format, :Symbols
 
 Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
 Use -- before a filename starting with -. See README.md for the full reference.";
@@ -182,6 +183,7 @@ fn event_loop(
             || editor.git.loading
             || editor.review.busy
             || editor.lsp.pending
+            || editor.lsp.completion_scheduled()
             || editor.lsp.installations.values().any(|state| state.busy)
             || editor.project_search.pending
             || editor.ai.pending

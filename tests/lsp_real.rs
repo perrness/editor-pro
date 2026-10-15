@@ -460,6 +460,77 @@ impl Project {
             before_completion
         );
 
+        let partial = &prefix[..prefix.len() - 1];
+        self.replace(member, partial);
+        self.cursor("COMPLETION", partial, partial.len());
+        self.editor.handle_key(Key::Char('i'));
+        self.editor.handle_key(Key::Char('n'));
+        self.wait("automatic_completion_popup", |e| {
+            e.lsp.completion.is_some() || e.message_is_error
+        });
+        assert!(!self.editor.message_is_error, "{}", self.state());
+        assert_eq!(self.editor.view, View::Editing);
+        assert_eq!(self.editor.mode, editor_pro::editor::Mode::Insert);
+        let menu = self.editor.lsp.completion.as_mut().unwrap();
+        menu.selected = menu
+            .items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item["label"]
+                        .as_str()
+                        .unwrap_or("")
+                        .split(['(', ':', ' '])
+                        .next(),
+                    Some("length" | "Length")
+                )
+            })
+            .expect("Expected a length completion");
+        let before_accept = self.editor.document.buffer.text().to_string();
+        self.editor.handle_key(Key::Tab);
+        self.wait("automatic_completion_accept", |e| !e.lsp.pending);
+        for step in 0..2 {
+            if !self
+                .editor
+                .lsp
+                .panel
+                .as_ref()
+                .is_some_and(|p| p.title.starts_with("Apply"))
+            {
+                break;
+            }
+            self.editor.handle_key(Key::Enter);
+            self.wait(&format!("automatic_completion_preview_{step}"), |e| {
+                !e.lsp.pending
+            });
+        }
+        assert!(!self.editor.message_is_error, "{}", self.state());
+        assert_eq!(self.editor.view, View::Editing);
+        assert_eq!(self.editor.mode, editor_pro::editor::Mode::Insert);
+        assert!(
+            self.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .contains(member.trim_end_matches("()")),
+            "{}",
+            self.state()
+        );
+        assert!(self.editor.document.buffer.undo());
+        assert_eq!(
+            self.editor.document.buffer.text().to_string(),
+            before_accept
+        );
+        self.editor.handle_key(Key::Ctrl('e'));
+        self.editor.handle_key(Key::Escape);
+        assert!(self.editor.document.buffer.undo());
+        assert!(self.editor.document.buffer.undo());
+        assert_eq!(
+            self.editor.document.buffer.text().to_string(),
+            before_completion
+        );
+
         let type_error = if Language::for_path(&self.main) == Some(Language::CSharp) {
             "1L"
         } else {

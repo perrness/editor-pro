@@ -687,7 +687,7 @@ async fn run(
                 "workspaceEdit":{"documentChanges":true,"failureHandling":"abort","resourceOperations":[]}},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
-                "completion":{"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"],
+                "completion":{"contextSupport":true,"completionItem":{"snippetSupport":false,"documentationFormat":["plaintext","markdown"],
                     "resolveSupport":{"properties":["documentation","detail","additionalTextEdits","command"]}}},
                 "hover":{"contentFormat":["plaintext","markdown"]},
                 "signatureHelp":{"signatureInformation":{"documentationFormat":["plaintext","markdown"],"parameterInformation":{"labelOffsetSupport":true}}},
