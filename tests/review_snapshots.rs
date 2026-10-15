@@ -599,7 +599,7 @@ fn unborn_and_index_baselines_keep_presence_modes_and_original_bytes() {
 
 #[cfg(unix)]
 #[test]
-fn raw_paths_roundtrip_and_symlinks_are_refused_without_changing_prior_checkpoints() {
+fn unusual_paths_roundtrip_and_symlinks_are_refused_without_changing_prior_checkpoints() {
     use std::os::unix::{
         ffi::OsStringExt,
         fs::{PermissionsExt, symlink},
@@ -607,9 +607,13 @@ fn raw_paths_roundtrip_and_symlinks_are_refused_without_changing_prior_checkpoin
     let r = Repo::new();
     r.write("a", "base\n");
     r.commit();
-    let path =
-        r.0.path()
-            .join(std::ffi::OsString::from_vec(b"raw\xff\n.txt".to_vec()));
+    // macOS filesystems require UTF-8; retain delimiter and Unicode coverage.
+    let name = std::ffi::OsString::from_vec(if cfg!(target_os = "macos") {
+        "raw界\n.txt".as_bytes().to_vec()
+    } else {
+        b"raw\xff\n.txt".to_vec()
+    });
+    let path = r.0.path().join(name);
     fs::write(&path, "界\r\n").unwrap();
     let mut e = r.editor();
     act(&mut e, "review snapshot");

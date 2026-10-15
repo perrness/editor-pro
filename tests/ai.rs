@@ -567,13 +567,18 @@ fn raw_paths_roundtrip_and_symlinks_and_hardlinks_are_refused() {
     let path = f
         .root
         .join(std::ffi::OsString::from_vec(b"raw\xff:\n.txt".to_vec()));
-    fs::write(&path, "old\n").unwrap();
-    f.editor.open_buffer(&path).unwrap();
     f.request("normal");
     f.finish();
     let saved = f.dir.path().join("saved.json");
-    let conversation = f.editor.ai.conversation.as_ref().unwrap();
-    let (_, hash) = ai_store::save(conversation, &saved, None, &[]).unwrap();
+    let mut conversation = f.editor.ai.conversation.as_ref().unwrap().clone();
+    // Persistence must preserve raw path bytes even on filesystems that cannot
+    // create non-UTF-8 filenames, such as the macOS CI runner's filesystem.
+    conversation.turns[0].draft.context[0]
+        .source
+        .as_mut()
+        .unwrap()
+        .path = path.clone();
+    let (_, hash) = ai_store::save(&conversation, &saved, None, &[]).unwrap();
     assert_eq!(
         ai_store::load(&saved).unwrap().0.turns[0].draft.context[0]
             .source
@@ -585,7 +590,7 @@ fn raw_paths_roundtrip_and_symlinks_and_hardlinks_are_refused() {
     let alias = f.dir.path().join("alias.json");
     symlink(&saved, &alias).unwrap();
     assert!(ai_store::load(&alias).is_err());
-    assert!(ai_store::save(conversation, &alias, Some(&hash), &[]).is_err());
+    assert!(ai_store::save(&conversation, &alias, Some(&hash), &[]).is_err());
     fs::remove_file(&alias).unwrap();
     fs::hard_link(&saved, &alias).unwrap();
     assert!(ai_store::load(&saved).is_err());

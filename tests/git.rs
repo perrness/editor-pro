@@ -863,13 +863,17 @@ fn configured_helpers_are_disabled_and_inspection_does_not_write_repository() {
 }
 #[cfg(unix)]
 #[test]
-fn literal_pathspecs_and_non_utf8_names_are_not_reinterpreted() {
+fn literal_pathspecs_and_unusual_names_are_not_reinterpreted() {
     use std::os::unix::ffi::OsStringExt;
     let r = Repo::new();
     r.write(":(glob)*", "before\n");
-    let raw =
-        r.0.path()
-            .join(std::ffi::OsString::from_vec(b"-raw\xff\n".to_vec()));
+    // macOS filesystems require UTF-8; retain delimiter and Unicode coverage.
+    let name = std::ffi::OsString::from_vec(if cfg!(target_os = "macos") {
+        "-raw界\n".as_bytes().to_vec()
+    } else {
+        b"-raw\xff\n".to_vec()
+    });
+    let raw = r.0.path().join(name);
     fs::write(&raw, b"before\n").unwrap();
     r.commit();
     r.write(":(glob)*", "after\n");

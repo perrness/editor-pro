@@ -18,7 +18,6 @@ import time
 
 def run_session(binary, path, commands, expected, environment=None, arguments=None, cwd=None):
     master, slave = pty.openpty()
-    original = termios.tcgetattr(slave)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     pid = os.fork()
     if pid == 0:
@@ -40,6 +39,22 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         if cwd is not None:
             os.chdir(cwd)
         argv = [str(path)] if arguments is None else [str(arg) for arg in arguments]
+        # Keep the session leader alive while checking restoration. macOS
+        # revokes the slave terminal when its controlling session leader exits.
+        termios.tcflush(0, termios.TCIFLUSH)
+        original = termios.tcgetattr(0)
+        editor_pid = os.fork()
+        if editor_pid:
+            _, status = os.waitpid(editor_pid, 0)
+            # Canonical mode sets macOS PENDIN, a transient input-queue flag.
+            # Clear pending input without changing the terminal configuration.
+            termios.tcflush(0, termios.TCIFLUSH)
+            restored = termios.tcgetattr(0)
+            if restored != original:
+                os.write(2, f"Terminal settings were not restored: expected {original!r}, got {restored!r}\n".encode())
+                os._exit(1)
+            code = os.waitstatus_to_exitcode(status)
+            os._exit(code if code >= 0 else 128 - code)
         os.execv(str(binary), [str(binary), *argv])
     output = bytearray()
     reaped = False
@@ -110,10 +125,10 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
             exited, status = os.waitpid(pid, os.WNOHANG)
             if exited:
                 reaped = True
-                assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors="replace")
+                code = os.waitstatus_to_exitcode(status)
+                assert code == 0, f"Editor exited with status {code}: {output.decode(errors='replace')}"
                 break
         assert reaped, f"Editor did not exit: {output[-4000:]!r}"
-        assert termios.tcgetattr(slave) == original, "Terminal settings were not restored"
         assert b"\x1b[?1049l" in output, "Alternate screen was not left"
         assert b"\x1b[?2004l" in output, "Bracketed paste was not disabled"
         assert path.read_bytes() == expected, path.read_bytes()
@@ -139,7 +154,9 @@ def main():
         ep = Path(directory) / "ep"
         ep.symlink_to(binary)
         output = run_session(ep, project_file, [
-            b"startup", (b"startup.txt", 10), b"\r", b"i// ", b"\x1b", b":wq\r",
+            # An unchanged picker result may not be redrawn after filtering;
+            # wait for the opened file instead of another copy of its name.
+            b"startup", (b"\r", b"before", 10), b"i// ", b"\x1b", b":wq\r",
         ], "// before 界\r\n".encode(), arguments=["."], cwd=project)
         assert b"Files" in output
         # A directory argument also sets the root for relative :e and :w paths.
@@ -197,7 +214,7 @@ def main():
         def resize(rows, columns):
             def apply_resize(master, slave, pid):
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
-                os.kill(pid, signal.SIGWINCH)
+                os.killpg(pid, signal.SIGWINCH)
             return apply_resize
 
         wide = (("\t界👩‍💻e\u0301\r\n" * 50) + "\t界" * 200).encode()
@@ -253,8 +270,12 @@ def main():
             b"iRETURN", b"\x1b", b":wq\r"], "".join(expected_rows).encode())
         assert b"OLD " in output and b"NEW " in output
         assert (repo / ".git" / "index").read_bytes() == index_before
-        output = run_session(binary, source, [b":changes\r", (b"gone.rs", 10), b"\r",
-            (b"historical deletion", 10), b"\r", b"\x1b", b":changes\r", (b"second.rs", 10), b"j", b"\r",
+        output = run_session(binary, source, [b":changes\r", (b"gone.rs", 10),
+            # Review loading can briefly invalidate the list after it renders.
+            # Retry navigation until the destination appears instead of losing
+            # a single Enter during that refresh window.
+            (b"\r", b"historical deletion", 10), b"\r", b"\x1b", b":changes\r", (b"second.rs", 10), b"j",
+            (b"\r", b"changed second", 10),
             b"iSECOND ", b"\x1b", b":w\r", b":gnext\r", b":gprev\r", b":q\r"],
             "".join(expected_rows).encode())
         assert second.read_bytes() == b"SECOND changed second\n", (second.read_bytes(), output[-12000:])
@@ -458,7 +479,9 @@ def main():
             (Path(capture_dir) / "m8-ai-revisions.ansi").write_bytes(output)
         ai_environment["EDITOR_PRO_AI_MODEL"] = "followup"
         output = run_session(binary, source, [
-            f":ai load {conversation}\r".encode(), resize(24, 100), (b"Conversation restored", 10),
+            # The status headline can be split into ANSI diff writes. The
+            # restored turn is new content and confirms that loading finished.
+            f":ai load {conversation}\r".encode(), resize(24, 100), (b"Turn 1", 10),
             b":ai edits\r", resize(24, 101), (b"historical", 10),
             b":ai context file\r", b":ai ask Recall the previous discussion\r", b":ai send\r",
             (b"Completed", 10), b":ai save\r", (ai_turns(2), 10),
