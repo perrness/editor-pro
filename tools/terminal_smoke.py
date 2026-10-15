@@ -151,6 +151,35 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_file_tree_session(binary, directory, resize, capture_dir=None):
+    # File-tree binding, prompts, safe mutations, folding and return to source.
+    tree_root = Path(directory) / "tree-project"
+    tree_root.mkdir()
+    tree_source = tree_root / "source.txt"
+    tree_source.write_bytes("界\r\nsource".encode())
+    output = run_session(binary, tree_source, [
+        b" pv", (b"Tree", 10),
+        b"A", b"folder", b"\r", (lambda: (tree_root / "folder").is_dir(), 10),
+        b"R", resize(24, 101), (b"folder", 10),
+        b"l", b"a", b"created.txt", b"\r",
+        (lambda: (tree_root / "folder/created.txt").exists(), 10),
+        b"R", resize(24, 100), (b"folder", 10), b"h", b"l",
+        resize(24, 99), (b"created.txt", 10), b"j",
+        b"r", b"renamed.txt", b"\r",
+        (lambda: (tree_root / "folder/renamed.txt").exists(), 10),
+        b"R", resize(24, 101), (b"folder", 10), b"h", b"l",
+        resize(24, 99), (b"renamed.txt", 10), b"j",
+        b"d", b"no", b"\r", (b"cancelled", 10),
+        b"d", b"yes", b"\r",
+        (lambda: not (tree_root / "folder/renamed.txt").exists(), 10),
+        resize(3, 1), resize(24, 100),
+        b" pv", (b"NORMAL", 10),
+        b"\x10", (b"source.txt", 10), b"\x1b", b":q\r",
+    ], tree_source.read_bytes(), cwd=tree_root)
+    if capture_dir:
+        (Path(capture_dir) / "file-tree.ansi").write_bytes(output)
+
+
 def main():
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/editor-pro").absolute()
     if not binary.is_file():
@@ -597,7 +626,8 @@ def main():
         output = run_session(binary, history_path, history_commands, history_states[-1].encode())
         if capture_dir:
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
-    print("PASS: 33 PTY sessions; ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        run_file_tree_session(binary, directory, resize, capture_dir)
+    print("PASS: 34 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

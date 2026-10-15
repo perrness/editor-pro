@@ -8,6 +8,7 @@ pub mod config;
 pub mod diff;
 pub mod editor;
 pub mod file;
+pub mod file_tree;
 pub mod git;
 mod git_ui;
 pub mod git_view;

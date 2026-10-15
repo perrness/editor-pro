@@ -54,6 +54,7 @@ struct Pending {
     operator: Option<Operator>,
     operator_count: usize,
     g: bool,
+    leader: u8,
     object: Option<bool>,
     find: Option<(bool, bool)>,
 }
@@ -72,6 +73,7 @@ pub enum View {
         selected: usize,
     },
     Files,
+    Tree,
     Recent,
     ProjectSearch,
     Changes,
@@ -88,6 +90,7 @@ pub struct Editor {
     pub(crate) buffers: BTreeMap<usize, BufferSlot>,
     pub view: View,
     pub picker: Option<FilePicker>,
+    pub tree: crate::file_tree::FileTree,
     pub git: crate::git_view::GitState,
     pub review: crate::review_view::ReviewState,
     pub lsp: crate::lsp_view::LspState,
@@ -120,6 +123,7 @@ impl Editor {
             buffers: BTreeMap::new(),
             view: View::Editing,
             picker: None,
+            tree: crate::file_tree::FileTree::default(),
             git: crate::git_view::GitState::default(),
             review: crate::review_view::ReviewState::default(),
             lsp: crate::lsp_view::LspState::default(),
@@ -147,6 +151,10 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.view == View::Tree {
+            self.tree_key(key);
+            return;
+        }
         if self.view == View::Ai && self.mode != Mode::Command {
             self.ai_key(key);
             return;
@@ -298,6 +306,30 @@ impl Editor {
     fn normal_key(&mut self, key: Key) {
         if key == Key::Escape {
             self.escape();
+            return;
+        }
+        if self.pending.leader > 0 {
+            let stage = self.pending.leader;
+            self.pending = Pending::default();
+            if stage == 1 && key == Key::Char('p') {
+                self.pending.leader = 2;
+            } else if stage == 2
+                && key == Key::Char('v')
+                && let Err(error) = self.toggle_tree(None)
+            {
+                self.error(&error.to_string());
+            }
+            return;
+        }
+        if key == Key::Char(' ')
+            && self.mode == Mode::Normal
+            && self.pending.operator.is_none()
+            && !self.pending.g
+            && self.pending.find.is_none()
+            && self.pending.object.is_none()
+        {
+            self.pending = Pending::default();
+            self.pending.leader = 1;
             return;
         }
         if let Some(around) = self.pending.object.take() {
@@ -977,6 +1009,7 @@ impl Editor {
             "e" | "e!" => self.edit_command(argument, name == "e!")?,
             "back" | "forward" if argument.is_empty() => self.navigate_history(name == "back")?,
             "recent" if argument.is_empty() => self.open_recent(),
+            "tree" => self.toggle_tree((!argument.is_empty()).then(|| Path::new(argument)))?,
             "grep" => self.search_project(argument)?,
             "grepdir" => {
                 self.project_search.config.root = if argument.is_empty() { None } else { Some(crate::file::absolute_path(Path::new(argument))?) };
@@ -1042,7 +1075,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "i insert  v/V select  d/c/y + motion  u undo  / search  gd definition  gr references  Ctrl-p files  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :changes  :diff  :review help  :w save  :q quit; README.md has all keys",
+                "i insert  v/V select  d/c/y + motion  u undo  / search  gd definition  gr references  Ctrl-p files  Space p v tree  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :changes  :diff  :review help  :w save  :q quit; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),

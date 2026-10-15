@@ -796,3 +796,29 @@ Kotlin probe and its test double remain independent of the editor.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the
 [language-server feasibility report](docs/LANGUAGE_SERVERS.md).
+
+### File tree
+
+In Normal mode, press **Space**, **p**, **v** in sequence to toggle the file tree.
+`:tree [DIRECTORY]` also opens it; the default root is the working directory and
+subsequent toggles retain the chosen root. `Ctrl-p` keeps the fuzzy finder.
+
+Use `j/k` or arrows to select, `l`/Right to expand, `h`/Left to collapse or select
+the parent, and Enter to open a file. Escape or Space p v returns to the source
+without moving its cursor or viewport. `R` refreshes the tree.
+
+`a` creates a file and `A` a directory in the selected folder (or selected file's
+parent). `r` renames or moves the selected entry; enter a destination relative to
+its parent, with an existing destination folder. `d` deletes after you type
+`yes` and press Enter; Escape cancels any prompt. Directories must be empty to
+delete. Existing destinations are never overwritten. Moves across filesystems
+report an error. Names may contain spaces and Unicode.
+
+Rename/delete refuses any path used by an open buffer, including a directory
+containing one. Save and close those buffers first. This also protects clean open
+files and leaves their Git/LSP identities intact. Recent-file and closed-file
+history paths follow successful moves; deletion removes stale entries. Git state
+refreshes after changes. Symlinks appear as leaves and can be moved/deleted but
+are never opened or traversed by the tree. Hidden and ignored files are shown;
+`.git` is excluded. Discovery runs one directory at a time on a worker thread,
+with a 10,000-entry total limit. Errors appear above the shortcut footer.

@@ -257,3 +257,35 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
         }
     }
 }
+
+impl Navigation {
+    pub(crate) fn move_tree_path(&mut self, source: &std::path::Path, target: &std::path::Path) {
+        for path in &mut self.recent {
+            if let Ok(relative) = path.strip_prefix(source) {
+                *path = if relative.as_os_str().is_empty() {
+                    target.to_path_buf()
+                } else {
+                    target.join(relative)
+                };
+            }
+        }
+        for location in self.back.iter_mut().chain(&mut self.forward) {
+            if let Some(path) = &mut location.path
+                && let Ok(relative) = path.strip_prefix(source)
+            {
+                *path = if relative.as_os_str().is_empty() {
+                    target.to_path_buf()
+                } else {
+                    target.join(relative)
+                };
+            }
+        }
+    }
+    pub(crate) fn forget_tree_path(&mut self, path: &std::path::Path) {
+        self.recent.retain(|p| !p.starts_with(path));
+        self.back
+            .retain(|l| !l.path.as_ref().is_some_and(|p| p.starts_with(path)));
+        self.forward
+            .retain(|l| !l.path.as_ref().is_some_and(|p| p.starts_with(path)));
+    }
+}

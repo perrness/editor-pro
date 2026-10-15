@@ -717,3 +717,20 @@ stalls and shutdown joins are not hard-time guarantees.
 | Stale async state | Picker queries, Git generations, and LSP session/request/document stamps guard acceptance. Versionless diagnostics remain explicitly unverified. |
 | Scope and architecture growth | M1–8 code only; one optional CLI path, no provider framework. Split modules at concrete responsibilities. |
 | Platform and responsiveness evidence | Linux check counts, real fixture results and import/restart timings are recorded in VALIDATION.md. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |
+
+## File-tree view
+
+`file_tree.rs` owns a separate contextual `View::Tree`, toggled by Normal-mode
+Space p v or `:tree`. It does not change the source viewport. Each expansion
+spawns one bounded directory-read worker; only one scan may be outstanding,
+including while the view is hidden. Results apply on the UI tick. No recursive
+walk or recursive deletion occurs. The visible tree caps at 10,000 entries;
+symlinks are leaves and ignored/hidden files are included except `.git`.
+
+Mutations use create-new semantics, empty-directory deletion and rustix atomic
+no-replace rename on Linux/macOS. Open document paths and ancestors cannot be
+renamed/deleted, so buffers and LSP documents keep their existing identities.
+Targets cannot collide with open documents, escape the root or traverse symlink
+parents. Successful moves update closed-file navigation paths; deletions prune
+those paths, and either invalidates Git. Filesystem calls and parent validation
+are synchronous and may stall on slow filesystems; discovery is off-thread.

@@ -1352,3 +1352,41 @@ generated Cargo artifacts and rerunning with `CARGO_PROFILE_DEV_DEBUG=0`,
 successfully. macOS and real language servers were not retested locally.
 Version v0.2.4 is prepared for the existing release workflow, which gates native
 macOS assets and Homebrew publication on hosted acceptance checks.
+
+## Keyboard file tree
+
+2026-10-15, Linux x86_64. [Issue #5](https://github.com/perrness/editor-pro/issues/5)
+adds a hidden contextual tree, toggled by Normal-mode Space p v or `:tree`.
+Ctrl-p retains the fuzzy finder. Directory expansion uses one bounded worker;
+file operations refuse paths belonging to open buffers. Creation and rename
+never replace destinations; deletion requires `yes` and directories must be empty.
+
+Formatting, Clippy with warnings denied, the debug build, all **293 Rust tests**
+(seven opt-in tests ignored), all **14 Python tests**, and all **34 PTY sessions**
+passed across the full existing terminal run and a focused rerun of the new tree
+session. The first tree session raced expansion and selected the source file;
+its attempted rename was correctly refused because that buffer was open. The
+harness now waits for child rows before selecting. Its focused rerun passed
+creation, folding, rename, deletion cancellation/confirmation, narrow resizing,
+Space p v, unchanged Ctrl-p behavior, exact source bytes and terminal restoration.
+Capture: `/tmp/editor-pro-issue5-terminal/file-tree.ansi`.
+
+Ten Rust regressions cover keyboard routing and cancellation, original source
+cursor/viewport and dirty text, nested Unicode/CRLF files, file/directory moves,
+collisions, permissions and missing parents, open-buffer/ancestor protection,
+closed-file navigation after rename, removed-file selection, symlinks replaced
+after listing, control-character rendering, tiny terminals and the 10,000-entry
+limit. A history regression exposed a trailing slash on exact file path updates;
+the corrected update now reopens moved closed files through ordinary history.
+
+Cargo used `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0` and
+`CARGO_INCREMENTAL=0`. Tests ran with normal localhost socket access for existing
+installer fixtures. macOS, real language servers and physical terminals were not
+retested. Open paths must be closed before rename/delete; cross-filesystem moves
+and recursive directory deletion are deliberately unsupported. Individual
+filesystem calls remain synchronous and can stall on slow filesystems.
+
+Release preparation bumps the package and lockfile to v0.2.5. The stable-tag
+check, all three release-tool tests, all three CLI/version tests, formatting,
+whitespace and an offline Cargo check passed before commit. Hosted release
+checks gate native macOS archives and the Homebrew update before publication.
