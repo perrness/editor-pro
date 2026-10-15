@@ -599,7 +599,14 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     let name_width = width.saturating_sub(
         mode.len() + identity.len() + modified.len() + external.len() + right_cells + 2,
     );
-    let name = editor.document.display_name();
+    let name = editor
+        .document
+        .path()
+        .and_then(|path| editor.git.relative_path(path))
+        .map_or_else(
+            || editor.document.display_name(),
+            |path| path.display().to_string(),
+        );
     let name_cells = display_column(&name, name.chars().count());
     let name = visible_text(&name, name_cells.saturating_sub(name_width), name_width);
     let spans = vec![

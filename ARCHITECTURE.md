@@ -299,6 +299,13 @@ race, and later polling refreshes them. Stale/loading/error labels remain visibl
 stale gutters and source jumps are disabled. Neither polling nor refresh reloads
 an open document or alters its history, cursor or viewport.
 
+The source statusline uses a repository-relative path from the latest accepted
+Git discovery for that exact document path. This display-only value survives
+comparison refreshes and edits; buffer switches and save-as cannot reuse another
+path's root. Before discovery or outside Git, it falls back to the document's
+absolute name. Rendering performs no repository discovery or filesystem access,
+and document identities and save targets remain absolute.
+
 ## Durable review without another editor
 
 `review.rs` owns review identities and records; the store reads versions 1 and 2. Repository identity includes

@@ -465,6 +465,144 @@ fn draw(editor: &mut Editor, width: u16, height: u16) -> String {
         .map(|c| c.symbol())
         .collect()
 }
+fn status_line(editor: &mut Editor, width: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
+    terminal
+        .draw(|f| ui::render(f, editor, &Theme::night()))
+        .unwrap();
+    let mut line = String::new();
+    let mut x = 0;
+    while x < width {
+        let symbol = terminal.backend().buffer()[(x, 2)].symbol();
+        line.push_str(symbol);
+        x += unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16;
+    }
+    line
+}
+#[test]
+fn status_path_is_repository_relative_and_stable_during_refresh() {
+    let r = Repo::new();
+    let relative = "Gjensidige.Alarm.Bff.Api/DTO/ReferenceDataDto.cs";
+    r.write(relative, "// original\r\n");
+    let mut e = Editor::new(Document::open(&r.path(relative)).unwrap());
+    let absolute = e.document.path().unwrap().to_path_buf();
+    assert!(status_line(&mut e, 400).contains(&absolute.display().to_string()));
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(&format!(" NORMAL  [B1] {relative} ")));
+
+    e.document.buffer.insert("// local\r\n");
+    e.document.buffer.commit();
+    e.refresh_git();
+    for pending in [true, false] {
+        if !pending {
+            settle_editor(&mut e);
+        }
+        let status = status_line(&mut e, 400);
+        assert!(
+            status.starts_with(&format!(" NORMAL  [B1] {relative} [+] ")),
+            "{status}"
+        );
+        assert!(status.contains("CRLF"));
+        assert_eq!(e.document.path(), Some(absolute.as_path()));
+    }
+    // A failed comparison still has a valid repository root.
+    e.execute_command("gitbase missing-revision").unwrap();
+    settle_editor(&mut e);
+    assert!(e.git.problem().is_some());
+    assert!(status_line(&mut e, 400).starts_with(&format!(" NORMAL  [B1] {relative} [+] ")));
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "// original\r\n");
+    assert_eq!(fs::read(&absolute).unwrap(), b"// original\r\n");
+    fs::rename(r.path(".git"), r.path(".saved-git")).unwrap();
+    e.refresh_git();
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).contains(&absolute.display().to_string()));
+}
+#[test]
+fn status_path_does_not_reuse_a_previous_buffers_repository() {
+    let r = Repo::new();
+    r.write("outer.txt", "outer\n");
+    r.write("nested/src/inner.txt", "inner\n");
+    command(&r.path("nested"), &["init", "-b", "main"]);
+    let mut e = Editor::new(Document::open(&r.path("outer.txt")).unwrap());
+    settle_editor(&mut e);
+    e.open_buffer(&r.path("nested/src/inner.txt")).unwrap();
+    let absolute = e.document.display_name();
+    assert!(status_line(&mut e, 400).contains(&absolute));
+    e.tick();
+    let status = status_line(&mut e, 400);
+    assert!(
+        status.contains(&absolute) || status.starts_with(" NORMAL  [B2] src/inner.txt "),
+        "{status}"
+    );
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(" NORMAL  [B2] src/inner.txt "));
+
+    let other = Repo::new();
+    other.write("other.txt", "other\n");
+    e.open_buffer(&other.path("other.txt")).unwrap();
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(" NORMAL  [B3] other.txt "));
+
+    let outside = tempdir().unwrap();
+    let path = outside.path().join("outside.txt");
+    fs::write(&path, "outside\n").unwrap();
+    e.open_buffer(&path).unwrap();
+    let absolute = e.document.display_name();
+    assert!(status_line(&mut e, 400).contains(&absolute));
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).contains(&absolute));
+    e.new_buffer();
+    assert!(status_line(&mut e, 400).contains("[No Name]"));
+    e.switch_buffer(1).unwrap();
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(" NORMAL  [B1] outer.txt "));
+}
+#[test]
+fn status_path_uses_linked_worktree_root_and_follows_save_as() {
+    let r = Repo::new();
+    r.write("src/original.txt", "original\r\n");
+    r.commit();
+    let parent = tempdir().unwrap();
+    let linked = parent.path().join("linked worktree");
+    r.git(&["worktree", "add", "-b", "linked", linked.to_str().unwrap()]);
+    let mut e = Editor::new(Document::open(&linked.join("src/original.txt")).unwrap());
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(" NORMAL  [B1] src/original.txt "));
+    let saved = linked.join("src/saved.txt");
+    e.execute_command(&format!("w {}", saved.display()))
+        .unwrap();
+    let absolute = e.document.display_name();
+    assert!(status_line(&mut e, 400).contains(&absolute));
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(" NORMAL  [B1] src/saved.txt "));
+    assert_eq!(fs::read(saved).unwrap(), b"original\r\n");
+    // Newly named files need not exist on disk to have a repository-relative path.
+    e.open_buffer(&linked.join("src/new.txt")).unwrap();
+    settle_editor(&mut e);
+    assert!(status_line(&mut e, 400).starts_with(" NORMAL  [B2] src/new.txt "));
+    assert!(!linked.join("src/new.txt").exists());
+}
+#[test]
+fn status_path_preserves_unicode_and_safe_clipping() {
+    let r = Repo::new();
+    let relative = "src/界 e\u{301} 👩‍💻\nfile.txt";
+    r.write(relative, "unchanged\r\n");
+    let mut e = Editor::new(Document::open(&r.path(relative)).unwrap());
+    settle_editor(&mut e);
+    let status = status_line(&mut e, 400);
+    assert!(
+        status.starts_with(" NORMAL  [B1] src/界 e\u{301} 👩‍💻�file.txt "),
+        "{status}"
+    );
+    for width in [1, 8, 20, 40, 69, 70, 80, 120] {
+        let status = status_line(&mut e, width);
+        assert!(!status.chars().any(char::is_control));
+        assert!(unicode_width::UnicodeWidthStr::width(status.as_str()) <= usize::from(width));
+    }
+    assert_eq!(e.document.buffer.text().to_string(), "unchanged\r\n");
+    assert_eq!(fs::read(r.path(relative)).unwrap(), b"unchanged\r\n");
+}
 #[test]
 fn source_gutters_use_selected_base_and_semantic_colors() {
     let r = Repo::new();

@@ -68,6 +68,9 @@ pub struct GitState {
     serial: u64,
     stamp: Option<Stamp>,
     refreshed: Instant,
+    // Last confirmed absolute/repository-relative path pair. Keep it across
+    // refreshes, but never reuse it for a different document.
+    status_path: Option<(PathBuf, PathBuf)>,
 }
 impl Default for GitState {
     fn default() -> Self {
@@ -82,10 +85,17 @@ impl Default for GitState {
             serial: 0,
             stamp: None,
             refreshed: Instant::now(),
+            status_path: None,
         }
     }
 }
 impl GitState {
+    pub(crate) fn relative_path(&self, path: &Path) -> Option<&Path> {
+        self.status_path
+            .as_ref()
+            .filter(|(absolute, _)| absolute == path)
+            .map(|(_, relative)| relative.as_path())
+    }
     pub fn invalidate(&mut self) {
         if let Some(worker) = &self.worker {
             worker.cancel();
@@ -310,6 +320,13 @@ impl Editor {
                 .is_some_and(|r| r.kind == crate::diff::Kind::Header);
             match reply.result {
                 Ok(Some(mut snapshot)) => {
+                    self.git.status_path = self.git.stamp.as_ref().and_then(|stamp| {
+                        stamp
+                            .path
+                            .strip_prefix(&snapshot.repository.root)
+                            .ok()
+                            .map(|relative| (stamp.path.clone(), relative.to_path_buf()))
+                    });
                     if let Some(previous) = &self.git.snapshot
                         && previous.repository == snapshot.repository
                         && previous.disk_revision.is_some()
@@ -335,6 +352,7 @@ impl Editor {
                     self.git.message.clear();
                 }
                 Ok(None) => {
+                    self.git.status_path = None;
                     self.git.snapshot = None;
                     self.git.message = "Git: outside repository".into();
                 }

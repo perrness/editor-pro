@@ -260,8 +260,22 @@ def main():
         source.write_text("".join(rows))
         second.write_text("second\n")
         gone.write_text("historical deletion\n")
+        status_source = repo / "src" / "界 status.txt"
+        status_source.parent.mkdir()
+        status_source.write_bytes(b"status fixture\r\n")
         git("add", "--all")
         git("commit", "-m", "base")
+        # Ratatui can emit a cursor move after a wide glyph. Check the relative
+        # prefix and filename separately instead of requiring contiguous bytes.
+        relative_status = " src/界".encode()
+        output = run_session(binary, status_source, [
+            b":gitrefresh\r", resize(24, 200), (b"main", 10),
+            resize(24, 201), (relative_status, 10), (b" status.txt", 10), b"iLOCAL ", b"\x1b",
+            resize(7, 45), resize(3, 1), resize(24, 200), (relative_status, 10),
+            (b" status.txt", 10), b"u", b":q\r",
+        ], b"status fixture\r\n", cwd=status_source.parent)
+        if capture_dir:
+            (Path(capture_dir) / "repository-relative-status.ansi").write_bytes(output)
         rows[2] = "STAGED change\n"
         source.write_text("".join(rows))
         git("add", "source.rs")
@@ -563,7 +577,7 @@ def main():
         ], original, ai_environment)
         if capture_dir:
             (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
-    print("PASS: 31 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 32 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

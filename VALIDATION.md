@@ -1299,3 +1299,30 @@ The full Rust suite needed localhost socket access for the existing installer
 fixtures after the sandbox denied their listeners. Navigation tests use the
 protocol double; real language servers, macOS and physical terminals were not
 retested for this change.
+
+## Repository-relative status paths
+
+2026-10-15, Linux x86_64. [Issue #3](https://github.com/perrness/editor-pro/issues/3)
+changes the source statusline to show paths relative to the Git worktree root
+after asynchronous discovery. The cached name is tied to the inspected document
+path and survives edits/refreshes. Before discovery or outside Git, the full path
+remains available; unnamed buffers retain their label.
+
+Formatting, Clippy with warnings denied, the debug build, all **280 Rust tests**
+(seven opt-in tests ignored), all **14 Python tests**, and all **32 PTY sessions**
+passed. Four new regressions cover the issue's example, nested repositories,
+linked worktrees, buffer switches, save-as, nonexistent files, comparison errors,
+repository removal, Unicode/control characters, narrow terminals and unchanged
+file identity/CRLF bytes. The focused tests also passed after making the
+buffer-switch assertion independent of worker completion timing.
+
+The new PTY session launches from a repository subdirectory and checks the relative
+path through editing, undo and resizing down to one column. Its capture is
+`/tmp/editor-pro-issue-3-terminal/repository-relative-status.ansi`. The initial
+assertion assumed contiguous bytes after a wide character; Ratatui emits a cursor
+movement there, so the final assertion checks the prefix and filename separately.
+
+Cargo used `CARGO_HOME=/tmp/editor-pro-m3-cargo` and `CARGO_NET_OFFLINE=true`.
+The full Rust suite passed with localhost socket access after the sandbox denied
+the existing installer fixtures' listeners. macOS and physical terminals were
+not tested.

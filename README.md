@@ -650,6 +650,9 @@ The statusline includes buffer ID, filename, dirty/disk flags, mode, language,
 UTF-8/line-ending information, grapheme column and position percentage. Wider
 terminals also show buffer/dirty counts and pending operators; narrow ones use a
 compact layout. `[plain]` identifies a syntax fallback.
+File paths are relative to the Git worktree root once repository discovery
+completes. Outside a repository, or while repository information is unavailable,
+the statusline uses the full path; unnamed buffers show `[No Name]`.
 
 Paths can contain spaces: enter them directly, without shell quoting. Tilde,
 environment variables, wildcards and shell commands are not expanded. There is
