@@ -18,7 +18,6 @@ import time
 
 def run_session(binary, path, commands, expected, environment=None, arguments=None, cwd=None):
     master, slave = pty.openpty()
-    original = termios.tcgetattr(slave)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     pid = os.fork()
     if pid == 0:
@@ -42,11 +41,13 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         argv = [str(path)] if arguments is None else [str(arg) for arg in arguments]
         # Keep the session leader alive while checking restoration. macOS
         # revokes the slave terminal when its controlling session leader exits.
+        original = termios.tcgetattr(0)
         editor_pid = os.fork()
         if editor_pid:
             _, status = os.waitpid(editor_pid, 0)
-            if termios.tcgetattr(0) != original:
-                os.write(2, b"Terminal settings were not restored\n")
+            restored = termios.tcgetattr(0)
+            if restored != original:
+                os.write(2, f"Terminal settings were not restored: expected {original!r}, got {restored!r}\n".encode())
                 os._exit(1)
             code = os.waitstatus_to_exitcode(status)
             os._exit(code if code >= 0 else 128 - code)

@@ -22,6 +22,7 @@ jobs:
       - name: Use a canonical temporary directory
         # Keep fixture paths canonical; macOS /var aliases /private/var.
         run: echo "TMPDIR=$(cd "$RUNNER_TEMP" && pwd -P)" >> "$GITHUB_ENV"
+      - run: python3 -m unittest discover -s tools -p 'test_*.py' -v
       - name: Install Rust tooling
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
@@ -37,5 +38,4 @@ jobs:
       - run: cargo test --locked --all-targets
       - run: cargo build --locked
       - run: python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
-      - run: python3 -m unittest discover -s tools -p 'test_*.py' -v
       - run: python3 tools/terminal_smoke.py
