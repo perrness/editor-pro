@@ -122,6 +122,7 @@ fn run() -> io::Result<()> {
     }
     let mut editor = Editor::new(document);
     editor.theme = settings.theme;
+    editor.settings = settings.editor;
     editor.lsp.config.installation.directory = config::lsp_directory();
     editor.lsp.config.installation.auto_install = settings.lsp.auto_install;
     for path in additional {

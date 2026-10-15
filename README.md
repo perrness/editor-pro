@@ -76,15 +76,24 @@ for the tap bootstrap, automated formula updates and manual binary installation.
 `ep --config-path` prints the optional settings file location. On macOS it is
 `~/Library/Application Support/editor-pro/config.json`; on Linux it is
 `$XDG_CONFIG_HOME/editor-pro/config.json`, falling back to
-`~/.config/editor-pro/config.json`. Create it to choose a startup theme:
+`~/.config/editor-pro/config.json`. Create it to choose a startup theme and relative line numbers:
 
 ```json
-{ "theme": "gruvbox", "lsp": { "auto_install": true } }
+{
+  "theme": "gruvbox",
+  "editor": { "relative_line_numbers": true },
+  "lsp": { "auto_install": true }
+}
 ```
 
 Themes are `tokyo-night` (default), `catppuccin`, and `gruvbox`. Missing settings
 use defaults; invalid settings report an error before terminal setup. `:theme`
-affects the current session. Installation and upgrades never write this file,
+affects the current session. Line numbers are absolute by default. With
+`editor.relative_line_numbers` enabled, the cursor line keeps its absolute number
+and other source lines show their distance from it, updating as you move or scroll.
+The setting applies to source editing; diff panes retain their old/new coordinates.
+Use JSON booleans (`true`/`false`), and correct the reported file and line/column
+if settings fail to load. Installation and upgrades never write this file,
 and settings are kept outside application binaries and project checkouts.
 Missing language servers are installed automatically by default. Set
 `"lsp": { "auto_install": false }` for manual/offline operation; existing servers

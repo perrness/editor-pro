@@ -17,6 +17,13 @@ const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 pub struct Config {
     pub theme: ThemeName,
     pub lsp: LspSettings,
+    pub editor: EditorSettings,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EditorSettings {
+    pub relative_line_numbers: bool,
 }
 
 #[derive(Debug, Deserialize)]

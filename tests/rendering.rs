@@ -173,3 +173,44 @@ fn file_picker_prompt_renders_safely_in_tiny_terminals() {
         }
     }
 }
+
+#[test]
+fn relative_numbers_follow_cursor_scroll_and_resize_in_large_files() {
+    let mut document = Document::default();
+    document.buffer = Buffer::new(&"界e\u{301}\r\n".repeat(100_000));
+    let original = document.buffer.text().clone();
+    let mut editor = Editor::new(document);
+    let mut terminal = Terminal::new(TestBackend::new(32, 8)).unwrap();
+    for relative in [false, true] {
+        editor.settings.relative_line_numbers = relative;
+        for target in [0, 3, 99_999, 50_000, 1] {
+            editor.document.buffer.goto_line(target, false);
+            terminal
+                .draw(|frame| ui::render(frame, &mut editor, &Theme::night()))
+                .unwrap();
+            let cells = terminal.backend().buffer();
+            for row in 0..6_u16 {
+                let line = editor.viewport.top + usize::from(row);
+                let expected = if relative && line != target {
+                    line.abs_diff(target)
+                } else {
+                    line + 1
+                };
+                let actual: String = (0..8).map(|x| cells[(x, row)].symbol()).collect();
+                assert_eq!(actual.trim(), expected.to_string());
+            }
+        }
+    }
+    editor.settings.relative_line_numbers = true;
+    for (width, height) in [(1, 1), (1, 3), (2, 3), (8, 4), (32, 8)] {
+        terminal.backend_mut().resize(width, height);
+        terminal
+            .draw(|frame| ui::render(frame, &mut editor, &Theme::night()))
+            .unwrap();
+        if height > 2 {
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(cursor.x < width && cursor.y < height);
+        }
+    }
+    assert_eq!(editor.document.buffer.text(), &original);
+}

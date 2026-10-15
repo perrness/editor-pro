@@ -100,7 +100,10 @@ existing buffer-opening path. There is no new project/session model.
 or Linux `$XDG_CONFIG_HOME/editor-pro/config.json` (absolute paths only, otherwise
 `~/.config`). The optional file is read before terminal initialization, bounded
 to 64 KiB and never rewritten. Unknown fields/themes and invalid JSON are errors;
-a missing file uses defaults. Only `main.rs` applies user settings, so library
+a missing file uses defaults. `editor.relative_line_numbers` defaults to false; the source renderer derives
+relative distances from the current cursor while retaining its absolute line
+and the existing file-sized gutter. Diff coordinates remain absolute.
+Only `main.rs` applies user settings, so library
 editors and core tests do not read environment-dependent settings. Runtime theme
 changes stay session-local. No configuration lives in a binary installation or
 is discovered in a project directory.

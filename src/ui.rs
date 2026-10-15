@@ -121,7 +121,11 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         if gutter > 0 {
             let number = format!(
                 "{:>width$} ",
-                line_index + 1,
+                if editor.settings.relative_line_numbers && line_index != cursor_line {
+                    line_index.abs_diff(cursor_line)
+                } else {
+                    line_index + 1
+                },
                 width = usize::from(gutter - 1)
             );
             let color = if line_index == cursor_line {

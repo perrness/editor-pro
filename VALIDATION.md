@@ -1390,3 +1390,22 @@ Release preparation bumps the package and lockfile to v0.2.5. The stable-tag
 check, all three release-tool tests, all three CLI/version tests, formatting,
 whitespace and an offline Cargo check passed before commit. Hosted release
 checks gate native macOS archives and the Homebrew update before publication.
+
+## Configured relative line numbers
+
+2026-10-15, Linux x86_64. [Issue #6](https://github.com/perrness/editor-pro/issues/6)
+extends the existing optional JSON configuration with
+`editor.relative_line_numbers` (false by default). The source cursor line remains
+absolute and surrounding rows show their distance from it. The existing gutter
+width, Git/diagnostic markers, theme and LSP settings are retained; diff panes
+continue to show source coordinates.
+
+All **296 Rust tests** passed (seven opt-in tests ignored), including three new
+regressions for settings compatibility/defaults, actionable boolean parsing
+errors and rendering through movement, scrolling, 100,000-line Unicode/CRLF
+buffers and tiny terminal resizing. A focused PTY run loaded Gruvbox and relative
+numbers from the native configuration path, exercised movement and scrolling,
+and verified exact CRLF source bytes and terminal restoration. Capture:
+`/tmp/editor-pro-issue6-terminal.ansi`. macOS and physical terminals were not tested.
+
+Formatting, Clippy with warnings denied and `git diff --check` also passed.
