@@ -18,7 +18,7 @@ impl Server {
         let requests = Arc::new(AtomicUsize::new(0));
         let count = requests.clone();
         let thread = thread::spawn(move || {
-            while !stopped.load(Ordering::Relaxed) {
+            'connections: while !stopped.load(Ordering::Relaxed) {
                 let (mut socket, _) = match listener.accept() {
                     Ok(value) => value,
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -33,8 +33,18 @@ impl Server {
                 socket
                     .set_write_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
-                let mut request = [0; 4096];
-                let _ = socket.read(&mut request);
+                let mut bytes = [0; 4096];
+                let mut request = Vec::new();
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let n = match socket.read(&mut bytes) {
+                        Ok(0) | Err(_) => continue 'connections,
+                        Ok(n) => n,
+                    };
+                    request.extend_from_slice(&bytes[..n]);
+                    if request.len() > 16 * 1024 {
+                        continue 'connections;
+                    }
+                }
                 count.fetch_add(1, Ordering::Relaxed);
                 let _ = write!(
                     socket,
@@ -48,6 +58,15 @@ impl Server {
                     thread::sleep(delay);
                     if socket.write_all(chunk).is_err() {
                         break;
+                    }
+                }
+                // Let the client consume the response before closing. macOS can
+                // reject socket timeout changes after a peer closes immediately.
+                // Content-Length lets the client finish without waiting for EOF.
+                while !stopped.load(Ordering::Relaxed) {
+                    match socket.read(&mut bytes) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
                     }
                 }
             }
@@ -65,6 +84,44 @@ impl Drop for Server {
         self.stop.store(true, Ordering::Relaxed);
         let _ = self.thread.take().unwrap().join();
     }
+}
+
+#[test]
+fn http_fixture_waits_for_complete_request_headers() {
+    let body = b"fixture";
+    let server = Server::new(body.to_vec(), Duration::ZERO);
+    let address = server
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    let mut socket = std::net::TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(25)))
+        .unwrap();
+    socket
+        .write_all(b"GET /server HTTP/1.1\r\nHost: localhost\r\n")
+        .unwrap();
+    let error = socket.read(&mut [0; 1]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ));
+    assert_eq!(server.requests.load(Ordering::Relaxed), 0);
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket.write_all(b"\r\n").unwrap();
+    let expected = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\nfixture",
+        body.len()
+    );
+    let mut response = vec![0; expected.len()];
+    socket.read_exact(&mut response).unwrap();
+    assert_eq!(response, expected.as_bytes());
+    assert_eq!(server.requests.load(Ordering::Relaxed), 1);
 }
 
 fn tarball(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {

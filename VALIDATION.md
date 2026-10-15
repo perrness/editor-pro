@@ -1162,3 +1162,27 @@ Cancellation checks happen between chunks/files, with up to ten seconds for an
 idle network read. Filesystem stalls and OS process scheduling are not hard-time
 bounded. No Windows/musl installation, editor self-update, arbitrary package
 registry, SDK installation or server update/removal commands were added.
+
+### Release checks and fixture corrections
+
+The v0.2.0 candidate passed the main-branch CI suite on Linux, macOS ARM64 and
+macOS Intel, and both native macOS release archives passed Homebrew installation
+and all 28 installed-command PTY sessions. Its separate release CI run exposed
+two intermittent Intel fixture failures and did not publish a release:
+
+- The local HTTP server closed immediately after writing its response, racing
+  the client's socket setup/read and producing `Invalid argument (os error 22)`.
+  It now consumes complete request headers and waits for the client to finish
+  before closing, bounded by its existing socket timeout. A new test sends
+  fragmented headers and verifies no response arrives before they are complete.
+- The LSP error-scenario test applied a 150 ms initialization budget to all
+  scenarios, including ones requiring a successful Python server startup.
+  Only the intentional initialization-timeout scenario now uses that short budget;
+  the others retain the fixture's normal two-second budget.
+
+The v0.2.1 follow-up changes these test fixtures and the package version. Local
+validation passed `cargo fmt --check`, Clippy with warnings denied, the debug
+build, all **257 Rust tests** (seven opt-in tests ignored), the release version
+check and `git diff --check`. The failed v0.2.0 tag is preserved; v0.2.1 runs the
+release pipeline again. Native real-server installation on macOS remains outside
+this CI suite; the Linux real-server evidence above remains separate.

@@ -1170,7 +1170,9 @@ fn unsupported_missing_malformed_encoding_and_timeout_fail_without_losing_text()
         "timeout",
     ] {
         let mut f = Fixture::new(scenario);
-        f.editor.lsp.config.initialize_timeout = Duration::from_millis(150);
+        if scenario == "initialize-timeout" {
+            f.editor.lsp.config.initialize_timeout = Duration::from_millis(150);
+        }
         if ["unsupported", "timeout"].contains(&scenario) {
             f.ready();
             let result = f.editor.execute_command("Hover");

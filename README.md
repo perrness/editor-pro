@@ -16,7 +16,7 @@ live disk revision detection and conservative note reattachment.
 **M8 AI comprehension** adds optional Codex CLI context previews, conversations,
 cited navigation, persistent history and explicitly approved, undoable revisions.
 
-**Validation:** 256 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
+**Validation:** 257 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
 14 Python tests, formatting, Clippy and the debug build pass on Linux.
 The terminal harness covers 28 sessions, including installed `ep` directory/file
 startup, configuration, AI revisions/undo/resume, snapshots/live revisions,
@@ -26,8 +26,9 @@ An opt-in fixture also passed against actual Codex CLI 0.162.1 and its provider.
 M6 passed three extended real-server fixtures; M5's six-fixture acceptance and
 independent Kotlin feasibility probe remain recorded separately. See
 [VALIDATION.md](VALIDATION.md) for build results, earlier performance measurements
-and exact scope. macOS, hosted CI, a minimum-Rust build, physical-terminal comfort
-and larger or mixed-language projects remain separate validation limits.
+and exact scope. Native real-server installation on macOS, a minimum-Rust build,
+physical-terminal comfort and larger or mixed-language projects remain separate
+validation limits.
 
 ## Build and run
 
