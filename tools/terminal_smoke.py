@@ -142,6 +142,12 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
 
 
 def main():
+    def resize(rows, columns):
+        def apply_resize(master, slave, pid):
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+            os.killpg(pid, signal.SIGWINCH)
+        return apply_resize
+
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/editor-pro").absolute()
     if not binary.is_file():
         print(f"BLOCKED: build the editor first; binary missing: {binary}", file=sys.stderr)
@@ -154,7 +160,8 @@ def main():
         ep = Path(directory) / "ep"
         ep.symlink_to(binary)
         output = run_session(ep, project_file, [
-            b"startup", (b"startup.txt", 10), b"\r", b"i// ", b"\x1b", b":wq\r",
+            # An unchanged picker result may not be redrawn after filtering.
+            b"startup", resize(24, 81), (b"startup.txt", 10), b"\r", b"i// ", b"\x1b", b":wq\r",
         ], "// before 界\r\n".encode(), arguments=["."], cwd=project)
         assert b"Files" in output
         # A directory argument also sets the root for relative :e and :w paths.
@@ -209,12 +216,6 @@ def main():
                                             b":theme tokyo-night\r", b":q\r"], b"Aalpha\r\n")
         for background in [b"48;2;30;30;46", b"48;2;40;40;40", b"48;2;26;27;38"]:
             assert background in output, f"Theme background was not rendered: {background!r}"
-        def resize(rows, columns):
-            def apply_resize(master, slave, pid):
-                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
-                os.killpg(pid, signal.SIGWINCH)
-            return apply_resize
-
         wide = (("\t界👩‍💻e\u0301\r\n" * 50) + "\t界" * 200).encode()
         path.write_bytes(wide)
         run_session(binary, path, [b"G$", resize(7, 19), b"gg", resize(3, 1),
@@ -268,8 +269,12 @@ def main():
             b"iRETURN", b"\x1b", b":wq\r"], "".join(expected_rows).encode())
         assert b"OLD " in output and b"NEW " in output
         assert (repo / ".git" / "index").read_bytes() == index_before
-        output = run_session(binary, source, [b":changes\r", (b"gone.rs", 10), b"\r",
-            (b"historical deletion", 10), b"\r", b"\x1b", b":changes\r", (b"second.rs", 10), b"j", b"\r",
+        output = run_session(binary, source, [b":changes\r", (b"gone.rs", 10),
+            # Review loading can briefly invalidate the list after it renders.
+            # Retry navigation until the destination appears instead of losing
+            # a single Enter during that refresh window.
+            (b"\r", b"historical deletion", 10), b"\r", b"\x1b", b":changes\r", (b"second.rs", 10), b"j",
+            (b"\r", b"changed second", 10),
             b"iSECOND ", b"\x1b", b":w\r", b":gnext\r", b":gprev\r", b":q\r"],
             "".join(expected_rows).encode())
         assert second.read_bytes() == b"SECOND changed second\n", (second.read_bytes(), output[-12000:])
