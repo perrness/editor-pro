@@ -41,10 +41,14 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         argv = [str(path)] if arguments is None else [str(arg) for arg in arguments]
         # Keep the session leader alive while checking restoration. macOS
         # revokes the slave terminal when its controlling session leader exits.
+        termios.tcflush(0, termios.TCIFLUSH)
         original = termios.tcgetattr(0)
         editor_pid = os.fork()
         if editor_pid:
             _, status = os.waitpid(editor_pid, 0)
+            # Canonical mode sets macOS PENDIN, a transient input-queue flag.
+            # Clear pending input without changing the terminal configuration.
+            termios.tcflush(0, termios.TCIFLUSH)
             restored = termios.tcgetattr(0)
             if restored != original:
                 os.write(2, f"Terminal settings were not restored: expected {original!r}, got {restored!r}\n".encode())
