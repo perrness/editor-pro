@@ -1267,3 +1267,35 @@ installer fixtures after the sandbox denied their binds. Cargo used the same
 offline cache as the completion validation above. Terminal capture:
 `/tmp/editor-pro-completion-overlay-terminal/automatic-completion.ansi`.
 macOS and physical terminals were not tested.
+
+## Code navigation shortcuts
+
+2026-10-15, Linux x86_64. [Issue #2](https://github.com/perrness/editor-pro/issues/2)
+adds Normal-mode `gd` for definitions and `gr` for references. A single local
+result jumps directly; multiple results use the existing chooser. Jumps retain
+ordinary buffers and navigation history, including `Ctrl-o`/`Ctrl-i` return and
+forward navigation. Explicit `:Definition` and `:References` keep their lists.
+
+Formatting, Clippy with warnings denied, the debug build, all **276 Rust tests**
+(seven opt-in tests ignored) and all **14 Python tests** passed. Five new
+regressions cover shortcut input routing, count reset, single and multiple
+locations, `Location`/`LocationLink` responses, UTF-16/Unicode and CRLF, dirty
+target reuse, source/viewports/history, empty results, unsupported capabilities
+and virtual URIs, missing targets, and late replies after cancellation, movement,
+edits, buffer switches or mode changes. The final focused navigation tests also
+passed after strengthening history, command isolation and buffer-switch checks.
+
+All **31 PTY sessions** passed, including two new sessions for single jumps and
+multiple-result selection/cancellation with both shortcuts, narrow resizing,
+back/forward navigation, unchanged source bytes and terminal restoration. Captures:
+`/tmp/editor-pro-issue-2-terminal/navigation-normal.ansi` and
+`/tmp/editor-pro-issue-2-terminal/navigation-navigation-multiple.ansi`.
+Initial smoke checks exposed raw-output assertions missing split ANSI updates
+or an unchanged frame after a same-size resize. Alternating terminal dimensions
+before those assertions fixed the harness, and the full run then passed.
+
+Cargo used `CARGO_HOME=/tmp/editor-pro-m3-cargo` and `CARGO_NET_OFFLINE=true`.
+The full Rust suite needed localhost socket access for the existing installer
+fixtures after the sandbox denied their listeners. Navigation tests use the
+protocol double; real language servers, macOS and physical terminals were not
+retested for this change.

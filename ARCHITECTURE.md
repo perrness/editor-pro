@@ -571,6 +571,12 @@ refused. Advertised completion commands are shown in the initial edit preview
 and run only after approval. Their subsequent server edits require another
 guarded preview, reusing the code-action continuation path. Hover/signatures, definitions/references,
 document symbols and diagnostic navigation operate on the ordinary documents.
+Normal-mode `gd`/`gr` reuse the definition/reference requests, marking their
+request context to jump directly when exactly one local location is returned.
+Multiple results use the contextual chooser; explicit `:Definition` and
+`:References` retain their lists. Both paths use the same guarded location jump
+and session navigation history. The request marker is subject to the existing
+serial, session, cursor and document guards, so obsolete replies cannot navigate.
 M6 reuses that list for the nested symbol outline, workspace symbols and call
 hierarchy. Workspace symbols use the active project/language session and negotiate
 lazy `location.range` resolution. Call items preserve the server's opaque data

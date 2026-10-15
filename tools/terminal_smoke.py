@@ -448,6 +448,36 @@ def main():
         assert (lsp_root / "Other.kt").read_bytes() == b"bad other\n"
         if capture_dir:
             (Path(capture_dir) / "m6-symbols-calls.ansi").write_bytes(output)
+        # Normal-mode navigation shortcuts: immediate single jumps and a chooser.
+        for scenario in ("normal", "navigation-multiple"):
+            log = lsp_root / f"navigation-{scenario}.jsonl"
+            environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+                sys.executable, str(fake.resolve()), "--log", str(log),
+                "--scenario", scenario,
+            ])}
+            commands = [(server_ready, 10), b"w"]
+            for shortcut, title in ((b"gd", b"definition"), (b"gr", b"references")):
+                commands.append(shortcut)
+                if scenario == "navigation-multiple":
+                    commands.extend([
+                        resize(24, 101), (title, 10), b"\x1b", shortcut,
+                        resize(24, 100), (title, 10), resize(3, 1), resize(24, 100),
+                        b"j\r",
+                    ])
+                commands.extend([
+                    resize(24, 101), (b"Language-server location", 10),
+                    b"\x0f", resize(24, 100), (b"Earlier location", 10),
+                ])
+            commands.extend([b"\t", resize(24, 101), (b"Later location", 10), b":q\r"])
+            output = run_session(binary, language_source, commands, b"bad value\n", environment)
+            assert (lsp_root / "Other.kt").read_bytes() == b"bad other\n"
+            messages = [json.loads(line) for line in log.read_text().splitlines()]
+            for method in ("textDocument/definition", "textDocument/references"):
+                requests = [m for m in messages if m.get("method") == method]
+                assert len(requests) == (2 if scenario == "navigation-multiple" else 1)
+                assert all(m["params"]["position"] == {"line": 0, "character": 4} for m in requests)
+            if capture_dir:
+                (Path(capture_dir) / f"navigation-{scenario}.ansi").write_bytes(output)
         # M7: immutable checkpoints, live external revisions, and retained source.
         repo = Path(directory) / "snapshot project"
         repo.mkdir()
@@ -533,7 +563,7 @@ def main():
         ], original, ai_environment)
         if capture_dir:
             (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
-    print("PASS: 29 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 31 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

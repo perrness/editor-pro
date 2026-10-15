@@ -64,6 +64,7 @@ struct Context {
     epoch: u64,
     apply_resolved: bool,
     inline_completion: bool,
+    jump_to_single_location: bool,
     call_item: Option<Value>,
 }
 pub struct Panel {
@@ -545,6 +546,14 @@ impl Editor {
         Ok(())
     }
 
+    pub(crate) fn lsp_navigation_shortcut(&mut self, name: &str) -> io::Result<()> {
+        self.lsp_command(name, "")?;
+        if let Some(context) = &mut self.lsp.context {
+            context.jump_to_single_location = true;
+        }
+        Ok(())
+    }
+
     pub fn lsp_command(&mut self, name: &str, argument: &str) -> io::Result<()> {
         if self.note_edit.is_some() {
             return Err(error("Language commands are unavailable in a review note"));
@@ -820,6 +829,7 @@ impl Editor {
             epoch: info.epoch,
             apply_resolved: false,
             inline_completion: false,
+            jump_to_single_location: false,
             call_item: None,
         })
     }
@@ -920,6 +930,17 @@ impl Editor {
                             action: Item::Text,
                         }),
                     }
+                }
+                if context.jump_to_single_location
+                    && panel.rows.len() == 1
+                    && let Item::Jump {
+                        path,
+                        position,
+                        stamp,
+                        ..
+                    } = &panel.rows[0].action
+                {
+                    return self.jump_lsp_location(path, *position, stamp.as_ref());
                 }
             }
             "textDocument/documentSymbol" => {

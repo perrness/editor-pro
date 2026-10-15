@@ -271,8 +271,27 @@ while True:
         send({"id": ident, "result": {"activeSignature": 0, "activeParameter": 1,
               "signatures": [{"label": "greet(name, count)", "documentation": "Signature documentation"}]}})
     elif method in ("textDocument/definition", "textDocument/references"):
-        send({"id": ident, "result": [{"targetUri": root + "/Other.kt", "targetSelectionRange": span(0, 1),
-                                      "targetRange": span()}]})
+        uri = root + "/Other.kt"
+        start = 5 if args.scenario == "navigation-unicode" else 0
+        if args.scenario == "navigation-virtual":
+            uri = "jdt://decompiled/Library"
+        elif args.scenario == "navigation-missing":
+            uri = root + "/Missing.kt"
+        location = {"uri": uri, "range": span(start, start + 1)}
+        result = [location]
+        if method == "textDocument/definition":
+            result = (location if args.scenario == "navigation-location" else
+                      [{"targetUri": uri, "targetSelectionRange": span(start, start + 1),
+                        "targetRange": span(0, start + 1)}])
+        if args.scenario == "navigation-multiple":
+            result = [{"uri": root + "/Main.kt", "range": span(4, 5)},
+                      {"uri": uri, "range": span(4, 5)}]
+        elif args.scenario == "navigation-empty":
+            result = None if method == "textDocument/definition" else []
+        if args.scenario == "navigation-slow":
+            later({"id": ident, "result": result})
+        else:
+            send({"id": ident, "result": result})
     elif method == "textDocument/documentSymbol":
         send({"id": ident, "result": [{"name": "outer", "kind": 5, "range": span(), "selectionRange": span(0, 1),
               "children": [{"name": "inner", "kind": 6, "range": span(), "selectionRange": span(1, 2)}]}]})

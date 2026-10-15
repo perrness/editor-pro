@@ -107,6 +107,29 @@ fn cancelled_g_prefix_does_not_leak_into_later_keys() {
 }
 
 #[test]
+fn navigation_shortcuts_do_not_intercept_insert_visual_or_operator_input() {
+    for prefix in ["v", "V", "d", "c", "y", "2d3"] {
+        for shortcut in ["gd", "gr"] {
+            let mut editor = editor("first\r\nsecond\r\n");
+            keys(&mut editor, prefix);
+            let mode = editor.mode;
+            let anchor = editor.selection_anchor;
+            let message = editor.message.clone();
+            keys(&mut editor, shortcut);
+            assert_eq!(editor.mode, mode);
+            assert_eq!(editor.selection_anchor, anchor);
+            assert_eq!(editor.message, message);
+            assert_eq!(content(&editor), "first\r\nsecond\r\n");
+            assert!(editor.pending_label().is_empty());
+        }
+    }
+    let mut editor = editor("");
+    keys(&mut editor, "igdgr");
+    assert_eq!(content(&editor), "gdgr");
+    assert_eq!(editor.mode, Mode::Insert);
+}
+
+#[test]
 fn crlf_line_join_and_newline_are_atomic_and_preserved() {
     let mut editor = editor("ab\r\ncd\r\n");
     keys(&mut editor, "ji");

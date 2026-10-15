@@ -522,6 +522,8 @@ fn hover_signature_symbols_definitions_references_and_logs_use_contextual_views(
     }
     for command in ["Definition", "References"] {
         f.command(command);
+        assert_eq!(f.editor.view, View::Lsp, "{command}");
+        assert_eq!(f.editor.active_buffer_id, 1);
         f.editor.handle_key(Key::Enter);
         assert_eq!(
             f.editor.document.path().unwrap().file_name().unwrap(),
@@ -529,6 +531,231 @@ fn hover_signature_symbols_definitions_references_and_logs_use_contextual_views(
         );
         assert_eq!(f.editor.document.buffer.cursor(), 0);
         f.editor.execute_command("b 1").unwrap();
+    }
+}
+
+fn navigation_shortcut(editor: &mut Editor, key: char) {
+    editor.handle_key(Key::Char('g'));
+    editor.handle_key(Key::Char(key));
+}
+
+#[test]
+fn navigation_shortcuts_jump_to_single_locations_and_preserve_history_and_dirty_buffers() {
+    for scenario in ["normal", "navigation-location", "navigation-unicode"] {
+        let mut f = Fixture::new(scenario);
+        let source = f.directory.path().join("Main.kt");
+        let target = f.directory.path().join("Other.kt");
+        let target_text = "😀 e\u{301}界 target\r\n";
+        fs::write(&target, target_text).unwrap();
+        f.editor.open_buffer(&target).unwrap();
+        f.editor.document.buffer.goto_line(1, true);
+        f.editor.document.buffer.insert("unsaved");
+        f.editor.document.buffer.commit();
+        f.editor.switch_buffer(1).unwrap();
+        f.editor.document.buffer.set_cursor(15, false);
+        f.editor.viewport.left = 2;
+        let viewport = f.editor.viewport.clone();
+        f.ready();
+        for key in ['d', 'r'] {
+            // Counts must not leak into the next motion or history command.
+            f.editor.handle_key(Key::Char('3'));
+            navigation_shortcut(&mut f.editor, key);
+            assert!(f.editor.pending_label().is_empty());
+            assert!(f.editor.lsp.pending);
+            until(&mut f.editor, |e| !e.lsp.pending);
+            assert!(!f.editor.message_is_error, "{}", f.editor.message);
+            assert_eq!(f.editor.view, View::Editing);
+            assert_eq!(f.editor.mode, Mode::Normal);
+            assert!(f.editor.lsp.panel.is_none());
+            assert_eq!(f.editor.document.path(), Some(target.as_path()));
+            assert_eq!(
+                f.editor.document.buffer.cursor(),
+                if scenario == "navigation-unicode" {
+                    4
+                } else {
+                    0
+                }
+            );
+            assert!(
+                f.editor
+                    .document
+                    .buffer
+                    .text()
+                    .to_string()
+                    .ends_with("unsaved")
+            );
+            assert_eq!(f.editor.buffer_count(), 2);
+            f.editor.handle_key(Key::Ctrl('o'));
+            assert_eq!(f.editor.document.path(), Some(source.as_path()));
+            assert_eq!(f.editor.document.buffer.cursor(), 15);
+            assert_eq!(f.editor.viewport, viewport);
+            f.editor.handle_key(Key::Ctrl('i'));
+            assert_eq!(f.editor.document.path(), Some(target.as_path()));
+            f.editor.handle_key(Key::Ctrl('o'));
+        }
+        for command in ["Definition", "References"] {
+            f.command(command);
+            assert_eq!(f.editor.view, View::Lsp);
+            assert_eq!(f.editor.active_buffer_id, 1);
+            escape(&mut f.editor);
+        }
+        for method in ["textDocument/definition", "textDocument/references"] {
+            let request = f.log().into_iter().find(|v| v["method"] == method).unwrap();
+            assert_eq!(
+                request["params"]["textDocument"]["uri"],
+                json!(lsp::file_uri(&source).unwrap())
+            );
+            assert_eq!(
+                request["params"]["position"],
+                json!({"line": 1, "character": 5})
+            );
+        }
+        assert_eq!(fs::read_to_string(target).unwrap(), target_text);
+    }
+}
+
+#[test]
+fn navigation_shortcuts_offer_multiple_locations_and_allow_cancel_or_selection() {
+    let mut f = Fixture::new("navigation-multiple");
+    f.ready();
+    f.editor.document.buffer.set_cursor(7, false);
+    let original = f.editor.document.buffer.text().to_string();
+    let viewport = f.editor.viewport.clone();
+    for (key, title) in [('d', "definition"), ('r', "references")] {
+        for select in [false, true] {
+            navigation_shortcut(&mut f.editor, key);
+            until(&mut f.editor, |e| !e.lsp.pending);
+            assert!(!f.editor.message_is_error, "{}", f.editor.message);
+            assert_eq!(f.editor.view, View::Lsp);
+            let panel = f.editor.lsp.panel.as_ref().unwrap();
+            assert_eq!(panel.title, title);
+            assert_eq!(panel.rows.len(), 2);
+            assert!(panel.rows[0].label.contains("Main.kt"));
+            assert!(panel.rows[1].label.contains("Other.kt"));
+            for (w, h) in [(80, 24), (19, 7), (1, 1)] {
+                Terminal::new(TestBackend::new(w, h))
+                    .unwrap()
+                    .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+                    .unwrap();
+            }
+            assert_eq!(f.editor.active_buffer_id, 1);
+            assert_eq!(f.editor.document.buffer.cursor(), 7);
+            assert_eq!(f.editor.viewport, viewport);
+            f.editor.handle_key(Key::Down);
+            if select {
+                f.editor.handle_key(Key::Enter);
+                assert_eq!(f.editor.active_buffer_id, 2);
+                assert_eq!(f.editor.document.buffer.cursor(), 4);
+                f.editor.handle_key(Key::Ctrl('o'));
+            } else {
+                escape(&mut f.editor);
+            }
+            assert_eq!(f.editor.view, View::Editing);
+            assert_eq!(f.editor.active_buffer_id, 1);
+            assert_eq!(f.editor.document.buffer.cursor(), 7);
+            assert_eq!(f.editor.document.buffer.text().to_string(), original);
+        }
+    }
+}
+
+#[test]
+fn navigation_shortcuts_handle_empty_unsupported_and_unavailable_targets() {
+    for scenario in [
+        "navigation-empty",
+        "navigation-virtual",
+        "navigation-missing",
+        "unsupported",
+    ] {
+        let mut f = Fixture::new(scenario);
+        f.ready();
+        f.editor.document.buffer.set_cursor(4, false);
+        let original = f.editor.document.buffer.text().to_string();
+        for key in ['d', 'r'] {
+            navigation_shortcut(&mut f.editor, key);
+            until(&mut f.editor, |e| !e.lsp.pending);
+            match scenario {
+                "navigation-empty" => {
+                    assert!(f.editor.message.contains("No language-server results"))
+                }
+                "navigation-virtual" => {
+                    assert!(
+                        f.editor.lsp.panel.as_ref().unwrap().rows[0]
+                            .label
+                            .contains("Unsupported location")
+                    );
+                    f.editor.handle_key(Key::Enter);
+                    escape(&mut f.editor);
+                }
+                "navigation-missing" => {
+                    assert!(f.editor.message_is_error);
+                    assert!(f.editor.message.contains("target file is unavailable"));
+                }
+                "unsupported" => {
+                    assert!(f.editor.message_is_error);
+                    assert!(f.editor.message.contains("does not support"));
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(f.editor.view, View::Editing);
+            assert_eq!(f.editor.active_buffer_id, 1);
+            assert_eq!(f.editor.document.buffer.cursor(), 4);
+            assert_eq!(f.editor.document.buffer.text().to_string(), original);
+            assert!(f.editor.pending_label().is_empty());
+            assert!(f.editor.navigate_history(true).is_err());
+        }
+    }
+    let mut editor = Editor::new(Document::default());
+    for key in ['d', 'r'] {
+        navigation_shortcut(&mut editor, key);
+        assert!(editor.message_is_error);
+        assert!(editor.message.contains("Name a source file first"));
+        assert!(!editor.lsp.pending);
+        assert!(editor.pending_label().is_empty());
+    }
+}
+
+#[test]
+fn navigation_shortcuts_ignore_late_replies_after_cancellation_or_context_changes() {
+    for key in ['d', 'r'] {
+        for change in ["escape", "cursor", "edit", "switch", "mode"] {
+            let mut f = Fixture::new("navigation-slow");
+            f.ready();
+            navigation_shortcut(&mut f.editor, key);
+            assert!(f.editor.lsp.pending);
+            f.wait_log(
+                if key == 'd' {
+                    "textDocument/definition"
+                } else {
+                    "textDocument/references"
+                },
+                1,
+            );
+            match change {
+                "escape" => escape(&mut f.editor),
+                "cursor" => f.editor.handle_key(Key::Right),
+                "edit" => f.editor.handle_key(Key::Char('x')),
+                "switch" => {
+                    f.editor
+                        .open_buffer(&f.directory.path().join("Other.kt"))
+                        .unwrap();
+                    f.editor.document.buffer.set_cursor(4, false);
+                }
+                "mode" => f.editor.handle_key(Key::Char('i')),
+                _ => unreachable!(),
+            }
+            let id = f.editor.active_buffer_id;
+            let cursor = f.editor.document.buffer.cursor();
+            let text = f.editor.document.buffer.text().to_string();
+            let mode = f.editor.mode;
+            settle(&mut f.editor);
+            assert!(!f.editor.lsp.pending);
+            assert!(f.editor.lsp.panel.is_none());
+            assert_eq!(f.editor.view, View::Editing);
+            assert_eq!(f.editor.active_buffer_id, id);
+            assert_eq!(f.editor.document.buffer.cursor(), cursor);
+            assert_eq!(f.editor.document.buffer.text().to_string(), text);
+            assert_eq!(f.editor.mode, mode);
+        }
     }
 }
 

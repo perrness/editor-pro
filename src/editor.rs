@@ -344,6 +344,19 @@ impl Editor {
             self.pending.g = false;
             if key == Key::Char('g') {
                 self.run_motion(Motion::FirstLine);
+            } else if self.mode == Mode::Normal
+                && self.pending.operator.is_none()
+                && matches!(key, Key::Char('d' | 'r'))
+            {
+                self.pending = Pending::default();
+                let command = if key == Key::Char('d') {
+                    "Definition"
+                } else {
+                    "References"
+                };
+                if let Err(e) = self.lsp_navigation_shortcut(command) {
+                    self.error(&e.to_string());
+                }
             } else {
                 self.pending = Pending::default();
             }
@@ -1029,7 +1042,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "i insert  v/V select  d/c/y + motion  u undo  / search  Ctrl-p files  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :changes  :diff  :review help  :w save  :q quit; README.md has all keys",
+                "i insert  v/V select  d/c/y + motion  u undo  / search  gd definition  gr references  Ctrl-p files  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :changes  :diff  :review help  :w save  :q quit; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),

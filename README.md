@@ -100,6 +100,7 @@ still start normally, and `:LspInstall` remains available.
 | Normal/Visual | `fX`, `FX`, `tX`, `TX` | Find/till character X on this line, forward/backward |
 | Normal/Visual | `;`, `,`, `%` | Repeat/reverse character find; matching bracket |
 | Normal/Visual | `Ctrl-u`, `Ctrl-d`, Page Up/Down | Move half a screen |
+| Normal | `gd`, `gr` | Go to definition or references; jump to one location or choose among multiple results |
 | Normal | `i a I A`, `o O` | Insert before/after, first nonblank/end; open line below/above |
 | Normal | `d`, `c`, `y` + motion/object | Delete, change, yank; counts multiply (`2d3w`) |
 | Normal | `dd cc yy`, `D C Y` | Line operations; D/C through line end, Y yanks lines |
@@ -536,6 +537,7 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 | `:Complete`, Insert `Ctrl-n` | Request a completion list; `d` resolves documentation, Enter chooses |
 | `:Hover` | Read documentation at the cursor |
 | `:Signature` | Show signatures and the active parameter |
+| Normal `gd`, `gr` | Request definitions or references at the cursor; jump directly to a single location, or choose from multiple results |
 | `:Definition`, `:References` | List locations; Enter opens an ordinary source buffer |
 | `:Diagnostics` | List current diagnostics across open sources; Enter jumps |
 | `:Dnext`, `:Dprev` | Navigate diagnostics in the current buffer, wrapping |
@@ -551,6 +553,11 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 
 Results use a contextual view: `j/k` or arrows select, Page Up/Down scroll,
 `h/l` scroll horizontally, and Escape returns without changing source location.
+For `gd` and `gr`, Enter opens the selected result when there are multiple
+locations; `Ctrl-o` returns after a jump, and `Ctrl-i`/Tab goes forward again.
+These shortcuts require a ready language server for the current source file.
+Escape cancels a pending request; moving, editing or switching buffers discards
+obsolete results. No matches or unavailable targets leave the source in place.
 Documentation is displayed as plain text, including Markdown source.
 In Insert mode, typing an identifier or a server-advertised trigger such as `.`
 requests suggestions after a 120 ms pause. The popup keeps the source and cursor
