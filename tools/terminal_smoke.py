@@ -394,7 +394,40 @@ def main():
         assert [c["files"][0]["text"] for c in history["checkpoints"]] == ["first revision\n", "later revision\n"]
         if capture_dir:
             (Path(capture_dir) / "m7-checkpoint-resume.ansi").write_bytes(output)
-    print("PASS: 22 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, and restoration")
+        # M8: protocol-double conversation, explicit revisions, undo and resume.
+        # Actual Codex acceptance is separately opt-in in tests/ai_real.rs.
+        ai_root = Path(directory) / "ai project"
+        ai_root.mkdir()
+        (ai_root / "Cargo.toml").write_text("[package]\n")
+        source = ai_root / "source.txt"
+        original = "old 界👩‍💻\r\n".encode()
+        source.write_bytes(original)
+        conversation = Path(directory) / "conversation.json"
+        ai_environment = {"EDITOR_PRO_CODEX": str(Path("tools/ai/fake_codex.py").resolve()),
+                          "EDITOR_PRO_AI_MODEL": "edit"}
+        def ai_turns(count):
+            return lambda: conversation.exists() and len(json.loads(conversation.read_text())["turns"]) == count
+        output = run_session(binary, source, [
+            b"ilocal ", b"\x1b", b":ai context file\r", resize(24, 100), (b"Context preview", 10),
+            b":ai ask Revise old to new\r", b":ai send\r",
+            (b"Codex complete", 10), b":ai edits\r", resize(24, 101), (b"- old", 10),
+            b":ai apply\r", b"\x1b", resize(24, 100), (b"local new", 10),
+            b"u", b"u", b":q\r", resize(24, 101), (b"AI conversation pending or unsaved", 10),
+            f":ai save {conversation}\r".encode(), (ai_turns(1), 10), b":q\r",
+        ], original, ai_environment)
+        if capture_dir:
+            (Path(capture_dir) / "m8-ai-revisions.ansi").write_bytes(output)
+        ai_environment["EDITOR_PRO_AI_MODEL"] = "followup"
+        output = run_session(binary, source, [
+            f":ai load {conversation}\r".encode(), resize(24, 100), (b"Conversation restored", 10),
+            b":ai edits\r", resize(24, 101), (b"historical", 10),
+            b":ai context file\r", b":ai ask Recall the previous discussion\r", b":ai send\r",
+            (b"Codex complete", 10), b":ai save\r", (ai_turns(2), 10),
+            resize(3, 1), resize(24, 101), b"\x1b", b":q\r",
+        ], original, ai_environment)
+        if capture_dir:
+            (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
+    print("PASS: 24 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

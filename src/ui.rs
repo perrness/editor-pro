@@ -23,6 +23,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     }
     let base = Style::default().fg(theme.foreground).bg(theme.background);
     frame.render_widget(Block::default().style(base), area);
+    if editor.view == View::Ai {
+        crate::ai_view::render(frame, editor, theme);
+        return;
+    }
     if editor.view == View::ProjectSearch {
         crate::project_search::render(frame, editor, theme);
         return;

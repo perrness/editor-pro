@@ -167,6 +167,46 @@ fn server_cannot_edit_an_unsynchronized_open_dirty_buffer() {
 }
 
 #[test]
+fn ai_context_uses_selected_symbol_ranges_references_and_labelled_diagnostics() {
+    let mut f = Fixture::new("normal");
+    f.ready();
+    until(&mut f.editor, |e| e.current_diagnostics().is_some());
+    f.command("Outline");
+    let before = f.editor.document.buffer.text().to_string();
+    let cursor = f.editor.document.buffer.cursor();
+    f.editor.execute_command("ai context symbol").unwrap();
+    assert_eq!(f.editor.ai.draft.context[0].text, "bad");
+    f.editor.execute_command("ai add diagnostics").unwrap();
+    assert!(
+        f.editor.ai.draft.context[1]
+            .label
+            .contains("version matched")
+    );
+    assert!(!f.editor.ai.draft.context[1].text.is_empty());
+    assert!(!f.editor.ai.pending);
+    escape(&mut f.editor);
+    assert_eq!(f.editor.view, View::Editing);
+    f.command("References");
+    f.editor.execute_command("ai add references").unwrap();
+    let reference = f.editor.ai.draft.context.last().unwrap();
+    assert_eq!(reference.text, "bad other\n");
+    assert!(
+        reference
+            .source
+            .as_ref()
+            .unwrap()
+            .path
+            .ends_with("Other.kt")
+    );
+    assert_eq!(f.editor.document.buffer.text().to_string(), before);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    escape(&mut f.editor);
+    f.command("Outline");
+    f.editor.document.buffer.insert("changed");
+    assert!(f.editor.execute_command("ai context symbol").is_err());
+}
+
+#[test]
 fn utf16_roundtrip_and_incremental_changes_preserve_exact_unicode_and_endings() {
     for text in ["a😀e\u{301}界\r\nnext\n", "a\rb\n", "", "😀", "\r\n"] {
         let rope = Rope::from_str(text);

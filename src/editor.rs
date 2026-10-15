@@ -78,6 +78,7 @@ pub enum View {
     Diff,
     Review,
     Lsp,
+    Ai,
 }
 
 pub struct Editor {
@@ -90,6 +91,7 @@ pub struct Editor {
     pub git: crate::git_view::GitState,
     pub review: crate::review_view::ReviewState,
     pub lsp: crate::lsp_view::LspState,
+    pub ai: crate::ai_view::AiState,
     pub navigation: crate::navigation::Navigation,
     pub project_search: crate::project_search::ProjectSearch,
     pub note_edit: Option<Box<NoteEdit>>,
@@ -121,6 +123,7 @@ impl Editor {
             git: crate::git_view::GitState::default(),
             review: crate::review_view::ReviewState::default(),
             lsp: crate::lsp_view::LspState::default(),
+            ai: crate::ai_view::AiState::default(),
             navigation: crate::navigation::Navigation::default(),
             project_search: crate::project_search::ProjectSearch::default(),
             note_edit: None,
@@ -144,6 +147,20 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.view == View::Ai && self.mode != Mode::Command {
+            self.ai_key(key);
+            return;
+        }
+        if self.view == View::Editing
+            && self.note_edit.is_none()
+            && matches!(self.mode, Mode::Visual | Mode::VisualLine)
+            && key == Key::Ctrl('g')
+        {
+            if let Err(e) = self.ai_command("context selection") {
+                self.error(&e.to_string());
+            }
+            return;
+        }
         if self.view == View::ProjectSearch && self.mode != Mode::Command {
             self.project_search_key(key);
             return;
@@ -895,12 +912,13 @@ impl Editor {
                 ))
             };
         }
-        if matches!(self.view, View::Diff | View::Review) && matches!(name, "w" | "wq") {
+        if matches!(self.view, View::Diff | View::Review | View::Ai) && matches!(name, "w" | "wq") {
             return Err(io::Error::other(
-                "Diff is read-only; Enter jumps to source, Escape returns",
+                "View is read-only; Enter jumps to source, Escape returns",
             ));
         }
         match name {
+            "ai" => self.ai_command(argument)?,
             "LspInfo" | "LspRestart" | "LspLog" | "Doctor" | "Complete" | "Hover" | "Signature"
                 | "Definition" | "References" | "Rename" | "CodeAction" | "Format" | "Symbols"
                 | "Outline" | "WorkspaceSymbols" | "Calls"
@@ -916,12 +934,14 @@ impl Editor {
                 if name == "wq" {
                     self.ensure_all_saved(false)?;
                     self.review.ensure_quit(false)?;
+                    self.ai.ensure_quit(false)?;
                     self.quit = true;
                 }
             }
             "q" | "q!" if argument.is_empty() => {
                 self.ensure_all_saved(name == "q!")?;
                 self.review.ensure_quit(name == "q!")?;
+                self.ai.ensure_quit(name == "q!")?;
                 self.quit = true;
             }
             "e" | "e!" => self.edit_command(argument, name == "e!")?,

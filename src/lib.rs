@@ -1,3 +1,7 @@
+pub mod ai;
+pub mod ai_store;
+pub mod ai_view;
+pub mod ai_worker;
 pub mod buffer;
 pub mod buffers;
 pub mod diff;

@@ -279,6 +279,12 @@ pub fn path_text(path: &Path) -> String {
 /// Deterministic report of persisted annotations; it does not claim a complete
 /// repository scan or export unannotated code. Excerpts are bounded on creation.
 pub fn markdown(export: &Export) -> String {
+    markdown_bounded(export, usize::MAX).expect("unlimited Markdown export")
+}
+
+/// AI attachments have a much smaller budget than ordinary file exports. Stop
+/// after the first oversized record instead of building the complete report.
+pub fn markdown_bounded(export: &Export, limit: usize) -> Result<String, String> {
     let mut out = String::from("# Code review feedback\n\n");
     out.push_str(&format!("Repository: {}\n\nWorktree Git directory: {}\n\nCoverage: {}. All persisted marks and notes loaded by this session at export request, including other bases and unresolved records. Concurrent additions require :review reload. Freshness is sampled, not an atomic filesystem snapshot. No source buffers were saved.\n\n",
         escape(&path_text(&export.store.repository.root)), escape(&path_text(&export.store.repository.git_dir)), escape(&export.scope)));
@@ -334,6 +340,12 @@ pub fn markdown(export: &Export) -> String {
         out.push_str("No persisted annotations.\n");
     }
     for r in records {
+        if out.len() > limit {
+            return Err(
+                "Review feedback exceeds the AI attachment limit; export it to a file instead"
+                    .into(),
+            );
+        }
         let i = &r.identity;
         out.push_str(&format!(
             "## Record {} — {} — {}\n\n",
@@ -361,7 +373,12 @@ pub fn markdown(export: &Export) -> String {
             out.push_str(&format!("Note:\n\n<pre>{}</pre>\n\n", escape(note)));
         }
     }
-    out
+    if out.len() > limit {
+        return Err(
+            "Review feedback exceeds the AI attachment limit; export it to a file instead".into(),
+        );
+    }
+    Ok(out)
 }
 pub fn export(export: &Export) -> Result<PathBuf, String> {
     let destination = crate::file::absolute_path(&export.destination).map_err(fail)?;

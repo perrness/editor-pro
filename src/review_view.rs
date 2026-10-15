@@ -265,7 +265,7 @@ impl Editor {
                 record.freshness(current)
             })
     }
-    fn review_ready(&self) -> io::Result<Arc<Store>> {
+    pub(crate) fn review_ready(&self) -> io::Result<Arc<Store>> {
         if self.review.busy {
             return Err(error("Review pending; wait for completion"));
         }

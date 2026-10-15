@@ -24,8 +24,8 @@ pub struct PlannedFile {
     pub before: Rope,
     pub after: Rope,
     pub edits: Vec<(std::ops::Range<usize>, String)>,
-    stamp: Option<Stamp>,
-    unopened: Option<Document>,
+    pub(crate) stamp: Option<Stamp>,
+    pub(crate) unopened: Option<Document>,
 }
 
 impl Editor {
@@ -183,7 +183,13 @@ impl Editor {
         Ok(EditPlan { files, edit_count })
     }
 
-    pub fn apply_lsp_edit(&mut self, mut plan: EditPlan) -> io::Result<()> {
+    pub fn apply_lsp_edit(&mut self, plan: EditPlan) -> io::Result<()> {
+        self.apply_edit_plan(plan)
+    }
+
+    /// Shared final transaction for validated LSP and AI previews. The callers
+    /// establish provenance; this boundary rechecks every buffer and disk file.
+    pub fn apply_edit_plan(&mut self, mut plan: EditPlan) -> io::Result<()> {
         if self.note_edit.is_some() {
             return Err(error("Finish the review note before applying source edits"));
         }
@@ -191,7 +197,7 @@ impl Editor {
         let current = self.lsp_edit_guards();
         for file in &mut plan.files {
             if current.get(&file.path) != file.stamp.as_ref() {
-                return Err(error("LSP edit preview is stale; request it again"));
+                return Err(error("Edit preview is stale; request it again"));
             }
             let document = if let Some(stamp) = &file.stamp {
                 self.lsp_document_mut(stamp.buffer_id)
@@ -203,7 +209,7 @@ impl Editor {
             };
             if document.buffer.text() != &file.before || document.check_external()? {
                 return Err(error(
-                    "LSP edit target changed in memory or on disk; no edits applied",
+                    "Edit target changed in memory or on disk; no edits applied",
                 ));
             }
         }

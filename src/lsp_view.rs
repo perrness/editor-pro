@@ -81,6 +81,7 @@ enum Item {
         path: PathBuf,
         position: Position,
         stamp: Option<Stamp>,
+        symbol_range: Option<lsp_types::Range>,
     },
     Completion {
         value: Value,
@@ -145,6 +146,66 @@ impl LspState {
 }
 
 impl Editor {
+    pub(crate) fn ai_lsp_symbol(&self) -> io::Result<(PathBuf, lsp_types::Range)> {
+        let panel = self
+            .lsp
+            .panel
+            .as_ref()
+            .ok_or_else(|| error("Use :Outline and select a symbol first"))?;
+        if !panel
+            .context
+            .as_ref()
+            .is_some_and(|c| self.lsp_context_current(c))
+        {
+            return Err(error("Symbol results are stale; request :Outline again"));
+        }
+        match &panel
+            .rows
+            .get(panel.selected)
+            .ok_or_else(|| error("No symbol selected"))?
+            .action
+        {
+            Item::Jump {
+                path,
+                symbol_range: Some(range),
+                ..
+            } => Ok((path.clone(), *range)),
+            _ => Err(error("Select a document symbol in :Outline first")),
+        }
+    }
+
+    pub(crate) fn ai_lsp_references(&self) -> io::Result<Vec<(PathBuf, Position)>> {
+        let panel = self
+            .lsp
+            .panel
+            .as_ref()
+            .ok_or_else(|| error("Request :References first"))?;
+        if !panel
+            .context
+            .as_ref()
+            .is_some_and(|c| self.lsp_context_current(c))
+            || panel.title != "references"
+        {
+            return Err(error(
+                "Request fresh :References before attaching references",
+            ));
+        }
+        let locations: Vec<_> = panel
+            .rows
+            .iter()
+            .filter_map(|r| match &r.action {
+                Item::Jump { path, position, .. } => Some((path.clone(), *position)),
+                _ => None,
+            })
+            .collect();
+        if locations.is_empty() || locations.len() > crate::ai::MAX_ATTACHMENTS {
+            return Err(error(
+                "References require 1–16 locations; select individual files for larger results",
+            ));
+        }
+        Ok(locations)
+    }
+
     fn lsp_snapshots(&self) -> Vec<Snapshot> {
         let active = self
             .note_edit
@@ -1167,12 +1228,14 @@ impl Editor {
                 path,
                 position,
                 stamp,
+                symbol_range,
             } => {
                 if let Err(e) = self.jump_lsp_location(&path, position, stamp.as_ref()) {
                     row.action = Item::Jump {
                         path,
                         position,
                         stamp,
+                        symbol_range,
                     };
                     self.lsp.panel = Some(panel);
                     return Err(e);
@@ -1564,6 +1627,7 @@ fn location_row(path: PathBuf, position: Position, label: &str, stamp: Option<St
             path,
             position,
             stamp,
+            symbol_range: None,
         },
     }
 }
@@ -1680,6 +1744,14 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
                 None,
             );
             row.detail = row.label;
+            if let Item::Jump { symbol_range, .. } = &mut row.action {
+                *symbol_range = Some(
+                    serde_json::from_value(
+                        location.map_or(&item["range"], |l| &l["range"]).clone(),
+                    )
+                    .map_err(io::Error::other)?,
+                );
+            }
             row.label = format!(
                 "{}{}",
                 "  ".repeat(depth),

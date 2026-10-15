@@ -1,10 +1,11 @@
 # Roadmap
 
 Build small complete slices. Acceptance requires observed behavior and checks,
-not only code or an advertised server capability. Milestones 1–7 are implemented;
-M5 and M6 have pinned real-server acceptance evidence on Linux. Platform and broader
+not only code or an advertised server capability. Milestones 1–8 are implemented;
+M5 and M6 have pinned real-server acceptance evidence on Linux, and M8 has a small
+actual Codex CLI/provider acceptance fixture. Platform and broader
 project limits remain explicit below. Editing modes remain independent of
-contextual views throughout. M8 has not been started.
+contextual views throughout. Broader validation limits are recorded per milestone.
 
 ## Milestone 1 — Minimal editor
 
@@ -289,6 +290,11 @@ manual validation. No M8 provider or AI features were introduced.
 
 ## Milestone 8 — AI-assisted comprehension
 
+**Status:** implemented. Inspection found the M1–7 implementation and no provider
+or conversation code; all 219 starting deterministic Rust tests passed before
+implementation. The installed CLI and official documentation were checked before
+choosing the supported `codex exec` JSONL/structured-output path.
+
 Investigate and integrate one officially supported Copilot CLI or Codex CLI path.
 Context preview for selected code, symbol, file, hunk/diff and optional references,
 tests and diagnostics; conversation view, streaming if supported, source links,
@@ -299,3 +305,55 @@ and direct revisions in the terminal. Verified observations and inferred intent
 are distinct. Comprehension is read-only by default; edits/destructive operations
 need approval; unsaved buffers cannot be overwritten. All core workflows remain
 usable without an AI provider.
+
+**Delivered incrementally:**
+
+- `:ai context file|symbol|hunk|diff` and Visual Ctrl-g collect explicit bounded
+  context. Optional files/tests, references, diagnostics and exported Markdown
+  review feedback can be added. Preview labels loaded/unsaved/disk provenance;
+  only `:ai send` transmits the question, context and visible prior history.
+- A concrete background worker runs Codex in a private temporary directory with
+  read-only permissions, no escalation, and tool/config restrictions. JSONL
+  progress and structured message updates are displayed without blocking editing.
+  Missing providers, malformed output, failures, timeout and cancellation remain
+  separate from source editing. No new dependency or provider framework was added.
+- The conversation view separates model observations/cited evidence from inferred
+  intent. Source citations validate captured full content before using existing
+  buffer/history navigation. Responses to older code remain historical; they do
+  not replace unsaved text or silently navigate changed sources.
+- `:ai edits` previews exact suggested replacements; `:ai apply` independently
+  approves them. Source identities, runtime stamps, whole content, unique matches,
+  overlaps, Unicode/CRLF boundaries and all disk baselines are checked. The existing
+  edit-plan transaction leaves changes unsaved and independently undoable per
+  buffer. Provider commands and file resource operations are unsupported.
+- `:ai save/load` explicitly persist bounded conversations outside the source
+  project with private atomic files and content conflict checks. Follow-ups replay
+  saved history. Restoring a transcript never restores edit authority; new source
+  context is required. Normal quit guards pending work and unsaved sent turns.
+
+**Acceptance evidence:** All 238 deterministic Rust tests and 24 Linux PTY sessions
+pass, along with formatting, all-target Clippy, eight Python tests and debug build.
+The 19 new regressions and two added terminal workflows exercise
+context, citations/history, missing/failed providers, incremental results,
+cancellation, stale/closed/reloaded/dirty targets, all-or-nothing multi-file
+approval, undo, Unicode/CRLF, malformed output, persistence/conflicts and review/LSP
+integration. An opt-in test passed against actual **codex-cli 0.162.1** and its
+authenticated provider: cited comprehension, preview/apply/undo, unchanged disk
+bytes, save/reload and a contextual follow-up. The final two requests took about
+8.32 s and 5.50 s. Final full-suite/terminal counts are in [VALIDATION.md](VALIDATION.md);
+the version, executable hash, command and reproduction are in
+[tools/ai/README.md](tools/ai/README.md). Protocol doubles remain separate evidence.
+
+**Known limits:** one CLI path, explicit context only, manual transcript saves and
+no provider-thread resumption. JSONL item/progress streaming is supported; token
+streaming is not guaranteed by this CLI interface. Diff/diagnostic/feedback
+citations identify captured text without a direct source jump; add source context
+for navigable citations or revisions. No automatic project exploration, test
+execution, shell approval or file creation/rename/deletion. Model claims require
+human verification. Source/context preparation stays synchronously bounded.
+Limits: 16 attachments/256 KiB/8,192 lines per turn, 64 KiB per attachment, 2 MiB
+source files, 8 KiB questions, 32 turns, 1 MiB/32,768 lines per prompt, 128 KiB
+answers/128 replacements, 4 MiB transcripts and a cooperative 180-second request
+deadline. The actual-provider result covers one small fixture/account on Linux;
+macOS, physical-terminal comfort, larger conversations and other model/managed
+policy configurations remain manual validation. No later-milestone work was added.

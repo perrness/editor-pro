@@ -196,7 +196,8 @@ impl Editor {
         let git = self.tick_git();
         let lsp = self.tick_lsp();
         let project_search = self.tick_project_search();
-        self.tick_review() || git || picker || lsp || project_search
+        let ai = self.tick_ai();
+        self.tick_review() || git || picker || lsp || project_search || ai
     }
     pub(crate) fn picker_key(&mut self, key: Key) {
         if matches!(key, Key::Escape | Key::Ctrl('c' | '[')) {

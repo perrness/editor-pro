@@ -914,3 +914,120 @@ shows only the newer revision. Capture again and restart; compare both checkpoin
 IDs. Repeat with a dirty source, a rename/deletion, paired/narrow layouts, and a
 save conflict. Check source cursor/scroll/undo and labels on a physical Linux and
 macOS terminal, then assess responsiveness on your representative repository.
+
+## M8 AI-assisted comprehension
+
+2026-10-15: read the repository guidance, architecture and roadmap, then inspected
+the Git/review/LSP/navigation implementations and matching tests. No provider or
+conversation implementation existed. All **219 starting deterministic Rust tests**
+passed before M8 changes. Implemented the next milestone with one Codex CLI path,
+using existing source transactions, review Markdown, LSP positions and navigation.
+No dependency or lockfile change was needed.
+
+### Final automated evidence
+
+Linux, Rust **1.99.0** and Cargo **1.99.0**. Default crates.io access failed DNS;
+the existing `/tmp/editor-pro-m3-cargo` cache supported locked offline builds.
+
+```sh
+cargo fmt
+cargo fmt --check
+CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true cargo clippy --locked --all-targets -- -D warnings
+CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true cargo test --locked --all-targets
+CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true cargo build --locked
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-m8-terminal python3 tools/terminal_smoke.py
+git diff --check
+```
+
+All commands pass. The Rust suite has **238 passing deterministic tests**, no
+failures, and **seven ignored opt-in tests** (six real language-server fixtures
+and one actual Codex fixture). New coverage comprises **18 AI tests** and **one
+LSP/context integration test**; the existing editing, Git, review/snapshot,
+navigation, rendering and LSP suites remain passing. Eight Python probe tests
+and **24 PTY sessions** pass. The two new PTY sessions cover context preview,
+approved revisions, per-buffer undo, dirty-conversation quit refusal, save/load,
+historical edit rejection, follow-up context, narrow layouts and terminal
+restoration. They use a clearly labelled CLI protocol double. Captures:
+
+- `/tmp/editor-pro-m8-terminal/m8-ai-revisions.ansi`
+- `/tmp/editor-pro-m8-terminal/m8-ai-resume.ansi`
+
+An initial PTY resume assertion searched for a contiguous title even though
+Ratatui emitted changed cells only. Forcing a redraw before that assertion fixed
+the harness; all 24 sessions then passed. No application workaround was needed.
+
+| Invariant | Evidence |
+| --- | --- |
+| Nothing is sent before explicit preview/send | Context tests use a missing executable and still capture/render; worker remains idle. The fake CLI checks read-only/tool/config arguments and receives context through stdin. |
+| Source text/locations remain independent | Unsaved Unicode/CRLF selection/file context, narrow TestBackend renders, citations/history restoration, source/index byte assertions and PTY undo checks. |
+| Context uses existing evidence | Positive Outline full-range, reference-line and version-labelled diagnostic checks; hunk/diff and persisted note Markdown attachment; note-draft isolation. |
+| No stale or implicit revisions | Approval requires a separate edit preview. Editing/reload/close during a request, edits after preview, external disk changes and changed unopened targets reject before any splice. Restored suggestions have no live authority. |
+| Multi-file updates preserve work | Complete validation before mutation, dirty unopened buffers, independent undo, whole-source fingerprints, exact unique text, overlapping occurrences/replacements and grapheme/CRLF guards. |
+| Async failures stay contained | Partial structured output is visible but not actionable. Missing executable, malformed/oversized events, failed turns, tool attempts, invalid citations, nonzero exit, missing completion and update-only output fail safely. Timeout/cancellation kill/reap the process; obsolete results cannot replace a newer turn. |
+| Persistence does not overwrite source | Outside-project destinations, private atomic writes, expected-content conflicts, no-clobber creation, corruption/symlink/hard-link refusal, raw Unix paths, and transcript follow-up without old edit authority. |
+
+### Actual Codex acceptance
+
+The installed **codex-cli 0.162.1** and the official exec/configuration documentation
+were inspected before integration. [tools/ai/README.md](tools/ai/README.md) records
+the binary SHA-256, exact subprocess arguments, official sources and reproduction.
+The version is observed, not an automatically installed or updated dependency.
+
+```sh
+EDITOR_PRO_REAL_CODEX=/root/.local/bin/codex \
+  CARGO_HOME=/tmp/editor-pro-m3-cargo CARGO_NET_OFFLINE=true \
+  cargo test --locked --test ai_real -- --ignored --nocapture
+```
+
+The first sandboxed attempt stopped before inference: Codex could not initialize
+its own state directory on the read-only filesystem. The same disposable fixture
+passed with normal state-directory/network access and the child provider's
+read-only sandbox unchanged. Existing ChatGPT authentication and the CLI default
+model were used; no credentials were printed or stored in the repository.
+
+The final run passed in **13.95 s**, with inference requests of approximately
+**8.32 s** and **5.50 s**. It observed cited comprehension, a structured revision,
+editor preview/approval, undo preserving prior unsaved text, unchanged disk bytes,
+private transcript save, a fresh editor loading history, refusal to reapply an
+old suggestion and a successful contextual follow-up. Valid message content
+arrived before process exit and was displayed pending completion. A prior run
+also passed in 13.00 s. These real-provider observations are separate from the
+deterministic doubles; default `cargo test` never contacts a provider.
+
+### Review findings, limitations and manual checks
+
+Review retained four concrete responsibilities (context/schema, worker, file
+store, view) and reused the existing final edit transaction. No generic provider
+layer, runtime, command executor or second editor was introduced. Review fixed
+overlapping-match ambiguity (`aa` in `aaa`), bounded review-feedback construction,
+shared captured text across view rows, scanned grapheme boundaries once per edit
+target, and required a completed answer item as well as turn/process success.
+
+No release performance suite, real language servers, hosted CI, Rust 1.88,
+macOS or physical-terminal checks were repeated for M8. The actual provider test
+covers one small fixture/account, not every model, managed policy or CLI version.
+Conversation save is explicit; unsent drafts are not saved. History is replayed
+as bounded context rather than resuming a provider-side session. There is no
+automatic project exploration, test execution, shell approval or file resource
+operation. Diff/diagnostic/feedback citations have no direct source destination;
+attach source when navigation/revisions are needed. Model semantics remain
+unverified. The documented JSONL path supports progress/item updates, not a
+guaranteed token stream.
+
+Limits: 16 attachments/256 KiB/8,192 lines per turn, 64 KiB per attachment, 2 MiB
+sources, 8 KiB questions, 32 turns, 1 MiB/32,768 prompt lines, 128 KiB answers and
+128 replacements, 4 MiB transcripts, a cooperative 180-second deadline, 1 MiB
+events, 4 MiB stdout and 256 KiB stderr. Source preparation/validation is bounded
+but synchronous. File stalls and final persistence races with non-cooperating
+writers are not hard-time or filesystem-transaction guarantees.
+
+On a disposable project in a physical terminal, preview a file or Visual
+selection, ask a contextual question and inspect source citations. Attach a
+selected Outline symbol, references, diagnostics, a test file, a hunk and review
+feedback. Request a small revision, inspect `:ai edits`, apply and undo it; edit
+another target or change disk before applying and confirm refusal without partial
+changes. Save/load the conversation and ask a follow-up. Test cancellation,
+missing/login-failed Codex and narrow resizing, and confirm all core editing and
+review features work without the provider. Repeat on macOS and larger real
+conversations before extending the compatibility claim.

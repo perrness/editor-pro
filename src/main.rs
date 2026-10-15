@@ -43,6 +43,7 @@ Review: :review help, :review file|hunk reviewed|attention|unreviewed, :notes\nN
 LSP: :LspInfo, :Doctor, :LspRestart, :Hover, :Definition, :References, :Diagnostics
 Code: :Outline, :WorkspaceSymbols QUERY, :Calls (i/o calls, Backspace parent)
 Project: :grep TEXT, :grepdir PATH, :recent, Ctrl-o/:back, Ctrl-i/:forward
+AI: :ai help; :ai context file, :ai ask QUESTION, :ai send; Visual Ctrl-g previews selection
 Language: :Complete (Insert Ctrl-n), :Signature, :Rename NAME, :CodeAction, :Format, :Symbols
 
 Escape leaves Insert. :q checks all buffers; :q! discards all unsaved edits.
@@ -145,6 +146,7 @@ fn event_loop(
             || editor.review.busy
             || editor.lsp.pending
             || editor.project_search.pending
+            || editor.ai.pending
         {
             16
         } else {

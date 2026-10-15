@@ -1,9 +1,9 @@
 # Architecture
 
-Decision record, 2026-10-15. Scope: Milestones 1–7, pinned real-server acceptance
+Decision record, 2026-10-15. Scope: Milestones 1–8, pinned real-server acceptance
 fixtures and an isolated Kotlin feasibility experiment.
 The product is one terminal editor for editing, navigation, Git review
-and eventual AI comprehension. There is no separate Review Mode.
+and optional AI comprehension. There is no separate Review Mode.
 
 ## Current structure
 
@@ -36,6 +36,10 @@ lsp.rs         protocol positions, immutable document stamps, capabilities and r
 lsp_worker.rs  bounded multi-project server lifecycle, transport and synchronization
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
+ai.rs          bounded captured context, structured answers and conversation schema
+ai_worker.rs   optional Codex exec lifecycle, JSONL progress and transcript I/O jobs
+ai_store.rs    private transcript loading, atomic persistence and conflict checks
+ai_view.rs     context collection, conversations, citations and revision previews
 text.rs      shared grapheme/cell rules
 ui.rs        projects editor state into Ratatui; maintains derived state/viewport
 theme.rs     semantic colors and three selectable palettes
@@ -51,7 +55,7 @@ The unnamed register and last search are session-wide; the search cache is
 invalidated on every buffer switch.
 
 `Mode` (Normal, Insert, Visual, VisualLine, Command, Search) and `View` (Editing,
-Buffers, Files, Recent, ProjectSearch, Changes, Diff, Review, Lsp) are separate. Contextual views intercept their own keys and do not
+Buffers, Files, Recent, ProjectSearch, Changes, Diff, Review, Lsp, Ai) are separate. Contextual views intercept their own keys and do not
 edit the underlying text. Closing a picker/list returns to the originating
 location. M3 adds only a paired diff projection, not a general window framework.
 
@@ -69,6 +73,7 @@ location. M3 adds only a paired diff projection, not a general window framework.
 | Git | Git CLI subprocesses with porcelain-v2 NUL status, immutable blob reads, and internally generated no-index diffs. One bounded worker owns cancellation/timeouts. M3 added no dependencies; M4 adds the review dependencies below. |
 | Project search | Installed ripgrep CLI with literal patterns, NUL-terminated filenames and vimgrep byte columns. A concrete standard-library worker owns requests/processes; no new crate or generic process framework. |
 | Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
+| AI | Installed Codex CLI `exec` with JSONL and structured output. A concrete standard-library worker uses existing serde/tempfile/hash dependencies. No SDK, additional runtime, provider trait or second provider. |
 | Configuration, later | A small serde/TOML schema when users need settings. M2 selects among three semantic palette values at runtime; no configuration framework. |
 
 Helix's separation of core text/history from terminal concerns is useful prior
@@ -512,15 +517,95 @@ workspace/applyEdit request, and it still requires a preview. Unsolicited, stale
 or concurrent server edit requests receive applied=false. Applying a proposal
 invalidates Git/review derived state through the established paths.
 
+## AI context and approval boundary
+
+M8 uses documented `codex exec` rather than implementing another interactive
+agent protocol. The installed 0.162.1 CLI and an actual provider passed a small
+Linux fixture; protocol-double coverage remains separate. See
+[tools/ai/README.md](tools/ai/README.md) for the exact command, binary fingerprint,
+official references and reproduction. Core features never depend on a provider.
+
+`AiState` belongs to `Editor` and owns only captured context, conversation data,
+view navigation and a pending proposal. `View::Ai` intercepts keys without editing
+source. Context collection reads the active selection/file, a current LSP symbol
+range/reference list or diagnostic set, or an existing fresh Git diff/review export.
+Optional test files are selected explicitly, not discovered or executed. Review
+note drafts cannot become AI source context. The preview shows the question,
+attachments, provenance and number of prior turns that will be sent; the
+conversation view exposes every prior turn's context. Only `:ai send` launches
+inference. Unsaved text comes from open buffers, never substituted disk reads.
+
+Source attachments retain the path, full-content hash, scalar slice origin,
+source line and runtime buffer instance/generation. Persistence retains content
+and provenance but drops live edit authority. Each response citation/replacement
+names a one-based context ID scoped to that turn, never a new filesystem path.
+Source jumps require unchanged full text, validate the captured range and use the
+existing prepared-buffer/history path. Diff/diagnostic/feedback rows are captured
+evidence with no source jump or editing authority. Model observations and cited
+evidence are displayed separately from inferred intent; semantic claims are not
+automatically verified. Editing while waiting preserves a historical answer;
+source links and proposed edits independently reject changed targets.
+
+One lazily started worker owns one job/result slot and one replaceable progress
+slot. Inference is cancellable by serial, never by joining on the input thread.
+Subprocess stdout/stderr use private regular files; stdin is a bounded private
+prompt file, avoiding blocked writes and reader-thread accumulation. JSONL is
+parsed incrementally with bounded events and output. Complete structured message
+updates may be shown before process exit; only `turn.completed` plus successful
+exit makes an answer actionable. This exec interface does not guarantee token
+streaming. Missing CLI/authentication, unsupported output, provider failures,
+timeouts and attempted tool calls fail visibly. Unix process groups are killed
+and reaped on completion/cancellation. Shutdown joins after terminal restoration;
+accepted transcript I/O drains, while inference is cancelled.
+
+The CLI runs outside the source tree in a private temporary directory, with
+read-only sandboxing, approval policy `never`, shell tools disabled, web search
+disabled, and apps/hooks/remote plugins/memories/subagents disabled. User/project
+CLI configuration and execpolicy rules are excluded; authentication and managed
+policy remain Codex's responsibility. There is no fallback to weaker permissions.
+Provider-side edits/commands are unsupported. A structured suggestion is data,
+not a command to execute or a patch applied by the provider.
+
+`:ai edits` validates unique exact original text within captured source slices,
+complete source identities, runtime stamps, nonoverlapping scalar ranges and
+extended grapheme/CRLF boundaries. It constructs the existing `EditPlan` in
+`lsp_edit.rs`; `apply_edit_plan` is the shared final source transaction, while LSP
+protocol validation stays in its existing preparation path. `:ai apply` is a
+separate approval after preview. It rechecks all buffers and disk baselines before
+any splice, keeps unopened targets as dirty buffers, provides ordinary per-buffer
+undo, and never saves. There are no new file resource operations, shell approvals
+or cross-buffer undo machinery. Reloaded transcripts require freshly captured
+context and another answer before edits can be proposed again.
+
+Conversations save explicitly outside the source project, independently of review
+metadata and Codex's ephemeral sessions. Version-1 JSON stores sent questions,
+context, completed answers and failed/cancelled statuses; unsent drafts are not
+saved. Follow-ups replay that bounded history explicitly. A private create-new
+lock, expected-content hash, temporary file, fsync and atomic rename protect
+cooperating writers. Existing unrelated destinations, symlinks, hard links,
+corruption and unsupported versions fail without replacement. No lock stealing,
+autosave or crash recovery is included. A non-cooperating writer can still race
+the final comparison/rename; uncertain directory-sync durability is reported.
+Normal quit guards unsaved sent turns and pending jobs; force quit discards memory.
+
+Bounds are 16 attachments/256 KiB/8,192 lines per turn, 64 KiB per attachment,
+2 MiB source files, 8 KiB questions, 32 turns, 1 MiB/32,768 lines per prompt,
+128 KiB answers/128 replacements, and 4 MiB stored transcripts. Inference has a
+cooperative 180-second deadline, 1 MiB event limit, 4 MiB stdout and 256 KiB stderr
+capture limits. File output may overshoot between polls. Source reads/hashing and
+proposal validation remain synchronous under these limits; worker filesystem
+stalls and shutdown joins are not hard-time guarantees.
+
 ## Future boundaries, not current infrastructure
 
 - **M5 acceptance:** Opt-in tests run the ordinary editor against pinned real
   Kotlin/JDT/Roslyn servers on disposable Gradle/Maven/solution/project fixtures.
   Protocol doubles remain separate evidence. Broader workloads, platforms and
   physical-terminal comfort require additional observations. See the server report.
-- **M8:** Context collection and provider integration stay independent of editing
-  and review notes. Use a documented agent CLI, user-visible context and explicit
-  edit approval. No provider dependencies or placeholder APIs in this milestone.
+- **M8 acceptance:** The actual CLI/provider fixture covers one account and small
+  conversation. Broader model/managed-policy combinations, macOS and physical
+  terminal use require new observations. No further provider infrastructure is
+  introduced ahead of demonstrated workflows.
 
 ## Principal risks and gates
 
@@ -531,5 +616,5 @@ invalidates Git/review derived state through the established paths.
 | Project import and SDK mismatches | Real fixture checks supplement protocol tests; SDK targets and server runtimes are recorded separately. Larger/mixed projects still need validation. |
 | Server churn or proprietary protocol assumptions | Pinned standalone versions/checksums and opt-in editor checks expose compatibility failures; upgrades must rerun them. |
 | Stale async state | Picker queries, Git generations, and LSP session/request/document stamps guard acceptance. Versionless diagnostics remain explicitly unverified. |
-| Scope and architecture growth | M1–7 code only; no AI or later-milestone infrastructure. Split modules at concrete responsibilities. |
+| Scope and architecture growth | M1–8 code only; one optional CLI path, no provider framework. Split modules at concrete responsibilities. |
 | Platform and responsiveness evidence | Linux check counts, real fixture results and import/restart timings are recorded in VALIDATION.md. macOS, physical-terminal inspection and representative user workloads remain to be evaluated. |
