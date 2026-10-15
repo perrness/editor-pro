@@ -87,7 +87,12 @@ fn search_paths_are_lossless_and_patterns_cannot_become_arguments() {
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     let dir = tempfile::tempdir().unwrap();
     let pattern = "--$(literal)";
-    let name = std::ffi::OsString::from_vec(b"raw\xff:\nfile".to_vec());
+    // macOS filesystems require UTF-8; retain delimiter and Unicode coverage.
+    let name = std::ffi::OsString::from_vec(if cfg!(target_os = "macos") {
+        "raw界:\nfile".as_bytes().to_vec()
+    } else {
+        b"raw\xff:\nfile".to_vec()
+    });
     let path = dir.path().join(name);
     fs::write(&path, pattern).unwrap();
     symlink(&path, dir.path().join("link")).unwrap();
