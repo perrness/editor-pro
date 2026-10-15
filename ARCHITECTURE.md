@@ -12,6 +12,7 @@ plugin API, generic backend trait, event bus, dependency injection, or GUI layer
 
 ```text
 main.rs      terminal lifetime, CLI, event loop, disk checks and worker polling
+config.rs    optional bounded user settings and native configuration paths
 input.rs     Crossterm events -> terminal-independent Key values
 editor.rs    editing modes, pending counts/operators, prompts, unnamed register
 buffer.rs    Rope, grapheme cursor, bounded undo, edit descriptions and generation
@@ -74,7 +75,7 @@ location. M3 adds only a paired diff projection, not a general window framework.
 | Project search | Installed ripgrep CLI with literal patterns, NUL-terminated filenames and vimgrep byte columns. A concrete standard-library worker owns requests/processes; no new crate or generic process framework. |
 | Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
 | AI | Installed Codex CLI `exec` with JSONL and structured output. A concrete standard-library worker uses existing serde/tempfile/hash dependencies. No SDK, additional runtime, provider trait or second provider. |
-| Configuration, later | A small serde/TOML schema when users need settings. M2 selects among three semantic palette values at runtime; no configuration framework. |
+| Configuration | An optional, bounded JSON file using existing serde/serde_json dependencies. Native macOS Application Support and Linux XDG paths; startup theme only, with strict field/theme validation. No configuration framework. |
 
 Helix's separation of core text/history from terminal concerns is useful prior
 art, as is its explicit grapheme handling. Its mature transaction/history system
@@ -82,6 +83,31 @@ is substantially broader than this milestone needs. Here a snapshot is just a
 shared Rope, cursor and revision; no undo tree or transaction algebra yet.
 [Helix history](https://github.com/helix-editor/helix/blob/master/helix-core/src/history.rs),
 [Helix graphemes](https://github.com/helix-editor/helix/blob/master/helix-core/src/graphemes.rs).
+
+## Installation and release boundary
+
+Cargo builds and installs one executable named `editor-pro`; `ep` is a symlink
+created by the development helper, release archive or Homebrew formula. Version
+output comes from the Cargo package version and works without a terminal or
+configuration file. One directory argument opens the existing picker and sets
+the process working directory before starting workers; file arguments keep the
+existing buffer-opening path. There is no new project/session model.
+
+`config.rs` resolves macOS `~/Library/Application Support/editor-pro/config.json`
+or Linux `$XDG_CONFIG_HOME/editor-pro/config.json` (absolute paths only, otherwise
+`~/.config`). The optional file is read before terminal initialization, bounded
+to 64 KiB and never rewritten. Unknown fields/themes and invalid JSON are errors;
+a missing file uses defaults. Only `main.rs` applies user settings, so library
+editors and core tests do not read environment-dependent settings. Runtime theme
+changes stay session-local. No configuration lives in a binary installation or
+is discovered in a project directory.
+
+Stable version tags gate reusable Linux/macOS checks, native macOS ARM64/Intel
+builds, installed Homebrew/PTY tests, complete GitHub release publication and a
+tap formula update using published SHA-256 values. Published assets remain
+unchanged on retries. The tap update is a separate job with a repository-scoped
+credential; the editor has no release network client, update check or self-updater.
+Linux binary distribution is deferred. See [release setup](docs/RELEASING.md).
 
 ## Editing invariants
 

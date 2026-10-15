@@ -3,7 +3,8 @@ use ratatui::style::Color;
 use crate::editor::Mode;
 use crate::syntax::Highlight;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
     #[default]
     TokyoNight,

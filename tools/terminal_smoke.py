@@ -16,7 +16,7 @@ import termios
 import time
 
 
-def run_session(binary, path, commands, expected, environment=None):
+def run_session(binary, path, commands, expected, environment=None, arguments=None, cwd=None):
     master, slave = pty.openpty()
     original = termios.tcgetattr(slave)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -32,9 +32,15 @@ def run_session(binary, path, commands, expected, environment=None):
         os.environ["TERM"] = "xterm-256color"
         os.environ["COLORTERM"] = "truecolor"
         os.environ.pop("NO_COLOR", None)
+        # User settings must not affect acceptance fixtures.
+        os.environ["HOME"] = str(path.parent / ".smoke-home")
+        os.environ["XDG_CONFIG_HOME"] = str(path.parent / ".smoke-config")
         if environment:
             os.environ.update(environment)
-        os.execv(str(binary), [str(binary), str(path)])
+        if cwd is not None:
+            os.chdir(cwd)
+        argv = [str(path)] if arguments is None else [str(arg) for arg in arguments]
+        os.execv(str(binary), [str(binary), *argv])
     output = bytearray()
     reaped = False
     cursor_queries = 0
@@ -121,11 +127,42 @@ def run_session(binary, path, commands, expected, environment=None):
 
 
 def main():
-    binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/editor-pro").resolve()
+    binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/editor-pro").absolute()
     if not binary.is_file():
         print(f"BLOCKED: build the editor first; binary missing: {binary}", file=sys.stderr)
         return 2
     with tempfile.TemporaryDirectory(prefix="editor-pro-pty-") as directory:
+        project = Path(directory) / "project with spaces"
+        project.mkdir()
+        project_file = project / "startup.txt"
+        project_file.write_bytes("before 界\r\n".encode())
+        ep = Path(directory) / "ep"
+        ep.symlink_to(binary)
+        output = run_session(ep, project_file, [
+            b"startup", (b"startup.txt", 10), b"\r", b"i// ", b"\x1b", b":wq\r",
+        ], "// before 界\r\n".encode(), arguments=["."], cwd=project)
+        assert b"Files" in output
+        # A directory argument also sets the root for relative :e and :w paths.
+        run_session(ep, project_file, [
+            b"\x1b", b":e startup.txt\r", b":wq\r",
+        ], "// before 界\r\n".encode(), arguments=[project])
+
+        config_home = Path(directory) / "settings home"
+        config_env = {"HOME": str(config_home), "XDG_CONFIG_HOME": str(config_home / "xdg")}
+        config_path = Path(subprocess.check_output(
+            [str(ep), "--config-path"], env={**os.environ, **config_env}, text=True,
+        ).strip())
+        config_path.parent.mkdir(parents=True)
+        config_bytes = b'{ "theme": "gruvbox" }\n'
+        config_path.write_bytes(config_bytes)
+        output = run_session(ep, project_file, [b":q\r"], "// before 界\r\n".encode(), config_env)
+        assert b"48;2;40;40;40" in output, "Configured Gruvbox background was not rendered"
+        assert config_path.read_bytes() == config_bytes
+        capture_dir = os.environ.get("EDITOR_PRO_SMOKE_CAPTURE_DIR")
+        if capture_dir:
+            Path(capture_dir).mkdir(parents=True, exist_ok=True)
+            (Path(capture_dir) / "installation-config.ansi").write_bytes(output)
+
         path = Path(directory) / "source.rs"
         path.write_bytes(b"fn main() {}\n")
         run_session(binary, path, [b"i// ", "界e\u0301".encode(), b"\r", b"\x1b",
@@ -410,7 +447,9 @@ def main():
         output = run_session(binary, source, [
             b"ilocal ", b"\x1b", b":ai context file\r", resize(24, 100), (b"Context preview", 10),
             b":ai ask Revise old to new\r", b":ai send\r",
-            (b"Codex complete", 10), b":ai edits\r", resize(24, 101), (b"- old", 10),
+            # The headline can be split into ANSI diff writes; the turn status
+            # changes entirely from Pending/Receiving to Completed.
+            (b"Completed", 10), b":ai edits\r", resize(24, 101), (b"- old", 10),
             b":ai apply\r", b"\x1b", resize(24, 100), (b"local new", 10),
             b"u", b"u", b":q\r", resize(24, 101), (b"AI conversation pending or unsaved", 10),
             f":ai save {conversation}\r".encode(), (ai_turns(1), 10), b":q\r",
@@ -422,12 +461,12 @@ def main():
             f":ai load {conversation}\r".encode(), resize(24, 100), (b"Conversation restored", 10),
             b":ai edits\r", resize(24, 101), (b"historical", 10),
             b":ai context file\r", b":ai ask Recall the previous discussion\r", b":ai send\r",
-            (b"Codex complete", 10), b":ai save\r", (ai_turns(2), 10),
+            (b"Completed", 10), b":ai save\r", (ai_turns(2), 10),
             resize(3, 1), resize(24, 101), b"\x1b", b":q\r",
         ], original, ai_environment)
         if capture_dir:
             (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
-    print("PASS: 24 PTY sessions; editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 27 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

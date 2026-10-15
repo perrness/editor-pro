@@ -1031,3 +1031,58 @@ changes. Save/load the conversation and ask a follow-up. Test cancellation,
 missing/login-failed Codex and narrow resizing, and confirm all core editing and
 review features work without the provider. Repeat on macOS and larger real
 conversations before extending the compatibility claim.
+
+## Installation and distribution
+
+Validated on Linux x86_64, 2026-10-15, with Rust/Cargo 1.99.0 and Python 3.12.
+Rust commands used the existing `/tmp/editor-pro-m3-cargo` cache and
+`CARGO_NET_OFFLINE=true`; dependencies and `Cargo.lock` were unchanged.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 245 passed; seven opt-in provider/server tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -W error -m unittest discover -s tools -p 'test_*.py' -v` | Three release-tool tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| `sh tools/install-dev.sh /tmp/editor-pro-install-check` | Release build installed one executable and a relative `ep` symlink; `ep --version` printed `editor-pro 0.1.0`. |
+| `cargo install --locked --path .. --root /tmp/editor-pro-install-check` from `docs/` | Passed; replaced the same binary and preserved the short command. |
+| Development installer rerun | Passed with the existing `ep` symlink and byte-for-byte unchanged user configuration. |
+| Existing-command collision checks | Installer refused an unrelated regular `ep` file and a dangling symlink without replacing either. |
+| `python3 tools/terminal_smoke.py /tmp/editor-pro-install-check/bin/ep` | All 27 PTY sessions passed through the installed command. |
+| `actionlint` 1.7.12 | Both CI and release workflows passed; YAML and each shell block also parsed separately. |
+| `git diff --check` | Passed. |
+
+New Rust coverage checks native macOS/Linux config paths, empty/relative XDG
+fallbacks, absent home directories, optional defaults without creating files,
+strict settings/size errors, unchanged user bytes, non-TTY help/version/path
+reporting, malformed-config handling, the `ep` symlink and mixed-directory
+argument errors. The PTY harness opens `ep .`, selects and edits Unicode/CRLF
+text, opens an explicit directory containing spaces, resolves a relative `:e`
+from that directory, and renders a theme loaded from isolated user settings.
+The observed config session is captured at
+`/tmp/editor-pro-install-captures/installation-config.ansi`.
+
+The release-tool tests reject mismatched and prerelease tags, verify archive
+layout/executable permissions and the relative symlink, require both architecture
+archives and check formula URLs/SHA-256 values. They use fixture executables,
+not macOS binaries. One initial full PTY run exposed an existing raw-output
+assertion that missed a headline split across ANSI diff writes; waiting for the
+completed-turn status fixed the assertion, and the complete installed-binary
+run then passed. No AI product behavior changed.
+
+Created the public [Homebrew tap](https://github.com/perrness/homebrew-tap) and
+published its installation README. A dedicated write deploy key is scoped to
+that tap, with the private key stored as `HOMEBREW_TAP_DEPLOY_KEY` in the source
+repository's Actions secrets. API reads confirmed the key's write setting and
+the secret's presence; the temporary local key was removed. The first successful
+tagged release will generate the installable formula from published assets.
+
+The macOS ARM64/Intel builds, Homebrew installation/tests, release asset upload
+and automatic tap update are configured but have not run on hosted Actions in
+this change. No release tag or binary release was published. macOS 14 is the
+deployment target; the workflow tests on macOS 15, so macOS 14 runtime behavior
+still needs separate acceptance. Signing/notarization, Linux release archives,
+Rust 1.88 and physical-terminal checks remain unverified or deferred. No
+self-updater or background update check was added.

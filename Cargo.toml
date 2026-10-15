@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A small terminal-native, Vim-inspired code editor"
+repository = "https://github.com/perrness/editor-pro"
 publish = false
+
+[[bin]]
+name = "editor-pro"
+path = "src/main.rs"
 
 [dependencies]
 ignore = "0.4"

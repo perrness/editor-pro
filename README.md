@@ -16,10 +16,11 @@ live disk revision detection and conservative note reattachment.
 **M8 AI comprehension** adds optional Codex CLI context previews, conversations,
 cited navigation, persistent history and explicitly approved, undoable revisions.
 
-**Validation:** 238 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
-eight Python harness tests, formatting, Clippy and the debug build pass on Linux.
-The terminal harness covers 24 sessions, including AI revisions/undo/resume,
-snapshots/live revisions, project search, history, symbols/calls and LSP edits.
+**Validation:** 245 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
+11 Python tests, formatting, Clippy and the debug build pass on Linux.
+The terminal harness covers 27 sessions, including installed `ep` directory/file
+startup, configuration, AI revisions/undo/resume, snapshots/live revisions,
+project search, history, symbols/calls and LSP edits.
 An opt-in fixture also passed against actual Codex CLI 0.162.1 and its provider.
 M6 passed three extended real-server fixtures; M5's six-fixture acceptance and
 independent Kotlin feasibility probe remain recorded separately. See
@@ -31,11 +32,18 @@ and larger or mixed-language projects remain separate validation limits.
 
 Use stable Rust with Cargo, rustfmt, and Clippy (Rust 1.88 or newer), and an
 interactive terminal on Linux or macOS. A truecolor terminal shows the intended
-palettes. The toolchain installed on the delivery VM is available globally.
+palettes.
 Install `rg` (ripgrep) on PATH for project search and its integration tests;
 editing and language commands do not require it.
 
 ```sh
+sh tools/install-dev.sh
+export PATH="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin:$PATH"
+ep .
+ep src/main.rs Cargo.toml
+ep --version
+
+# Or build and run directly:
 cargo build --locked --release
 ./target/release/editor-pro src/main.rs Cargo.toml
 # Or, during development:
@@ -44,8 +52,38 @@ cargo run --locked -- src/main.rs
 
 Omit paths to start an unnamed buffer. A nonexistent file in an existing
 directory opens empty. Multiple paths open separate buffers; the first is active.
-`--help` and `--version` work without a TTY. Use `editor-pro -- -filename` for a
-name beginning with `-`.
+Pass one directory (`ep .` or `ep path/to/project`) to open its file picker and
+use it as the session's working directory. Directories cannot be mixed with file
+arguments. `--help`, `--version`, and `--config-path` work without a TTY.
+Use `ep -- -filename` for a name beginning with `-`.
+
+Plain `cargo install --path .` is also supported (`--path ..` from a direct child
+directory). It installs the single `editor-pro` binary. The helper adds `ep` as
+a symlink, installs in your Cargo user directory, and can be rerun for updates
+without administrator privileges. It leaves user configuration alone.
+
+Once the Homebrew tap and first release are published, macOS users can install
+with `brew install perrness/tap/editor-pro` and update with `brew update` followed
+by `brew upgrade editor-pro`. Releases contain versioned ARM64 and Intel binaries
+for macOS 14+. Linux binaries are planned; source builds are available today.
+The editor has no self-updater. See [installation and release setup](docs/RELEASING.md)
+for the tap bootstrap, automated formula updates and manual binary installation.
+
+## User configuration
+
+`ep --config-path` prints the optional settings file location. On macOS it is
+`~/Library/Application Support/editor-pro/config.json`; on Linux it is
+`$XDG_CONFIG_HOME/editor-pro/config.json`, falling back to
+`~/.config/editor-pro/config.json`. Create it to choose a startup theme:
+
+```json
+{ "theme": "gruvbox" }
+```
+
+Themes are `tokyo-night` (default), `catppuccin`, and `gruvbox`. Missing settings
+use defaults; invalid settings report an error before terminal setup. `:theme`
+affects the current session. Installation and upgrades never write this file,
+and settings are kept outside application binaries and project checkouts.
 
 ## Editing
 
@@ -649,7 +687,7 @@ guarantees. There are no embedded-language injections or semantic LSP tokens.
 Large Markdown documents are slower; measured results are in the validation log.
 
 - This is a Vim-inspired subset: no dot-repeat, named/system-clipboard registers,
-  block Visual selection, regex search, macros, general splits, configuration file,
+  block Visual selection, regex search, macros, general splits, custom keymaps,
   plugins or GUI. Escape Visual mode before putting.
   Counts are capped at 10,000.
 - UTF-8 only; NUL-containing files, non-regular files and files over 64 MiB are
@@ -680,13 +718,15 @@ cargo test --locked --all-targets
 cargo build --locked
 cargo build --locked --release --bin editor-pro
 python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+python3 -m unittest discover -s tools -p 'test_*.py' -v
 python3 tools/terminal_smoke.py
 cargo run --locked --release --example performance
 cargo run --locked --release --example git_performance
 cargo run --locked --release --example review_performance
 ```
 
-`Cargo.lock` records resolved dependencies. CI is configured for Linux and macOS;
+`Cargo.lock` records resolved dependencies. CI is configured for Linux and both
+macOS architectures; Python 3.11+ is needed for release tooling.
 no hosted CI run has been observed here. Real-server acceptance is opt-in and
 requires the [pinned distributions and SDKs](tools/lsp/README.md). The isolated
 Kotlin probe and its test double remain independent of the editor.

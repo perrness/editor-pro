@@ -4,6 +4,7 @@ pub mod ai_view;
 pub mod ai_worker;
 pub mod buffer;
 pub mod buffers;
+pub mod config;
 pub mod diff;
 pub mod editor;
 pub mod file;

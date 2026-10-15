@@ -7,6 +7,7 @@ use std::{
 };
 
 use editor_pro::{
+    config,
     editor::{Editor, Mode, View},
     file::Document,
     input, ui,
@@ -25,9 +26,15 @@ use ratatui::{
     },
 };
 
-const HELP: &str = "editor-pro [FILE ...]
+const HELP: &str = "editor-pro [FILE ...] | editor-pro DIRECTORY
 
 A terminal-native, Vim-inspired UTF-8 editor. Files may be new paths.
+The ep symlink accepts the same arguments. A directory opens its file picker
+and becomes the working directory for this session (for example, ep .).
+
+Options: -h/--help, -V/--version, --config-path
+Settings: optional config.json in the user configuration directory; --config-path
+prints its location. Updates are managed by Homebrew or cargo install.
 
 Normal: hjkl / arrows, w b e W B E, 0 ^ $, gg G, f/F/t/T, ; , %, counts
 Editing: i a I A o O, v/V, d/c/y + motion or object, x, p/P, u, Ctrl-r
@@ -71,6 +78,13 @@ fn run() -> io::Result<()> {
             println!("editor-pro {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Some("--config-path") => {
+            let path = config::config_path().ok_or_else(|| {
+                io::Error::other("Cannot locate the user configuration directory; set HOME")
+            })?;
+            println!("{}", path.display());
+            return Ok(());
+        }
         Some("--") => args.next().map(PathBuf::from),
         Some(flag) if flag.starts_with('-') => {
             return Err(io::Error::other(format!(
@@ -80,19 +94,39 @@ fn run() -> io::Result<()> {
         _ => first.map(PathBuf::from),
     };
     let additional: Vec<_> = args.map(PathBuf::from).collect();
+    let directory = path.as_deref().filter(|path| path.is_dir());
+    if directory.is_some() && !additional.is_empty() {
+        return Err(io::Error::other(
+            "Pass one directory or one or more files; directories cannot be mixed with files",
+        ));
+    }
+    let settings = config::config_path()
+        .as_deref()
+        .map(config::load)
+        .transpose()?
+        .unwrap_or_default();
+    let directory = directory.map(std::fs::canonicalize).transpose()?;
     let document = path
         .as_deref()
+        .filter(|_| directory.is_none())
         .map_or_else(|| Ok(Document::default()), Document::open)?;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
             "Run in an interactive terminal (stdin and stdout must be TTYs)",
         ));
     }
+    if let Some(directory) = &directory {
+        env::set_current_dir(directory)?;
+    }
     let mut editor = Editor::new(document);
+    editor.theme = settings.theme;
     for path in additional {
         editor.open_buffer(&path)?;
     }
     editor.switch_buffer(1)?;
+    if let Some(directory) = &directory {
+        editor.open_picker(directory)?;
+    }
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = restore_terminal();

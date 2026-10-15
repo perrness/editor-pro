@@ -1,0 +1,182 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: '14.0'
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check tag and tap credentials
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          python3 tools/release.py --tag "$RELEASE_TAG" check-version
+          test -n "$TAP_DEPLOY_KEY" || { echo 'Set HOMEBREW_TAP_DEPLOY_KEY before releasing.' >&2; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HOMEBREW_TAP || 'perrness/homebrew-tap' }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap-check
+      - name: Verify write access before building a release
+        run: git -C tap-check push --dry-run origin HEAD
+
+  checks:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build and package native binary
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo +stable build --locked --release --bin editor-pro --target "$TARGET"
+          python3 tools/release.py --tag "$RELEASE_TAG" package \
+            --target "$TARGET" --binary "target/$TARGET/release/editor-pro"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  homebrew-test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-apple-darwin'
+          path: dist
+          merge-multiple: true
+      - name: Install and test the formula with local release archives
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          command -v rg || brew install ripgrep
+          brew tap-new editor-pro/release-test
+          python3 tools/release.py --tag "$RELEASE_TAG" prepare \
+            --repository "$GITHUB_REPOSITORY" --local \
+            --formula "$(brew --repository editor-pro/release-test)/Formula/editor-pro.rb"
+          brew install editor-pro/release-test/editor-pro
+          brew test editor-pro/release-test/editor-pro
+          python3 tools/terminal_smoke.py "$(brew --prefix editor-pro)/bin/ep"
+
+  publish:
+    needs: [checks, homebrew-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-apple-darwin'
+          path: dist
+          merge-multiple: true
+      - name: Prepare checksums and publish a complete release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/release.py --tag "$RELEASE_TAG" prepare \
+            --repository "$GITHUB_REPOSITORY" --formula dist/editor-pro.rb
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            if [ "$(python3 -c 'import json; print(json.load(open("release.json"))["isDraft"])')" = False ]; then
+              echo 'Release already published; preserving its assets.'
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "$RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
+
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check that this is still the latest stable release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')
+          if [ "$latest" = "$RELEASE_TAG" ]; then
+            echo 'update=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.latest.outputs.update == 'true'
+        with:
+          repository: ${{ vars.HOMEBREW_TAP || 'perrness/homebrew-tap' }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: homebrew-tap
+      - name: Generate formula from the published assets and update the tap
+        if: steps.latest.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern '*.tar.gz' --pattern SHA256SUMS --dir published
+          (cd published && sha256sum --check SHA256SUMS)
+          python3 tools/release.py --tag "$RELEASE_TAG" prepare \
+            --archives published --repository "$GITHUB_REPOSITORY" \
+            --formula homebrew-tap/Formula/editor-pro.rb
+          cp packaging/homebrew/README.md homebrew-tap/README.md
+          git -C homebrew-tap config user.name 'github-actions[bot]'
+          git -C homebrew-tap config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C homebrew-tap add Formula/editor-pro.rb README.md
+          if ! git -C homebrew-tap diff --cached --quiet; then
+            git -C homebrew-tap commit -m "chore: update editor-pro to $RELEASE_TAG"
+            git -C homebrew-tap push
+          fi
