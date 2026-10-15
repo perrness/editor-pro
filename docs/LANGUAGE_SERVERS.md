@@ -6,6 +6,14 @@ on Linux, separately from the deterministic protocol-double tests. The independe
 Kotlin experiment also passes. See README for client setup/commands and
 [tools/lsp](../tools/lsp/README.md) for exact distributions and reproduction.
 
+The editor now installs missing servers automatically, using pinned distributions
+and checksums. `:LspInstall [kotlin|java|csharp]` retries or starts an explicit
+installation; `:LspInstallCancel [LANGUAGE]` cancels it. See README for native
+storage paths and the `lsp.auto_install` setting. Kotlin's bundle supplies its
+runtime; Java and C# still require installed JDK 21+ and .NET SDK 10+ respectively.
+The earlier feasibility observations below describe separately provisioned servers;
+the automatic-installation evidence is recorded in VALIDATION.md.
+
 ## Selected servers
 
 | Language | Candidate | Requirements and limits | Decision |
@@ -105,8 +113,9 @@ The fixture tests Maven only; the separate Rust editor suite exercises Gradle.
 
 The earlier missing-executable blocker is resolved. Servers and SDKs were
 provisioned under temporary directories with verified distribution hashes,
-isolated caches and explicit argv overrides. They are not installed by the editor
-or added to its ordinary test prerequisites. See [servers.json](../tools/lsp/servers.json).
+isolated caches and explicit argv overrides. Those earlier acceptance runs provisioned
+servers separately; real servers remain outside the ordinary test prerequisites.
+See [servers.json](../tools/lsp/servers.json).
 
 - Official Kotlin **263.6379.0** uses its bundled **JBR 25.0.4.1+1-b601.61**.
   The standalone probe passed in **63.052 seconds**, including version-2

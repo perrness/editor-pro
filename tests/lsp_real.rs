@@ -46,11 +46,10 @@ fn copy_fixture(source: &Path, target: &Path, originals: &mut Vec<(PathBuf, Vec<
 impl Project {
     fn new(name: &'static str, main: &str, other: &str) -> Self {
         let language = Language::for_path(Path::new(main)).unwrap();
+        let install_dir = std::env::var_os("EDITOR_PRO_LSP_INSTALL_DIR").map(PathBuf::from);
         let argv = std::env::var(language.environment()).unwrap_or_else(|_| {
-            panic!(
-                "Set {} to a pinned real server argv",
-                language.environment()
-            )
+            assert!(install_dir.is_some(), "Set {} to a pinned real server argv or set EDITOR_PRO_LSP_INSTALL_DIR for managed installation", language.environment());
+            "Managed installation".into()
         });
         let directory = tempfile::Builder::new()
             .prefix("editor-pro-lsp-real-")
@@ -77,6 +76,9 @@ impl Project {
         let main = root.join(main);
         let other = root.join(other);
         let mut editor = Editor::new(Document::open(&main).unwrap());
+        editor.lsp.config.installation.directory = install_dir;
+        editor.lsp.config.installation.auto_install =
+            editor.lsp.config.installation.directory.is_some();
         editor.lsp.config.restart_limit = 0;
         let report = json!({
             "fixture":name, "fixture_sha256":format!("{:x}", digest.finalize()),
@@ -100,13 +102,28 @@ impl Project {
         self.report["phase"] = json!(label);
         loop {
             self.editor.tick();
+            assert!(
+                self.editor
+                    .lsp
+                    .installations
+                    .values()
+                    .all(|state| !state.failed),
+                "{}: installation failed: {}",
+                self.name,
+                self.state()
+            );
             if condition(&self.editor) {
                 self.report["checks"][label] =
                     json!({"status":"passed", "seconds":start.elapsed().as_secs_f64()});
                 return;
             }
             assert!(
-                start.elapsed() < Duration::from_secs(180),
+                start.elapsed()
+                    < Duration::from_secs(if self.editor.lsp.config.installation.auto_install {
+                        900
+                    } else {
+                        180
+                    }),
                 "{}: timeout waiting for {label}; {}",
                 self.name,
                 self.state()
@@ -128,6 +145,7 @@ impl Project {
 
     fn state(&self) -> Value {
         json!({"message":self.editor.message, "buffer_text":self.editor.document.buffer.text().to_string(),
+            "installation": self.editor.lsp.installations.iter().map(|(language, state)| json!({"language":language.id(),"status":state.message,"busy":state.busy,"failed":state.failed})).collect::<Vec<_>>(),
             "servers":self.editor.lsp.servers.values().map(|s|
                 json!({"status":s.status,"capabilities":s.capabilities,"logs":s.logs})).collect::<Vec<_>>(),
             "diagnostics":self.editor.lsp.diagnostics.values().map(|d| &d.items).collect::<Vec<_>>()})

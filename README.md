@@ -16,11 +16,12 @@ live disk revision detection and conservative note reattachment.
 **M8 AI comprehension** adds optional Codex CLI context previews, conversations,
 cited navigation, persistent history and explicitly approved, undoable revisions.
 
-**Validation:** 245 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
-11 Python tests, formatting, Clippy and the debug build pass on Linux.
-The terminal harness covers 27 sessions, including installed `ep` directory/file
+**Validation:** 256 Rust tests (including 18 AI, 14 snapshot and 43 LSP regressions),
+14 Python tests, formatting, Clippy and the debug build pass on Linux.
+The terminal harness covers 28 sessions, including installed `ep` directory/file
 startup, configuration, AI revisions/undo/resume, snapshots/live revisions,
-project search, history, symbols/calls and LSP edits.
+project search, history, symbols/calls, LSP edits and installation controls.
+Automatic installation passed real Kotlin, Java and C# server fixtures on Linux.
 An opt-in fixture also passed against actual Codex CLI 0.162.1 and its provider.
 M6 passed three extended real-server fixtures; M5's six-fixture acceptance and
 independent Kotlin feasibility probe remain recorded separately. See
@@ -62,8 +63,8 @@ directory). It installs the single `editor-pro` binary. The helper adds `ep` as
 a symlink, installs in your Cargo user directory, and can be rerun for updates
 without administrator privileges. It leaves user configuration alone.
 
-Once the Homebrew tap and first release are published, macOS users can install
-with `brew install perrness/tap/editor-pro` and update with `brew update` followed
+macOS users can install with `brew install perrness/tap/editor-pro` and update
+with `brew update` followed
 by `brew upgrade editor-pro`. Releases contain versioned ARM64 and Intel binaries
 for macOS 14+. Linux binaries are planned; source builds are available today.
 The editor has no self-updater. See [installation and release setup](docs/RELEASING.md)
@@ -77,13 +78,16 @@ for the tap bootstrap, automated formula updates and manual binary installation.
 `~/.config/editor-pro/config.json`. Create it to choose a startup theme:
 
 ```json
-{ "theme": "gruvbox" }
+{ "theme": "gruvbox", "lsp": { "auto_install": true } }
 ```
 
 Themes are `tokyo-night` (default), `catppuccin`, and `gruvbox`. Missing settings
 use defaults; invalid settings report an error before terminal setup. `:theme`
 affects the current session. Installation and upgrades never write this file,
 and settings are kept outside application binaries and project checkouts.
+Missing language servers are installed automatically by default. Set
+`"lsp": { "auto_install": false }` for manual/offline operation; existing servers
+still start normally, and `:LspInstall` remains available.
 
 ## Editing
 
@@ -462,10 +466,43 @@ current path plus up to 31 other annotated paths within Git's five-second budget
 Language servers are optional. Opening a named Kotlin (`.kt`/`.kts`), Java
 (`.java`) or C# (`.cs`) buffer starts background discovery. Default commands are
 `intellij-server --stdio` (official JetBrains Kotlin), `jdtls` (Eclipse JDT LS)
-and `csharp-ls` (Roslyn-based). Install the standalone server and its required
-runtime yourself; no software is downloaded by the editor. A server's project
-import may invoke build tools and fetch dependencies. The runtime SDK and the
-project's target SDK can differ; see the [server report](docs/LANGUAGE_SERVERS.md).
+and `csharp-ls` (Roslyn-based). Explicit command overrides take precedence, followed
+by executable servers on PATH and editor-managed installations. If a server is
+absent, the editor downloads and installs its pinned distribution in the background,
+then starts it with the latest unsaved buffers. Failed explicit overrides and
+incompatible runtimes remain visible errors. Editing continues during installation.
+
+Managed installations support macOS and glibc Linux on Intel/AMD64 and ARM64.
+Kotlin **263.6379.0** includes its Java 25 runtime. JDT LS **1.60.0-202606262232**
+needs an installed **JDK 21+** selected by JAVA_HOME/PATH; `csharp-ls` **0.28.0**
+needs an installed **.NET SDK 10+** on PATH. The editor checks runtime versions,
+but does not install JDKs, .NET SDKs or project toolchains. Its managed JDT launch
+uses Java directly, without requiring the upstream Python launcher.
+
+Servers live under `$XDG_DATA_HOME/editor-pro/lsp` (absolute paths only, otherwise
+`~/.local/share/editor-pro/lsp`) on Linux, or
+`~/Library/Application Support/editor-pro/lsp` on macOS. No PATH or shell-profile
+changes are needed. The installer verifies pinned SHA-256 hashes, extracts into
+private temporary directories and publishes complete versioned installations.
+Concurrent projects/editors share an installation lock. Completed installs work
+offline; failed or cancelled installs require `:LspInstall` to retry. A killed
+editor's temporary install is cleaned on the next attempt. Existing installations
+are reused; the installer does not query a moving “latest” release.
+
+`:LspInfo` displays download/extraction progress and errors, and `:Doctor` shows
+the selected server source, command and runtime. `:LspInstall` installs the current
+file's server; specify a language to install from an unnamed/unsupported buffer.
+`:LspInstallCancel [LANGUAGE]` cancels that language's shared installation, including
+other projects waiting for it. Cancellation and shutdown can wait up to ten seconds
+for an idle network read. Downloads have a ten-minute budget and 1 GiB cap;
+tar/ZIP extraction caps at 100,000 entries and 4 GiB expanded. Filesystem stalls are not
+hard-time bounded. Proxy environment settings are honored; HTTPS certificate
+verification uses the HTTP client's bundled public roots.
+
+A server's project import may invoke build tools and fetch dependencies. The
+runtime SDK and project's target SDK can differ; see the
+[server report](docs/LANGUAGE_SERVERS.md). Other highlighted languages, including
+Rust, do not yet have LSP integration or automatic installers.
 
 Use `:Doctor` for actual executable/root/SDK discovery and runtime version output,
 `:LspInfo` for negotiated features and import status, and `:LspLog` for recent
@@ -505,6 +542,8 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 | `:Symbols`, `:Outline` | List document symbols, including nested symbols |
 | `:WorkspaceSymbols [QUERY]`, `:Calls` | Project symbols and call hierarchy; see code comprehension above |
 | `:LspInfo`, `:LspLog`, `:Doctor` | Inspect capabilities, logs, roots and SDK/server discovery |
+| `:LspInstall [kotlin\|java\|csharp]` | Install a missing server, or retry a failed/cancelled installation |
+| `:LspInstallCancel [LANGUAGE]` | Cancel the current/specified language's installation |
 | `:LspRestart` | Restart the current root/language session and resynchronize |
 
 Results use a contextual view: `j/k` or arrows select, Page Up/Down scroll,

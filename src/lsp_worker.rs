@@ -1,10 +1,10 @@
 //! One concrete language-server manager. Process, framing, discovery and protocol
 //! work run on its runtime thread; the editor submits cheap immutable snapshots.
 use crate::lsp::*;
+use crate::lsp_install::{self, Installer, Launch, State as InstallState};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
     io,
     path::{Path, PathBuf},
     process::Stdio,
@@ -32,6 +32,8 @@ fn settings(language: Language) -> Value {
 }
 
 pub enum Control {
+    Install(Language),
+    InstallCancel(Language),
     Request(Request),
     Restart(PathBuf),
     Cancel(PathBuf),
@@ -111,13 +113,67 @@ async fn manager(
 ) {
     let mut routes: BTreeMap<PathBuf, Result<ServerKey, String>> = BTreeMap::new();
     let mut sessions: BTreeMap<ServerKey, Session> = BTreeMap::new();
+    let mut installer = Installer::new(config.installation.clone());
+    let mut installation_updates = BTreeMap::new();
     loop {
         let control = tokio::select! {
             _ = stop.changed() => break,
             changed = documents.changed() => { if changed.is_err() { break; } None },
             command = commands.recv() => { let Some(command) = command else { break }; Some(command) },
+            _ = tokio::time::sleep(Duration::from_millis(100)), if installer.busy() || !installation_updates.is_empty() => None,
         };
         let docs = documents.borrow_and_update().clone();
+        if let Some(Control::Install(language)) = &control
+            && let Err(error) = installer.start(*language)
+        {
+            installation_updates.insert(
+                *language,
+                InstallState {
+                    message: error.to_string(),
+                    busy: false,
+                    failed: true,
+                },
+            );
+        }
+        if let Some(Control::InstallCancel(language)) = &control
+            && !installer.cancel(*language)
+        {
+            installation_updates.insert(
+                *language,
+                InstallState {
+                    message: "No installation running".into(),
+                    busy: false,
+                    failed: false,
+                },
+            );
+        }
+        for (language, state) in installer.poll() {
+            if !state.busy && !state.failed {
+                // Recreate all waiting sessions of this language from the current
+                // watch snapshots, not the documents captured before the download.
+                let keys: Vec<_> = sessions
+                    .keys()
+                    .filter(|key| key.language == language)
+                    .cloned()
+                    .collect();
+                for key in keys {
+                    if let Some(session) = sessions.remove(&key) {
+                        close_session(session).await;
+                    }
+                }
+            }
+            installation_updates.insert(language, state);
+        }
+        // Keep each language's latest update until the UI has room. In particular,
+        // a full result queue must never lose completion and leave "installing" stuck.
+        installation_updates.retain(|language, state| {
+            events
+                .try_send(Event::Installation {
+                    language: *language,
+                    state: state.clone(),
+                })
+                .is_err()
+        });
         if let Some(Control::Doctor(path)) = &control {
             let report = doctor(path, &config).await;
             let _ = events.try_send(Event::Doctor {
@@ -190,6 +246,18 @@ async fn manager(
                 }
                 continue;
             }
+            if matches!(lsp_install::resolve(&config, key.language), Ok(None))
+                && let Err(error) = installer.automatic(key.language)
+            {
+                installation_updates.insert(
+                    key.language,
+                    InstallState {
+                        message: error.to_string(),
+                        busy: false,
+                        failed: true,
+                    },
+                );
+            }
             let (sender, receiver) = watch::channel(docs);
             let (requests, input) = mpsc::channel(QUEUE);
             let (shutdown, stopped) = watch::channel(false);
@@ -218,7 +286,10 @@ async fn manager(
                 }
                 Control::Cancel(path) => routes.get(path).and_then(|r| r.as_ref().ok()),
                 Control::ApplyReply { key, .. } => Some(key),
-                Control::Restart(_) | Control::Doctor(_) => None,
+                Control::Restart(_)
+                | Control::Doctor(_)
+                | Control::Install(_)
+                | Control::InstallCancel(_) => None,
             };
             if let Some(session) = key.and_then(|key| sessions.get(key))
                 && let Err(error) = session.commands.try_send(control)
@@ -245,14 +316,6 @@ async fn close_session(session: Session) {
     let _ = session.task.await;
 }
 
-fn executable(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|value| {
-        std::env::split_paths(&value)
-            .map(|directory| directory.join(name))
-            .find(|path| path.is_file())
-    })
-}
-
 fn project_root(config: &Config, path: &Path, language: Language) -> io::Result<PathBuf> {
     if let Some(root) = config
         .root
@@ -269,51 +332,14 @@ fn project_root(config: &Config, path: &Path, language: Language) -> io::Result<
     }
 }
 
-fn command_for(config: &Config, language: Language) -> io::Result<Vec<OsString>> {
-    let override_command = config
-        .commands
-        .get(&language)
-        .cloned()
-        .or_else(|| std::env::var_os(language.environment()).map(|value| vec![value]));
-    if let Some(mut command) = override_command {
-        if command.len() == 1 && command[0].to_string_lossy().starts_with('[') {
-            let parsed: Vec<String> =
-                serde_json::from_str(&command[0].to_string_lossy()).map_err(|e| {
-                    io::Error::other(format!(
-                        "{} must be a JSON argv array: {e}",
-                        language.environment()
-                    ))
-                })?;
-            command = parsed.into_iter().map(OsString::from).collect();
-        }
-        if command.is_empty() || command[0].is_empty() {
-            return Err(io::Error::other("Empty language-server command"));
-        }
-        return Ok(command);
-    }
-    let (server, sdk, arguments): (&str, &str, &[&str]) = match language {
-        Language::Kotlin => ("intellij-server", "java", &["--stdio"]),
-        Language::Java => ("jdtls", "java", &[]),
-        Language::CSharp => ("csharp-ls", "dotnet", &[]),
-    };
-    let program = executable(server).ok_or_else(|| {
+fn command_for(config: &Config, language: Language) -> io::Result<Launch> {
+    lsp_install::resolve(config, language)?.ok_or_else(|| {
         io::Error::other(format!(
-            "Missing {server} on PATH; install it or set {} to a JSON argv array",
-            language.environment()
+            "Missing {} language server; :LspInstall {} installs it, :Doctor shows details",
+            language.id(),
+            language.id()
         ))
-    })?;
-    let sdk_found = executable(sdk).is_some()
-        || (sdk == "java"
-            && std::env::var_os("JAVA_HOME")
-                .is_some_and(|home| Path::new(&home).join("bin/java").is_file()));
-    if !sdk_found {
-        return Err(io::Error::other(format!(
-            "Missing {sdk} runtime/SDK; :Doctor shows discovery details"
-        )));
-    }
-    Ok(std::iter::once(program.into_os_string())
-        .chain(arguments.iter().map(OsString::from))
-        .collect())
+    })
 }
 
 fn status(
@@ -340,8 +366,8 @@ async fn session_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     static EPOCH: AtomicU64 = AtomicU64::new(1);
-    let argv = match command_for(&config, key.language) {
-        Ok(argv) => argv,
+    let launch = match command_for(&config, key.language) {
+        Ok(launch) => launch,
         Err(e) => {
             status(
                 &events,
@@ -357,8 +383,23 @@ async fn session_loop(
     };
     let _ = events.try_send(Event::Log {
         key: key.clone(),
-        message: format!("Launch argv: {argv:?}\n"),
+        message: format!("{}\nLaunch argv: {:?}\n", launch.origin, launch.argv),
     });
+    let runtime = tokio::select! {
+        _ = stop.changed() => return,
+        result = launch.runtime_report() => result,
+    };
+    if let Err(error) = runtime {
+        status(
+            &events,
+            &key,
+            EPOCH.fetch_add(1, Ordering::Relaxed),
+            error.to_string(),
+            Some(Value::Null),
+        );
+        let _ = stop.changed().await;
+        return;
+    }
     for attempt in 0..=config.restart_limit {
         if *stop.borrow() {
             return;
@@ -371,7 +412,7 @@ async fn session_loop(
             format!("Starting {} (attempt {})", key.language.id(), attempt + 1),
             Some(Value::Null),
         );
-        let mut transport = match Transport::start(&argv, &key, &events) {
+        let mut transport = match Transport::start(&launch, &key, &events) {
             Ok(transport) => transport,
             Err(e) => {
                 status(
@@ -431,7 +472,8 @@ struct Transport {
     open_uris: BTreeSet<String>,
 }
 impl Transport {
-    fn start(argv: &[OsString], key: &ServerKey, events: &mpsc::Sender<Event>) -> io::Result<Self> {
+    fn start(launch: &Launch, key: &ServerKey, events: &mpsc::Sender<Event>) -> io::Result<Self> {
+        let argv = &launch.argv;
         let mut command = Command::new(&argv[0]);
         command
             .args(&argv[1..])
@@ -445,7 +487,12 @@ impl Transport {
             let dir = tempfile::Builder::new()
                 .prefix("editor-pro-jdtls-")
                 .tempdir()?;
-            command.arg("-data").arg(dir.path());
+            command.arg("-data").arg(dir.path().join("workspace"));
+            if launch.java_configuration.is_some() {
+                command
+                    .arg("-configuration")
+                    .arg(dir.path().join("configuration"));
+            }
             Some(dir)
         } else {
             None
@@ -1130,53 +1177,28 @@ async fn doctor(path: &Path, config: &Config) -> String {
         return "Unsupported language".into();
     };
     let mut report = format!(
-        "Root discovery: {:?}\nServer discovery: {:?}\nJAVA_HOME: {:?}\n",
+        "Root discovery: {:?}\nManaged directory: {:?}\nAutomatic installation: {}\n",
         project_root(config, path, language),
-        command_for(config, language),
-        std::env::var_os("JAVA_HOME")
+        config.installation.directory,
+        config.installation.auto_install,
     );
-    let sdk = if language == Language::CSharp {
-        "dotnet"
-    } else {
-        "java"
-    };
-    let program = if sdk == "java" {
-        std::env::var_os("JAVA_HOME")
-            .map(|home| Path::new(&home).join("bin/java"))
-            .filter(|p| p.is_file())
-            .or_else(|| executable(sdk))
-    } else {
-        executable(sdk)
-    };
-    let Some(program) = program else {
-        return format!("{report}Missing {sdk} on PATH / JAVA_HOME\n");
-    };
-    report += &format!("Runtime executable: {}\n", program.display());
-    let output = async {
-        let mut file = tempfile::tempfile()?;
-        let mut command = Command::new(program);
-        command
-            .arg(if sdk == "java" {
-                "-version"
-            } else {
-                "--list-sdks"
-            })
-            .stdin(Stdio::null())
-            .stdout(file.try_clone()?)
-            .stderr(file.try_clone()?)
-            .kill_on_drop(true);
-        let mut child = command.spawn()?;
-        if timeout(Duration::from_secs(3), child.wait()).await.is_err() {
-            child.kill().await?;
-            return Err(io::Error::other("SDK probe timed out"));
+    match command_for(config, language) {
+        Ok(launch) => {
+            report += &format!(
+                "Server source: {}\nLaunch argv: {:?}\n",
+                launch.origin, launch.argv
+            );
+            report += &launch
+                .runtime_report()
+                .await
+                .unwrap_or_else(|e| e.to_string());
         }
-        use std::io::{Read, Seek};
-        file.rewind()?;
-        let mut bytes = Vec::new();
-        file.take(8192).read_to_end(&mut bytes)?;
-        Ok::<_, io::Error>(String::from_utf8_lossy(&bytes).into_owned())
+        Err(error) => {
+            report += &format!(
+                "{error}\n{}",
+                lsp_install::prerequisite_report(language).await
+            );
+        }
     }
-    .await;
-    report += &output.unwrap_or_else(|e| format!("SDK probe failed: {e}"));
     report
 }

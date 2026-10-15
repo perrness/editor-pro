@@ -919,7 +919,7 @@ impl Editor {
         }
         match name {
             "ai" => self.ai_command(argument)?,
-            "LspInfo" | "LspRestart" | "LspLog" | "Doctor" | "Complete" | "Hover" | "Signature"
+            "LspInfo" | "LspRestart" | "LspLog" | "LspInstall" | "LspInstallCancel" | "Doctor" | "Complete" | "Hover" | "Signature"
                 | "Definition" | "References" | "Rename" | "CodeAction" | "Format" | "Symbols"
                 | "Outline" | "WorkspaceSymbols" | "Calls"
                 | "Diagnostics" | "Dnext" | "Dprev" => self.lsp_command(name, argument)?,

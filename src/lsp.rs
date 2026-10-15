@@ -54,6 +54,8 @@ pub struct Config {
     pub initialize_timeout: Duration,
     pub request_timeout: Duration,
     pub restart_limit: usize,
+    /// Only the executable resolves user settings/paths. Library defaults never download.
+    pub installation: crate::lsp_install::Options,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -63,6 +65,7 @@ impl Default for Config {
             initialize_timeout: Duration::from_secs(180),
             request_timeout: Duration::from_secs(15),
             restart_limit: 2,
+            installation: crate::lsp_install::Options::default(),
         }
     }
 }
@@ -114,6 +117,10 @@ pub struct Request {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    Installation {
+        language: Language,
+        state: crate::lsp_install::State,
+    },
     Route {
         path: PathBuf,
         key: ServerKey,

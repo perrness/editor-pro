@@ -17,6 +17,8 @@ import time
 
 
 def run_session(binary, path, commands, expected, environment=None, arguments=None, cwd=None):
+    session_settings = tempfile.TemporaryDirectory(prefix="editor-pro-smoke-settings-")
+    settings_root = Path(session_settings.name)
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     pid = os.fork()
@@ -32,8 +34,15 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         os.environ["COLORTERM"] = "truecolor"
         os.environ.pop("NO_COLOR", None)
         # User settings must not affect acceptance fixtures.
-        os.environ["HOME"] = str(path.parent / ".smoke-home")
-        os.environ["XDG_CONFIG_HOME"] = str(path.parent / ".smoke-config")
+        os.environ["HOME"] = str(settings_root / "home")
+        os.environ["XDG_CONFIG_HOME"] = str(settings_root / "config")
+        os.environ["XDG_DATA_HOME"] = str(settings_root / "data")
+        for name in ("EDITOR_PRO_KOTLIN_LSP", "EDITOR_PRO_JAVA_LSP", "EDITOR_PRO_CSHARP_LSP"):
+            os.environ.pop(name, None)
+        settings = (Path(os.environ["HOME"]) / "Library/Application Support/editor-pro/config.json"
+                    if sys.platform == "darwin" else Path(os.environ["XDG_CONFIG_HOME"]) / "editor-pro/config.json")
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text('{"lsp":{"auto_install":false}}\n')
         if environment:
             os.environ.update(environment)
         if cwd is not None:
@@ -139,6 +148,7 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
             os.waitpid(pid, 0)
         os.close(master)
         os.close(slave)
+        session_settings.cleanup()
 
 
 def main():
@@ -346,6 +356,20 @@ def main():
         assert '"method": "shutdown"' in log.read_text()
         assert '"method": "exit"' in log.read_text()
         language_source.write_text("bad value\n")
+        log = lsp_root / "installation-controls.jsonl"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps(
+            [sys.executable, str(fake.resolve()), "--log", str(log)])}
+        output = run_session(binary, language_source, [
+            (server_ready, 10), b":LspInfo\r", (b"Automatic installation: false", 10), b"\x1b",
+            b":LspInstall rust\r", (b"Supported installers", 10),
+            b":LspInstallCancel\r", b":LspInfo\r", (b"No installation running", 10),
+            resize(3, 1), resize(24, 100), b"\x1b", b":q\r",
+        ], b"bad value\n", environment)
+        capture_dir = os.environ.get("EDITOR_PRO_SMOKE_CAPTURE_DIR")
+        if capture_dir:
+            Path(capture_dir).mkdir(parents=True, exist_ok=True)
+            (Path(capture_dir) / "lsp-installation-controls.ansi").write_bytes(output)
+        language_source.write_text("bad value\n")
         log = lsp_root / "completion.jsonl"
         environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
             sys.executable, str(fake.resolve()), "--log", str(log),
@@ -489,7 +513,7 @@ def main():
         ], original, ai_environment)
         if capture_dir:
             (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
-    print("PASS: 27 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 28 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, Git, review/resume/export, LSP edits and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

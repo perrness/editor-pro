@@ -67,7 +67,7 @@ The existing environment variables for optional language/AI services still apply
 
 ## Homebrew installation and updates
 
-After the tap has been bootstrapped and the first release workflow succeeds:
+Install or update the published release:
 
 ```sh
 brew install perrness/tap/editor-pro
@@ -82,9 +82,11 @@ Use an existing user-writable Homebrew installation; the editor formula needs no
 `sudo`. `brew uninstall editor-pro` removes the commands and keeps user settings.
 Homebrew's own initial installation is separate from the editor installation.
 
-Git, ripgrep, language servers and the optional AI CLI remain separate optional
-tools. No runtime, grammar download or configuration directory is bundled beside
-the executable. Linux source builds remain available; Linux release archives and
+Git, ripgrep and the optional AI CLI remain separate optional tools. Missing
+Kotlin, Java and C# language servers are installed on demand in per-user storage;
+see [language-server setup](LANGUAGE_SERVERS.md) for prerequisites and controls.
+No runtime, grammar download or configuration directory is bundled beside the
+executable. Linux source builds remain available; Linux release archives and
 Homebrew-on-Linux installation are deferred.
 
 ## One-time maintainer setup

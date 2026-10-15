@@ -1086,3 +1086,79 @@ deployment target; the workflow tests on macOS 15, so macOS 14 runtime behavior
 still needs separate acceptance. Signing/notarization, Linux release archives,
 Rust 1.88 and physical-terminal checks remain unverified or deferred. No
 self-updater or background update check was added.
+
+## Automatic language-server installation
+
+2026-10-15, Linux x86_64. Implemented the approved per-user installer for the
+existing Kotlin, Java and C# integrations. The executable enables automatic
+installation by default; library editors and ordinary tests keep downloads off
+unless a local fixture explicitly enables them. New dependencies provide HTTPS,
+archive extraction and OS file locks; Cargo resolved them for Rust 1.88 compatibility.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 256 passed; seven opt-in real-provider/server tests ignored. |
+| Final focused library/LSP/configuration tests | 58 passed after final discovery/Doctor refinements. |
+| `cargo build --locked` | Passed. |
+| Python tool and Kotlin probe unit tests | Six tool/harness tests and eight Kotlin probe tests passed. |
+| `python3 tools/terminal_smoke.py` | All 28 PTY sessions passed, including installation controls and narrow resizing. |
+| `git diff --check` | Passed. |
+
+Cargo checks used `CARGO_HOME=/tmp/editor-pro-m3-cargo` and
+`CARGO_NET_OFFLINE=true` after dependency provisioning. The sandbox initially
+refused the local HTTP fixture's loopback listener; those tests passed with
+normal localhost socket access. Ordinary tests do not contact external services.
+The first PTY run exposed test settings being created inside a Git fixture,
+changing the file-list selection. Moving all default smoke settings outside
+project directories restored fixture isolation; the complete 28-session run passed.
+The new terminal capture is
+`/tmp/editor-pro-lsp-install-terminal/lsp-installation-controls.ansi`.
+
+Eleven new deterministic tests cover native data paths, strict settings/defaults,
+installation shared by two open projects, current unsaved Unicode/CRLF snapshots
+at first startup, offline reuse, cancellation/explicit retry, checksum/network
+failure cleanup, independent installers sharing an OS lock, disabled policy and
+explicit overrides, old/failed/hanging runtime probes, archive traversal/escaping
+links, supported internal symlinks, duplicate/truncated archives and platform recipes.
+Installation status retains the latest update when the UI event queue is full.
+
+### Actual downloads and server acceptance
+
+Each first run started with its server absent from the managed directory and
+used the editor's installer, without an argv override. Pinned package checksums
+were verified before extraction/installation. These runs used existing SDKs and
+cached project dependencies; they are not measurements of wholly cold project
+dependency downloads.
+
+| Fixture | Managed server | Result / elapsed test time |
+| --- | --- | --- |
+| `kotlin_maven` | Kotlin 263.6379.0, bundled JBR 25 | Passed, 117.67 s including download/extraction and restart. Project JAVA_HOME selected JDK 21, confirming separate server/runtime selection. |
+| `java_maven` | JDT LS 1.60.0-202606262232, OpenJDK 25 | Passed, 38.18 s including installation and direct-Java launch with private configuration/data. |
+| `csharp_project` | csharp-ls 0.28.0, .NET SDK 10.0.402 | Passed, 18.42 s. A fresh install after the final local NuGet-feed change also passed in 18.72 s. |
+
+All three exercised actual diagnostics, completion, hover, navigation, symbols,
+formatting, rename, edit previews/undo, source preservation and restart/resync with
+unsaved content. Reports are under `/tmp/editor-pro-lsp-install-real` and
+`/tmp/editor-pro-lsp-install-real-final`. Installations are isolated under
+`/tmp/editor-pro-lsp-managed-bWrsPI`; no user's PATH, shell settings or editor
+configuration was changed. Reproduce with `EDITOR_PRO_LSP_INSTALL_DIR` as described
+in [tools/lsp/README.md](tools/lsp/README.md).
+
+### Platform and operational limits
+
+Official Kotlin SHA-256 files were fetched for all four Linux/macOS architectures.
+Range reads confirmed both Mac `.sit` archives are ZIP files; the ARM64 central
+directory/product metadata confirmed `bin/intellij-server` and
+`jbr/Contents/Home/bin/java`, including relative JBR license symlinks. Native macOS
+execution, Linux ARM64, minimum-Rust execution, hosted CI, physical-terminal
+appearance and representative corporate proxies remain unverified here.
+
+The installer provisions servers only. JDK 21+, .NET SDK 10+ and project-specific
+build toolchains remain user prerequisites. Downloads have a cooperative ten-minute
+budget and 1 GiB cap; tar/ZIP expansion is bounded to 100,000 entries/4 GiB.
+Cancellation checks happen between chunks/files, with up to ten seconds for an
+idle network read. Filesystem stalls and OS process scheduling are not hard-time
+bounded. No Windows/musl installation, editor self-update, arbitrary package
+registry, SDK installation or server update/removal commands were added.

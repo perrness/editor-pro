@@ -35,6 +35,7 @@ review_store.rs bounded loading, record CAS, atomic persistence and Markdown wor
 review_view.rs  review commands, progress/navigation and contextual record list
 lsp.rs         protocol positions, immutable document stamps, capabilities and roots
 lsp_worker.rs  bounded multi-project server lifecycle, transport and synchronization
+lsp_install.rs pinned per-user server provisioning, runtime selection and installation jobs
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
 ai.rs          bounded captured context, structured answers and conversation schema
@@ -75,7 +76,8 @@ location. M3 adds only a paired diff projection, not a general window framework.
 | Project search | Installed ripgrep CLI with literal patterns, NUL-terminated filenames and vimgrep byte columns. A concrete standard-library worker owns requests/processes; no new crate or generic process framework. |
 | Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
 | AI | Installed Codex CLI `exec` with JSONL and structured output. A concrete standard-library worker uses existing serde/tempfile/hash dependencies. No SDK, additional runtime, provider trait or second provider. |
-| Configuration | An optional, bounded JSON file using existing serde/serde_json dependencies. Native macOS Application Support and Linux XDG paths; startup theme only, with strict field/theme validation. No configuration framework. |
+| Configuration | An optional, bounded JSON file using existing serde/serde_json dependencies. Native macOS Application Support and Linux XDG paths; startup theme and LSP installation policy, with strict validation. No configuration framework. |
+| Server installation | ureq/rustls for HTTPS, tar/flate2 and zip for bounded archive extraction, fs2 for cross-process installation locks. Existing sha2 verifies pinned hashes. Concrete installation threads keep network/filesystem/SDK work outside the protocol loop. |
 
 Helix's separation of core text/history from terminal concerns is useful prior
 art, as is its explicit grapheme handling. Its mature transaction/history system
@@ -106,7 +108,8 @@ Stable version tags gate reusable Linux/macOS checks, native macOS ARM64/Intel
 builds, installed Homebrew/PTY tests, complete GitHub release publication and a
 tap formula update using published SHA-256 values. Published assets remain
 unchanged on retries. The tap update is a separate job with a repository-scoped
-credential; the editor has no release network client, update check or self-updater.
+credential; the editor has no release update check or self-updater. Its LSP
+installer downloads only pinned language-server distributions.
 Linux binary distribution is deferred. See [release setup](docs/RELEASING.md).
 
 ## Editing invariants
@@ -455,10 +458,12 @@ does not block editing or another server's I/O. No generic service/backend layer
 was added. Ordinary document loading, edit-preview validation and safe-save I/O
 remain synchronous, under the existing file limits and a 2 MiB LSP document limit.
 
-Default argv uses official Kotlin `intellij-server --stdio`, Java `jdtls`, and
+Default PATH argv uses official Kotlin `intellij-server --stdio`, Java `jdtls`, and
 Roslyn-based `csharp-ls`. Environment JSON argv overrides require no shell.
-The manager checks executable/runtime presence; Doctor probes the selected runtime
-with a three-second deadline and bounded output. Servers, rather than the editor,
+Discovery prefers overrides, executable PATH servers, then a complete managed
+installation. Broken explicit overrides are errors, not installation triggers.
+Startup and Doctor probe the selected runtime with a three-second deadline and
+bounded output; wrapper overrides supply their own runtime. Servers, rather than the editor,
 interpret project toolchains and perform dependency imports. Discovery uses
 Gradle settings, the nearest Maven POM, or a containing C# solution/project,
 stopping at a Git boundary. Ambiguous solutions fail explicitly; a root override
@@ -467,6 +472,39 @@ workspace data, removed at shutdown; it does not persist warm indexes between ru
 JDT initialization/configuration explicitly enables signature help, which its
 default preferences disable despite advertising the capability. These concrete
 server settings do not introduce a general configuration framework.
+
+`main.rs` alone resolves the native user data directory and enables the configured
+`lsp.auto_install` policy (default true). Library editors default to no installation
+directory and no automatic downloads. Missing servers trigger one attempt per
+language per editor process; `:LspInstall [LANGUAGE]` retries explicitly and
+`:LspInstallCancel [LANGUAGE]` cancels the shared language job. Progress uses
+latest-value channels, separate from request deadlines and document epochs.
+At most three installation threads exist. A per-language OS file lock coordinates
+independent editors and releases on process death. Jobs have cooperative ten-minute
+deadlines; runtime/install subprocesses have bounded captured output and their own
+process groups. HTTP connect/resolve waits are five seconds, response/idle reads
+ten seconds; cancellation is checked between reads/files. ureq is pinned exactly
+because its idle-read adapter uses the unversioned transport API. TLS verification
+and HTTPS-only redirects remain enabled. Shutdown cancels and joins install jobs
+after terminal restoration, subject to network/filesystem stalls.
+
+The catalog pins version, URL, SHA-256, archive format and platform. Linux uses
+`$XDG_DATA_HOME/editor-pro/lsp` or `~/.local/share/editor-pro/lsp`; macOS uses
+Application Support. Downloads cap at 1 GiB; extraction at 100,000 entries/4 GiB.
+Absolute/parent paths, special files, duplicate regular files and escaping links
+are rejected; all links are deferred until regular files finish. Extraction happens
+in a private staging directory. A bounded receipt and atomic rename publish a
+complete installation; stale staging directories are removed under the lock on
+retry. Managed versions are retained and never modified by another install job.
+
+Kotlin uses its bundled JBR, including macOS ZIP-format `.sit` archives. Managed
+JDT uses Java directly with shared read-only distribution configuration and private
+per-session configuration/data. csharp-ls is installed from a checksum-verified
+NuGet package with a private local-only feed, SDK cache and tool path; it runs via
+the selected dotnet host, with major runtime roll-forward. No project NuGet config
+or tool manifest participates in installation. JDK 21+ and .NET SDK 10+ are
+prerequisites; project toolchains remain separate. On completion all sessions of
+the language restart from current Rope snapshots, preserving unsaved edits.
 
 The [LSP 3.17 protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
 uses UTF-16 positions here. Surrogate splits, CRLF interiors and out-of-range edits

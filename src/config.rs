@@ -16,6 +16,38 @@ const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub theme: ThemeName,
+    pub lsp: LspSettings,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LspSettings {
+    pub auto_install: bool,
+}
+impl Default for LspSettings {
+    fn default() -> Self {
+        Self { auto_install: true }
+    }
+}
+
+pub fn lsp_directory() -> Option<PathBuf> {
+    user_data_dir(
+        cfg!(target_os = "macos"),
+        env::var_os("HOME").as_deref().map(Path::new),
+        env::var_os("XDG_DATA_HOME").as_deref().map(Path::new),
+    )
+    .map(|directory| directory.join("editor-pro/lsp"))
+}
+
+fn user_data_dir(macos: bool, home: Option<&Path>, xdg: Option<&Path>) -> Option<PathBuf> {
+    let home = home.filter(|path| path.is_absolute());
+    if macos {
+        home.map(|path| path.join("Library/Application Support"))
+    } else {
+        xdg.filter(|path| path.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|path| path.join(".local/share")))
+    }
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -68,6 +100,29 @@ pub fn load(path: &Path) -> io::Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_servers_use_native_data_directories_with_absolute_fallbacks() {
+        let home = Some(Path::new("/users/test"));
+        let xdg = Some(Path::new("/data"));
+        assert_eq!(
+            user_data_dir(true, home, xdg),
+            Some("/users/test/Library/Application Support".into())
+        );
+        assert_eq!(user_data_dir(false, home, xdg), Some("/data".into()));
+        for xdg in [None, Some(Path::new("")), Some(Path::new("relative"))] {
+            assert_eq!(
+                user_data_dir(false, home, xdg),
+                Some("/users/test/.local/share".into())
+            );
+        }
+        assert_eq!(user_data_dir(true, None, xdg), None);
+        assert_eq!(user_data_dir(false, None, xdg), Some("/data".into()));
+        assert_eq!(
+            user_data_dir(false, Some(Path::new("relative")), None),
+            None
+        );
+    }
 
     #[test]
     fn standard_user_directories_never_depend_on_the_binary_or_working_directory() {

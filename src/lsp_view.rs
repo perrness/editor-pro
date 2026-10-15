@@ -18,6 +18,7 @@ use std::{
 #[derive(Default)]
 pub struct LspState {
     pub config: Config,
+    pub installations: BTreeMap<Language, crate::lsp_install::State>,
     worker: Option<Worker>,
     snapshots: Vec<Snapshot>,
     pub routes: BTreeMap<PathBuf, ServerKey>,
@@ -335,6 +336,30 @@ impl Editor {
     }
     fn lsp_event(&mut self, event: Event) -> io::Result<()> {
         match event {
+            Event::Installation { language, state } => {
+                self.lsp.installations.insert(language, state);
+                if self.view == View::Lsp
+                    && self
+                        .lsp
+                        .panel
+                        .as_ref()
+                        .is_some_and(|p| p.title == "LspInfo")
+                {
+                    let position = self
+                        .lsp
+                        .panel
+                        .as_ref()
+                        .map(|panel| (panel.selected, panel.top, panel.left));
+                    self.lsp_information("LspInfo");
+                    if let (Some((selected, top, left)), Some(panel)) =
+                        (position, &mut self.lsp.panel)
+                    {
+                        panel.selected = selected.min(panel.rows.len().saturating_sub(1));
+                        panel.top = top.min(panel.rows.len().saturating_sub(1));
+                        panel.left = left;
+                    }
+                }
+            }
             Event::Doctor { path, report } => {
                 if self.document.path() == Some(&path)
                     && self.view == View::Lsp
@@ -497,6 +522,47 @@ impl Editor {
         }
         if !matches!(self.view, View::Editing | View::Lsp) {
             return Err(error("Return to source before using language commands"));
+        }
+        if matches!(name, "LspInstall" | "LspInstallCancel") {
+            let language = match argument.trim() {
+                "" => self
+                    .document
+                    .path()
+                    .and_then(Language::for_path)
+                    .ok_or_else(|| error("Specify kotlin, java or csharp: :LspInstall LANGUAGE"))?,
+                "kotlin" => Language::Kotlin,
+                "java" => Language::Java,
+                "csharp" | "c#" => Language::CSharp,
+                _ => return Err(error("Supported installers: kotlin, java, csharp")),
+            };
+            if self.lsp.worker.is_none() {
+                self.lsp.worker = Some(Worker::new(self.lsp.config.clone())?);
+            }
+            let cancel = name == "LspInstallCancel";
+            self.lsp.worker.as_ref().unwrap().submit(if cancel {
+                Control::InstallCancel(language)
+            } else {
+                Control::Install(language)
+            })?;
+            self.lsp.installations.insert(
+                language,
+                crate::lsp_install::State {
+                    message: if cancel {
+                        "Cancelling installation"
+                    } else {
+                        "Installation queued"
+                    }
+                    .into(),
+                    busy: true,
+                    failed: false,
+                },
+            );
+            self.info(if cancel {
+                "Cancelling language-server installation"
+            } else {
+                "Installing language server in background; :LspInfo shows progress"
+            });
+            return Ok(());
         }
         if self.view == View::Editing
             && self.lsp.pending
@@ -1385,6 +1451,13 @@ impl Editor {
             "Source: {}\nLSP scope: Kotlin, Java, C#; UTF-16, 2 MiB/document\n",
             self.document.display_name()
         );
+        text += &format!(
+            "Automatic installation: {}\nManaged directory: {:?}\n",
+            self.lsp.config.installation.auto_install, self.lsp.config.installation.directory
+        );
+        for (language, state) in &self.lsp.installations {
+            text += &format!("Install {}: {}\n", language.id(), state.message);
+        }
         if let Some(key) = key {
             text += &format!(
                 "Language: {}\nProject root: {}\nCommand override: {} (JSON argv, no shell)\n",
@@ -1435,7 +1508,8 @@ impl Editor {
             text.push('\n');
         }
         if kind == "Doctor" {
-            text += "\nInstall the standalone official Kotlin LSP, JDT LS jdtls launcher, or Roslyn-based csharp-ls.\n";
+            text += "\n:LspInstall [kotlin|java|csharp] installs a pinned server; :LspInstallCancel cancels.\n";
+            text += "Kotlin includes Java. JDT LS requires Java 21+; csharp-ls requires .NET SDK 10+.\n";
             text += "Runtime and project SDKs are separate. JAVA_HOME/PATH select Java; dotnet/global.json select .NET.\n";
             text += "Server initialization/import is asynchronous (180s default). Requests time out after 15s.\n";
             text += "Gradle settings / nearest Maven pom / containing solution or project choose roots.\n";
@@ -1464,6 +1538,23 @@ impl Editor {
         };
         if Language::for_path(path).is_none() || self.note_edit.is_some() {
             return String::new();
+        }
+        if let Some(state) =
+            Language::for_path(path).and_then(|language| self.lsp.installations.get(&language))
+        {
+            if state.busy {
+                return format!("LSP {}", state.message);
+            }
+            if state.failed
+                && !self
+                    .lsp
+                    .routes
+                    .get(path)
+                    .and_then(|key| self.lsp.servers.get(key))
+                    .is_some_and(|info| info.capabilities.is_object())
+            {
+                return "LSP install failed (:LspInfo)".into();
+            }
         }
         if self.document.buffer.text().len_bytes() > lsp::MAX_DOCUMENT_BYTES {
             return "LSP >2MiB".into();

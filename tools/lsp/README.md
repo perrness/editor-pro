@@ -13,7 +13,8 @@ checksums before running them. Kotlin, JDT LS and Gradle hashes were checked
 against their published SHA-256 files; the .NET hash comes from Microsoft's
 [release metadata](https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json).
 The csharp-ls hash identifies the NuGet package installed by `dotnet tool`.
-The editor never installs software.
+The editor can also provision these pinned servers automatically; see the managed
+installation workflow below. JDK/.NET SDK and project toolchains remain prerequisites.
 
 - [Official Kotlin release](https://github.com/Kotlin/kotlin-lsp/releases/tag/kotlin-lsp/v263.6379.0):
   use `bin/intellij-server --stdio`. This archive bundles its JBR 25 runtime.
@@ -43,6 +44,26 @@ the fixtures' SDK targets to hide an import failure. Maven/Gradle/SDK caches can
 outlive a test; distinguish first-download runs from cached dependency runs.
 
 ## Running
+
+To exercise the editor's installer with real downloads, use a fresh absolute data
+directory and leave command overrides unset:
+
+```sh
+EDITOR_PRO_LSP_INSTALL_DIR=/your/test/managed-servers \
+  cargo test --locked --test lsp_real kotlin_maven -- --ignored --nocapture --test-threads=1
+```
+
+Repeat with `java_maven` and `csharp_project`, providing JDK 21+ and .NET SDK 10+
+respectively. Remove server executables from the test PATH to exercise installation;
+existing PATH servers retain precedence. The directory is opt-in test configuration, not a production
+environment override. The first run downloads/checks/extracts the actual server;
+subsequent runs reuse it. Reports include installation failures. Kotlin bundles
+its own runtime. A managed JDT launch uses Java directly with private configuration
+and workspace directories. Managed C# uses an isolated tool install from the
+verified NuGet package. Keep these network-dependent tests separate from the
+ordinary local HTTP/archive fixture tests.
+Managed fixture waits allow 900 seconds for installation plus initial import;
+ordinary existing-server fixture waits retain their 180-second limit.
 
 Set only the override needed for the language under test. For example:
 

@@ -47,7 +47,8 @@ Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refre
 Snapshots: :review snapshot, :review full, :review since [ID], :review snapshots
 Review: :review help, :review file|hunk reviewed|attention|unreviewed, :notes\nNotes: :note file|hunk|old|new; :note save or :note cancel; :review export PATH\nThemes: :theme tokyo-night|catppuccin|gruvbox
 
-LSP: :LspInfo, :Doctor, :LspRestart, :Hover, :Definition, :References, :Diagnostics
+LSP: :LspInfo, :Doctor, :LspInstall [LANGUAGE], :LspInstallCancel, :LspRestart
+Navigation: :Hover, :Definition, :References, :Diagnostics
 Code: :Outline, :WorkspaceSymbols QUERY, :Calls (i/o calls, Backspace parent)
 Project: :grep TEXT, :grepdir PATH, :recent, Ctrl-o/:back, Ctrl-i/:forward
 AI: :ai help; :ai context file, :ai ask QUESTION, :ai send; Visual Ctrl-g previews selection
@@ -120,6 +121,8 @@ fn run() -> io::Result<()> {
     }
     let mut editor = Editor::new(document);
     editor.theme = settings.theme;
+    editor.lsp.config.installation.directory = config::lsp_directory();
+    editor.lsp.config.installation.auto_install = settings.lsp.auto_install;
     for path in additional {
         editor.open_buffer(&path)?;
     }
@@ -179,6 +182,7 @@ fn event_loop(
             || editor.git.loading
             || editor.review.busy
             || editor.lsp.pending
+            || editor.lsp.installations.values().any(|state| state.busy)
             || editor.project_search.pending
             || editor.ai.pending
         {

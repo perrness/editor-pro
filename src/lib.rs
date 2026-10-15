@@ -14,6 +14,7 @@ pub mod git_view;
 pub mod input;
 pub mod lsp;
 pub mod lsp_edit;
+pub mod lsp_install;
 pub mod lsp_view;
 pub mod lsp_worker;
 pub mod motion;
