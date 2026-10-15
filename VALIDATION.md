@@ -1326,3 +1326,29 @@ Cargo used `CARGO_HOME=/tmp/editor-pro-m3-cargo` and `CARGO_NET_OFFLINE=true`.
 The full Rust suite passed with localhost socket access after the sandbox denied
 the existing installer fixtures' listeners. macOS and physical terminals were
 not tested.
+
+## Repeated undo and redo
+
+2026-10-15, Linux x86_64. [Issue #4](https://github.com/perrness/editor-pro/issues/4)
+adds a regression for three Insert sessions separated by reselecting the active
+buffer. Before the fix, reselecting exited Insert without committing the open
+transaction, so the first undo removed all three sessions. Context resets now
+commit the existing buffer transaction before returning to Normal mode. The
+existing history stacks and per-buffer ownership remain unchanged.
+
+Formatting, Clippy with warnings denied, the debug build, all **283 Rust tests**
+(seven opt-in tests ignored), all **14 Python tests**, and all **33 PTY sessions**
+passed. Three Rust regressions cover repeated undo/redo and exhaustion, counted
+undo, multiline operator changes, Unicode graphemes and CRLF, redo branching,
+savepoint identity, disk preservation and independent per-buffer redo stacks.
+The new terminal session sends three separate undo and redo keypresses, saves
+and checks exact file bytes after every step, and checks narrow resizing and
+terminal restoration. Capture:
+`/tmp/editor-pro-issue-4-terminal/multi-step-undo-redo.ansi`.
+
+The initial full build exhausted disk space and the linker crashed. Clearing
+generated Cargo artifacts and rerunning with `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` and two build jobs completed
+successfully. macOS and real language servers were not retested locally.
+Version v0.2.4 is prepared for the existing release workflow, which gates native
+macOS assets and Homebrew publication on hosted acceptance checks.

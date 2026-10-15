@@ -199,3 +199,69 @@ fn search_cache_is_invalidated_between_equal_generation_buffers() {
     e.search.refresh(&e.document.buffer);
     assert_eq!(e.search.matches.len(), 1);
 }
+
+#[test]
+fn reselecting_active_buffer_commits_each_insert_session() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("history.txt");
+    fs::write(&path, "界\r\n").unwrap();
+    let mut e = Editor::new(Document::open(&path).unwrap());
+    let mut states = vec![text(&e)];
+    for word in ["one", "two", "three"] {
+        keys(&mut e, "i");
+        keys(&mut e, word);
+        // Reselecting an already active document exits Insert just like a switch.
+        e.open_buffer(&path).unwrap();
+        assert_eq!(e.mode, editor_pro::editor::Mode::Normal);
+        states.push(text(&e));
+    }
+    for expected in states[..3].iter().rev() {
+        keys(&mut e, "u");
+        assert_eq!(&text(&e), expected);
+    }
+    for expected in &states[1..] {
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(&text(&e), expected);
+    }
+}
+
+#[test]
+fn multi_step_history_survives_save_and_switch_with_independent_redo() {
+    let dir = tempdir().unwrap();
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    fs::write(&a, "界\r\n").unwrap();
+    fs::write(&b, "other").unwrap();
+    let mut e = Editor::new(Document::open(&a).unwrap());
+    let mut states = vec![text(&e)];
+    for word in ["one", "two", "three"] {
+        keys(&mut e, "A");
+        keys(&mut e, word);
+        e.handle_key(Key::Escape);
+        states.push(text(&e));
+    }
+    keys(&mut e, ":w");
+    e.handle_key(Key::Enter);
+    assert!(!e.document.buffer.is_modified());
+    assert_eq!(fs::read_to_string(&a).unwrap(), states[3]);
+    keys(&mut e, "u");
+    e.open_buffer(&b).unwrap();
+    keys(&mut e, "iB");
+    e.handle_key(Key::Escape);
+    keys(&mut e, "u");
+    e.switch_buffer(1).unwrap();
+    assert_eq!(text(&e), states[2]);
+    for expected in states[..2].iter().rev() {
+        keys(&mut e, "u");
+        assert_eq!(&text(&e), expected);
+    }
+    for expected in &states[1..] {
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(&text(&e), expected);
+    }
+    assert!(!e.document.buffer.is_modified());
+    e.switch_buffer(2).unwrap();
+    e.handle_key(Key::Ctrl('r'));
+    assert_eq!(text(&e), "Bother");
+    assert_eq!(fs::read_to_string(&b).unwrap(), "other");
+}

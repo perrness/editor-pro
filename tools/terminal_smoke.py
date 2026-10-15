@@ -577,7 +577,27 @@ def main():
         ], original, ai_environment)
         if capture_dir:
             (Path(capture_dir) / "m8-ai-resume.ansi").write_bytes(output)
-    print("PASS: 32 PTY sessions; ep directory/file startup, user configuration, editing, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        # Repeated real keypresses must walk distinct sessions in both directions.
+        history_path = Path(directory) / "undo-history.txt"
+        history_states = ["界\r\nlast"]
+        history_path.write_bytes(history_states[0].encode())
+        history_commands = []
+        for word in ["one", "two", "three"]:
+            history_commands.extend([f"A{word}".encode(), b"\x1b"])
+            history_states.append(history_states[-1].replace("\r\n", word + "\r\n", 1))
+        for key, expected_states in [(b"u", list(reversed(history_states[:3]))),
+                                     (b"\x12", history_states[1:])]:
+            for expected_state in expected_states:
+                expected_bytes = expected_state.encode()
+                history_commands.extend([
+                    key, b":w\r",
+                    (lambda expected=expected_bytes: history_path.read_bytes() == expected, 10),
+                ])
+        history_commands.extend([resize(3, 1), resize(24, 101), b":q\r"])
+        output = run_session(binary, history_path, history_commands, history_states[-1].encode())
+        if capture_dir:
+            (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
+    print("PASS: 33 PTY sessions; ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

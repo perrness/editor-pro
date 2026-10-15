@@ -1061,6 +1061,9 @@ impl Editor {
     }
 
     pub(crate) fn reset_context(&mut self) {
+        // Leaving an editing context ends its undo group, even when the same
+        // buffer is reselected and no document swap occurs.
+        self.document.buffer.commit();
         self.lsp.cancel();
         self.project_search.cancel();
         self.mode = Mode::Normal;

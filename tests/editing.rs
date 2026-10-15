@@ -325,3 +325,46 @@ fn mixed_edit_sequences_never_leave_cursor_inside_a_grapheme() {
         assert!(buffer.cursor() <= buffer.text().len_chars());
     }
 }
+
+#[test]
+fn repeated_undo_redo_walks_insert_and_operator_transactions() {
+    let mut e = editor("a\u{301}界\r\nlast");
+    let mut states = vec![content(&e)];
+    keys(&mut e, "A👨‍👩‍👧‍👦");
+    e.handle_key(Key::Enter);
+    keys(&mut e, "new");
+    e.handle_key(Key::Escape);
+    states.push(content(&e));
+    keys(&mut e, "ggdd");
+    states.push(content(&e));
+    keys(&mut e, "cwchanged");
+    e.handle_key(Key::Escape);
+    states.push(content(&e));
+    for expected in states[..3].iter().rev() {
+        keys(&mut e, "u");
+        assert_eq!(&content(&e), expected);
+        assert!(e.selection().is_none());
+        let cursor = e.document.buffer.cursor();
+        assert!(
+            content(&e)
+                .grapheme_indices(true)
+                .any(|(byte, _)| { content(&e)[..byte].chars().count() == cursor })
+                || cursor == content(&e).chars().count()
+        );
+    }
+    keys(&mut e, "u");
+    assert_eq!(content(&e), states[0]);
+    for expected in &states[1..] {
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(&content(&e), expected);
+    }
+    e.handle_key(Key::Ctrl('r'));
+    assert_eq!(content(&e), states[3]);
+    keys(&mut e, "2u");
+    assert_eq!(content(&e), states[1]);
+    keys(&mut e, "iX");
+    e.handle_key(Key::Escape);
+    let branched = content(&e);
+    e.handle_key(Key::Ctrl('r'));
+    assert_eq!(content(&e), branched);
+}

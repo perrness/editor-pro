@@ -124,7 +124,9 @@ Linux binary distribution is deferred. See [release setup](docs/RELEASING.md).
    does not edit it. There is no terminal dependency in buffer/file logic.
 4. Insert sessions, movement breaks and pastes define undo groups. New committed
    edits invalidate redo; no-op groups do not. Savepoint identity survives
-   undo/redo. History is bounded to 1,000 groups, not persisted.
+   undo/redo. Leaving an editing context commits its group, including reselecting
+   the active buffer without swapping documents. History is bounded to 1,000
+   groups, not persisted.
 5. File bytes are preserved on a no-edit save. Newline insertion follows the first
    observed LF/CRLF style; final newlines are not added implicitly.
 6. Paths and source text are rendered as data. Control bytes are displayed as
