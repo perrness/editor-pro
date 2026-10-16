@@ -186,7 +186,10 @@ def run_ai_explain_sessions(binary, directory, resize, capture_dir=None):
     index = (root / ".git/index").read_bytes()
     output = run_session(binary, source, [
         b"j", b":diff\r", resize(32, 160), (resize(32, 161), b"@@", 10),
-        b"\x07", resize(32, 160), (b"Question: Explain the behavior changed", 10),
+        # Loading review metadata invalidates the first Git snapshot. Retry
+        # this read-only shortcut until a fresh comparison opens the preview;
+        # Ctrl-g is inert inside AI and cannot send the request.
+        (b"\x07", b"Question: Explain the behavior changed", 10), resize(32, 160),
         (b"Base commit:", 10), (b"Hunk source (matches captured new side)", 10),
         b":ai send\r", (b"Completed", 10),
         b"\x1b", resize(32, 161), (b"@@", 10), b"\x1b",

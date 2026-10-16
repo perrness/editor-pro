@@ -1808,3 +1808,14 @@ Release preparation bumps the Cargo package and lockfile to **v0.2.12**. The
 stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
+
+The v0.2.12 hosted run passed Linux checks, both native macOS builds, and the
+Homebrew installation/terminal suite. The macOS debug terminal suite exposed a
+timing assumption in the new hunk workflow: review loading invalidated the first
+Git snapshot just before Ctrl-g, and the editor correctly refused stale context.
+Publication was skipped. The harness now retries only that read-only shortcut
+until the preview opens; Ctrl-g cannot send from the AI view. Both focused PTY
+workflows passed again locally, along with all six release/harness Python tests,
+all three CLI/version tests, the stable-tag check, offline Cargo check, formatting
+and whitespace checks. Their log is `/tmp/editor-pro-v0.2.13-terminal-focused.log`.
+The corrected release uses **v0.2.13**, preserving the existing v0.2.12 tag.
