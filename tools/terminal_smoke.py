@@ -393,6 +393,33 @@ def run_file_tree_session(binary, directory, resize, capture_dir=None):
         (Path(capture_dir) / "file-tree.ansi").write_bytes(output)
 
 
+def run_colorful_ui_sessions(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "colorful-project"
+    (root / "src").mkdir(parents=True)
+    source = root / "src/main.rs"
+    original = 'fn main() { println!("Hello, 界!"); }\r\n'.encode()
+    source.write_bytes(original)
+    for name in ("Cargo.toml", "README.md", "logo.svg"):
+        (root / name).write_text("")
+    for theme, panel in (("tokyo-night", b"48;2;22;22;30"),
+                         ("catppuccin", b"48;2;24;24;37"),
+                         ("gruvbox", b"48;2;29;32;33")):
+        output = run_session(binary, source, [
+            f":theme {theme}\r".encode(), b" pv", (b"README.md", 10),
+            b"l", (b"[rs]", 10), b"j", resize(24, 100),
+            (b"[rs]", 10), (b"[{}]", 10), (b"[md]", 10),
+            resize(4, 20), resize(2, 2), resize(1, 1), resize(24, 101),
+            (b"main.rs", 10), b"\x1b", b":ls\r", (b"Buffers", 10),
+            b"\x1b", b"\x10", (b"Files", 10), b"main", b"\r",
+            b"i// temporary", b"\x1b", b"u", b":q\r",
+        ], original, cwd=root)
+        assert panel in output, f"Missing {theme} panel color"
+        assert "▎".encode() in output, "Missing selection rail"
+        assert "│".encode() in output, "Missing tree guide"
+        if capture_dir:
+            (Path(capture_dir) / f"colorful-ui-{theme}.ansi").write_bytes(output)
+
+
 def run_lsp_warmup_sessions(binary, directory, resize, capture_dir=None):
     for name, arguments in [("directory", ["."]), ("cwd", [])]:
         root = Path(directory) / f"warmup-{name}"
@@ -987,12 +1014,13 @@ def main():
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
         run_splash_sessions(binary, directory, resize, capture_dir)
         run_file_tree_session(binary, directory, resize, capture_dir)
+        run_colorful_ui_sessions(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
         run_lsp_startup_session(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 55 PTY sessions; ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 58 PTY sessions; colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

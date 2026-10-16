@@ -401,56 +401,119 @@ impl Editor {
 }
 
 pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate::theme::Theme) {
-    use ratatui::{layout::Rect, style::Style, widgets::Paragraph};
+    use crate::{
+        text::{display_column, visible_text},
+        ui::{clipped_line, file_badge, render_panel_header},
+    };
+    use ratatui::{
+        layout::Rect,
+        style::{Modifier, Style},
+        text::Span,
+        widgets::{Block, Paragraph},
+    };
     let area = frame.area();
+    if area.is_empty() {
+        return;
+    }
     let tree = &mut editor.tree;
     let height = area.height.saturating_sub(3) as usize;
     tree.top = tree.top.min(tree.selected);
     if height > 0 && tree.selected >= tree.top + height {
         tree.top = tree.selected + 1 - height;
     }
-    let style = Style::default().fg(theme.foreground).bg(theme.background);
-    let title = format!(
-        "Tree · {}{}",
-        tree.root.display(),
-        if tree.scan.is_some() {
-            " · loading"
-        } else {
-            ""
-        }
-    );
-    frame.render_widget(
-        Paragraph::new(crate::text::visible_text(&title, 0, area.width as usize)).style(style),
+    let width = usize::from(area.width);
+    let style = Style::default().fg(theme.foreground).bg(theme.panel);
+    frame.render_widget(Block::default().style(style), area);
+    let summary = if tree.scan.is_some() {
+        "loading".to_owned()
+    } else {
+        format!(
+            "{}/{}",
+            if tree.entries.is_empty() {
+                0
+            } else {
+                tree.selected + 1
+            },
+            tree.entries.len()
+        )
+    };
+    render_panel_header(
+        frame,
         Rect::new(area.x, area.y, area.width, 1),
+        "Tree",
+        &tree.root.display().to_string(),
+        &summary,
+        theme,
     );
     for (row, entry) in tree.entries.iter().skip(tree.top).take(height).enumerate() {
-        let marker = if entry.expanded {
-            "▾"
-        } else if entry.directory {
-            "▸"
-        } else if entry.symlink {
-            "@"
+        let selected = tree.top + row == tree.selected;
+        let row_style = if selected {
+            style.bg(theme.selection).add_modifier(Modifier::BOLD)
         } else {
-            " "
+            style
         };
-        let text = format!(
-            "{}{} {}",
-            "  ".repeat(entry.depth),
-            marker,
-            entry.path.file_name().unwrap_or_default().to_string_lossy()
-        );
-        frame.render_widget(
-            Paragraph::new(crate::text::visible_text(&text, 0, area.width as usize)).style(
-                if tree.top + row == tree.selected {
-                    style.bg(theme.selection)
-                } else {
-                    style
-                },
+        // Keep filenames visible in narrow windows, even deep inside a tree.
+        let depth = entry.depth.min(width.saturating_sub(16) / 2);
+        let guide = if depth < entry.depth {
+            format!("{}… ", "│ ".repeat(depth.saturating_sub(1)))
+        } else {
+            "│ ".repeat(depth)
+        };
+        let badge = if entry.directory {
+            Span::styled(
+                if entry.expanded { "▾ " } else { "▸ " },
+                Style::default().fg(theme.normal),
+            )
+        } else if entry.symlink {
+            Span::styled("[@] ", Style::default().fg(theme.type_name))
+        } else {
+            file_badge(&entry.path, theme)
+        };
+        let mut name = entry
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let name_style = if entry.directory {
+            name.push('/');
+            Style::default()
+                .fg(theme.normal)
+                .add_modifier(Modifier::BOLD)
+        } else if entry.symlink {
+            Style::default().fg(theme.type_name)
+        } else {
+            Style::default()
+        };
+        let mut spans = vec![
+            Span::styled(
+                if selected { "▎ " } else { "  " },
+                Style::default().fg(theme.normal),
             ),
+            Span::styled(guide, Style::default().fg(theme.border)),
+            badge,
+            Span::styled(name, name_style),
+        ];
+        if editor.document.path() == Some(entry.path.as_path()) {
+            spans.push(Span::styled(" •", Style::default().fg(theme.insert)));
+        }
+        frame.render_widget(
+            Paragraph::new(clipped_line(spans, width)).style(row_style),
             Rect::new(area.x, area.y + 1 + row as u16, area.width, 1),
         );
     }
-    if area.height > 1 {
+    if height > 0 && tree.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(if tree.scan.is_some() {
+                "  Loading directory…"
+            } else {
+                "  No entries · a/A to create"
+            })
+            .style(style.fg(theme.muted)),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+    }
+    if area.height > 2 {
         let status = if let Some((op, path, value)) = &tree.prompt {
             let label = match op {
                 'a' => "New file",
@@ -462,21 +525,53 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
         } else {
             editor.message.clone()
         };
+        let cells = display_column(&status, status.chars().count());
+        let offset = if tree.prompt.is_some() {
+            cells.saturating_sub(width - 1)
+        } else {
+            0
+        };
         frame.render_widget(
-            Paragraph::new(crate::text::visible_text(&status, 0, area.width as usize)).style(
-                style.fg(if editor.message_is_error {
+            Paragraph::new(visible_text(&status, offset, width)).style(style.bg(theme.status).fg(
+                if editor.message_is_error
+                    || tree.prompt.as_ref().is_some_and(|(op, _, _)| *op == 'd')
+                {
                     theme.error
                 } else {
                     theme.command
-                }),
-            ),
+                },
+            )),
             Rect::new(area.x, area.bottom() - 2, area.width, 1),
         );
+        if tree.prompt.is_some() {
+            frame.set_cursor_position((area.x + (cells - offset) as u16, area.bottom() - 2));
+        }
+    }
+    if area.height > 1 {
+        let mut hints = Vec::new();
+        for (key, action) in [
+            ("j/k", ""),
+            ("h/l", " fold"),
+            ("Enter", " open"),
+            ("a/A", " new"),
+            ("r", " move"),
+            ("d", " delete"),
+            ("R", " scan"),
+            ("Esc", " close"),
+        ] {
+            if !hints.is_empty() {
+                hints.push(Span::styled(" · ", Style::default().fg(theme.border)));
+            }
+            hints.push(Span::styled(
+                key,
+                Style::default()
+                    .fg(theme.normal)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            hints.push(Span::styled(action, Style::default().fg(theme.muted)));
+        }
         frame.render_widget(
-            Paragraph::new(
-                "j/k · h/l fold · Enter open · a/A new · r move · d delete · R scan · Esc close",
-            )
-            .style(style.fg(theme.muted)),
+            Paragraph::new(clipped_line(hints, width)).style(style),
             Rect::new(area.x, area.bottom() - 1, area.width, 1),
         );
     }

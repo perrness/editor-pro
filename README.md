@@ -754,6 +754,15 @@ Themes are **tokyo-night** (default), **catppuccin**, and **gruvbox**, inspired 
 those palettes. Try `:theme gruvbox`. Selection applies to syntax, search,
 selections, modes and contextual views; it is not persisted across runs.
 
+All three palettes keep a dark editing surface and Tree-sitter syntax colors.
+Navigation panels use darker backgrounds, accented headers, brighter secondary
+text and a selection rail. The tree, fuzzy picker and buffer list show colored
+text badges for file types, such as `[rs]`, `[md]` and `[{}]`; no special icon font
+is needed. Statusline colors distinguish language, Git/LSP state, dirty buffers
+and cursor position.
+
+![Tokyo Night source highlighting and segmented statusline](docs/images/editor.png)
+
 The statusline includes buffer ID, filename, dirty/disk flags, mode, language,
 UTF-8/line-ending information, grapheme column and position percentage. Wider
 terminals also show buffer/dirty counts and pending operators; narrow ones use a
@@ -958,6 +967,15 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the
 In Normal mode, press **Space**, **p**, **v** in sequence to toggle the file tree.
 `:tree [DIRECTORY]` also opens it; the default root is the working directory and
 subsequent toggles retain the chosen root. `Ctrl-p` keeps the fuzzy finder.
+
+Folders use the theme's accent color, fold arrows and trailing slashes;
+indentation guides show nesting. A `•` marks the active source file, and `[@]`
+identifies a symlink.
+The header shows the selected entry's position in the expanded tree. Long paths
+and deep indentation adapt to the terminal width; file prompts keep the text
+being entered and the cursor visible.
+
+![File tree in Tokyo Night, captured from a demo project](docs/images/file-tree.png)
 
 Use `j/k` or arrows to select, `l`/Right to expand, `h`/Left to collapse or select
 the parent, and Enter to open a file. Escape or Space p v returns to the source

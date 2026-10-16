@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph},
 };
-use std::ops::Range;
+use std::{ops::Range, path::Path};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
@@ -347,6 +347,116 @@ fn render_message(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: R
     );
 }
 
+/// Clip styled UI text by terminal cells, sanitizing paths and other external text.
+pub(crate) fn clipped_line(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let mut remaining = width;
+    let mut visible = Vec::new();
+    for mut span in spans {
+        if remaining == 0 {
+            break;
+        }
+        let text = visible_text(&span.content, 0, remaining);
+        remaining = remaining.saturating_sub(display_column(&text, text.chars().count()));
+        span.content = text.into();
+        visible.push(span);
+    }
+    Line::from(visible)
+}
+
+pub(crate) fn render_panel_header(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    detail: &str,
+    meta: &str,
+    theme: &Theme,
+) {
+    let width = usize::from(area.width);
+    let style = Style::default().fg(theme.foreground).bg(theme.status);
+    let title = format!(" {title} ");
+    let meta = if width >= 50 {
+        visible_text(&format!(" {meta} "), 0, width / 3)
+    } else {
+        String::new()
+    };
+    let meta_width = display_column(&meta, meta.chars().count());
+    let detail_width = width.saturating_sub(title.len() + meta_width + 2);
+    let detail_cells = display_column(detail, detail.chars().count());
+    let detail = visible_text(
+        detail,
+        detail_cells.saturating_sub(detail_width),
+        detail_width,
+    );
+    frame.render_widget(
+        Paragraph::new(clipped_line(
+            vec![
+                Span::styled(
+                    title,
+                    style
+                        .fg(theme.background)
+                        .bg(theme.normal)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" {detail}"), style.fg(theme.type_name)),
+            ],
+            width.saturating_sub(meta_width),
+        ))
+        .style(style),
+        area,
+    );
+    if meta_width > 0 {
+        frame.render_widget(
+            Paragraph::new(meta).style(style.fg(theme.modified).bg(theme.current_line)),
+            Rect::new(
+                area.right() - meta_width as u16,
+                area.y,
+                meta_width as u16,
+                1,
+            ),
+        );
+    }
+}
+
+/// Filename-only decoration: no file reads, parser work, or special icon font.
+pub(crate) fn file_badge(path: &Path, theme: &Theme) -> Span<'static> {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let extension = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let (label, color) = match extension.as_str() {
+        "rs" => ("rs", theme.number),
+        "kt" | "kts" => ("kt", theme.command),
+        "java" => ("jv", theme.number),
+        "cs" => ("cs", theme.command),
+        "fs" | "fsx" => ("fs", theme.command),
+        "js" | "jsx" => ("js", theme.modified),
+        "ts" | "tsx" => ("ts", theme.normal),
+        "py" => ("py", theme.modified),
+        "rb" | "go" | "c" | "h" | "cpp" | "hpp" | "swift" => ("<>", theme.type_name),
+        "sh" | "bash" | "zsh" | "fish" => ("sh", theme.insert),
+        "md" | "markdown" => ("md", theme.type_name),
+        "txt" | "rst" => ("tx", theme.type_name),
+        "json" | "jsonc" | "toml" | "yaml" | "yml" | "xml" | "ini" | "conf" => {
+            ("{}", theme.command)
+        }
+        "html" | "css" | "scss" | "vue" | "svelte" => ("<>", theme.error),
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" => ("im", theme.insert),
+        "lock" => ("==", theme.muted),
+        _ if name.starts_with('.') || matches!(name.as_str(), "dockerfile" | "makefile") => {
+            ("{}", theme.command)
+        }
+        _ if name.starts_with("readme") || name.starts_with("license") => ("md", theme.type_name),
+        _ => ("--", theme.muted),
+    };
+    Span::styled(format!("[{label}] "), Style::default().fg(color))
+}
+
 fn render_picker(
     frame: &mut Frame<'_>,
     picker: &crate::picker::FilePicker,
@@ -356,22 +466,24 @@ fn render_picker(
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let style = Style::default().fg(theme.foreground).bg(theme.background);
+    let style = Style::default().fg(theme.foreground).bg(theme.panel);
     frame.render_widget(Block::default().style(style), area);
     if area.height > 1 {
-        let title = format!(
-            "Files {}/{}{}{} ({} unreadable) — {}",
+        let summary = format!(
+            "{}/{}{}{} ({} unreadable)",
             picker.match_count(),
             picker.item_count(),
             if picker.working() { " …" } else { "" },
             if picker.limited { " [100k limit]" } else { "" },
-            picker.errors,
-            picker.root.display()
+            picker.errors
         );
-        frame.render_widget(
-            Paragraph::new(visible_text(&title, 0, usize::from(area.width)))
-                .style(style.fg(theme.muted)),
+        render_panel_header(
+            frame,
             Rect::new(area.x, area.y, area.width, 1),
+            "Files",
+            &picker.root.display().to_string(),
+            &summary,
+            theme,
         );
     }
     let prompt_row = u16::from(area.height > 1);
@@ -394,13 +506,27 @@ fn render_picker(
             break;
         };
         let row_style = if index == picker.selected {
-            style.bg(theme.selection)
+            style.bg(theme.selection).add_modifier(Modifier::BOLD)
         } else {
             style
         };
         frame.render_widget(
-            Paragraph::new(visible_text(&candidate.display, 0, usize::from(area.width)))
-                .style(row_style),
+            Paragraph::new(clipped_line(
+                vec![
+                    Span::styled(
+                        if index == picker.selected {
+                            "▎ "
+                        } else {
+                            "  "
+                        },
+                        Style::default().fg(theme.normal),
+                    ),
+                    file_badge(Path::new(&candidate.display), theme),
+                    Span::raw(candidate.display.clone()),
+                ],
+                usize::from(area.width),
+            ))
+            .style(row_style),
             Rect::new(area.x, area.y + prompt_row + 1 + row, area.width, 1),
         );
     }
@@ -425,32 +551,58 @@ fn render_buffers(
     area: Rect,
     selected: usize,
 ) {
-    let style = Style::default().fg(theme.foreground).bg(theme.background);
+    let style = Style::default().fg(theme.foreground).bg(theme.panel);
     frame.render_widget(Block::default().style(style), area);
     let infos = editor.buffer_infos();
-    let top = selected.saturating_sub(usize::from(area.height).saturating_sub(1));
-    for (row, info) in infos
-        .iter()
-        .skip(top)
-        .take(usize::from(area.height))
-        .enumerate()
-    {
-        let line = format!(
-            "{} {:>3} {}{} {}",
-            if info.active { '%' } else { ' ' },
-            info.id,
-            if info.modified { '+' } else { ' ' },
-            if info.external_changed { '!' } else { ' ' },
-            info.name
+    let header = u16::from(area.height > 1);
+    if header > 0 {
+        render_panel_header(
+            frame,
+            Rect::new(area.x, area.y, area.width, 1),
+            "Buffers",
+            "Open documents",
+            &format!(
+                "{} open · {} dirty",
+                infos.len(),
+                editor.dirty_buffer_count()
+            ),
+            theme,
         );
+    }
+    let rows = usize::from(area.height - header);
+    let top = selected.saturating_sub(rows.saturating_sub(1));
+    for (row, info) in infos.iter().skip(top).take(rows).enumerate() {
         let style = if row + top == selected {
-            style.bg(theme.selection)
+            style.bg(theme.selection).add_modifier(Modifier::BOLD)
         } else {
             style
         };
         frame.render_widget(
-            Paragraph::new(visible_text(&line, 0, usize::from(area.width))).style(style),
-            Rect::new(area.x, area.y + row as u16, area.width, 1),
+            Paragraph::new(clipped_line(
+                vec![
+                    Span::styled(
+                        if row + top == selected { "▎ " } else { "  " },
+                        Style::default().fg(theme.normal),
+                    ),
+                    Span::styled(
+                        format!("{} {:>3} ", if info.active { '%' } else { ' ' }, info.id),
+                        Style::default().fg(theme.normal),
+                    ),
+                    Span::styled(
+                        if info.modified { "+" } else { " " },
+                        Style::default().fg(theme.modified),
+                    ),
+                    Span::styled(
+                        if info.external_changed { "! " } else { "  " },
+                        Style::default().fg(theme.error),
+                    ),
+                    file_badge(Path::new(&info.name), theme),
+                    Span::raw(info.name.clone()),
+                ],
+                usize::from(area.width),
+            ))
+            .style(style),
+            Rect::new(area.x, area.y + header + row as u16, area.width, 1),
         );
     }
 }
@@ -582,30 +734,57 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     } else {
         format!("{pending} ")
     };
-    let right = if area.width >= 100 {
-        format!(
-            " {pending}{}buf {}dirty | {language} UTF-8 {} | {}:{} {percent}% ",
-            editor.buffer_count(),
-            editor.dirty_buffer_count(),
-            editor.document.buffer.newline_name(),
-            line + 1,
-            column
-        )
-    } else if area.width >= 70 {
-        format!(
-            " {pending}{language} UTF-8 {} {}:{} {percent}% ",
-            editor.document.buffer.newline_name(),
-            line + 1,
-            column
-        )
-    } else if area.width >= 40 {
-        format!(" {pending}{}:{} {percent}% ", line + 1, column)
-    } else if area.width >= 20 {
-        format!(" {pending}{}:{} ", line + 1, column)
-    } else {
-        String::new()
-    };
-    let right = if area.width >= 70 && editor.git.visible() {
+    let mut right = Vec::new();
+    let separator = Span::styled(" | ", style.fg(theme.border));
+    if area.width >= 20 {
+        right.push(Span::styled(
+            format!(" {pending}"),
+            style.fg(theme.modified).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if area.width >= 100 {
+        right.push(Span::styled(
+            format!("{}buf ", editor.buffer_count()),
+            style.fg(theme.muted),
+        ));
+        right.push(Span::styled(
+            format!("{}dirty", editor.dirty_buffer_count()),
+            style.fg(if editor.dirty_buffer_count() > 0 {
+                theme.modified
+            } else {
+                theme.muted
+            }),
+        ));
+        right.push(separator.clone());
+    }
+    if area.width >= 70 {
+        right.push(Span::styled(
+            language,
+            style.fg(theme.type_name).add_modifier(Modifier::BOLD),
+        ));
+        right.push(Span::styled(
+            format!(" UTF-8 {}", editor.document.buffer.newline_name()),
+            style.fg(theme.muted),
+        ));
+        if area.width >= 100 {
+            right.push(separator.clone());
+        }
+    }
+    if area.width >= 20 {
+        let position = if area.width >= 40 {
+            format!(" {}:{} {percent}% ", line + 1, column)
+        } else {
+            format!(" {}:{} ", line + 1, column)
+        };
+        right.push(Span::styled(
+            position,
+            style
+                .fg(theme.normal)
+                .bg(theme.panel)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if area.width >= 70 && editor.git.visible() {
         let git = format!(
             "{}→buffer{} {}",
             editor.git.comparison.label(),
@@ -622,27 +801,39 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
                 editor.git.summary()
             }
         );
-        format!(
-            " {} |{}",
-            visible_text(&git, 0, usize::from(area.width) / 3),
-            right
-        )
-    } else {
-        right
-    };
+        let color = if editor.git.problem().is_some() {
+            theme.error
+        } else if editor.git.loading {
+            theme.modified
+        } else {
+            theme.insert
+        };
+        right.insert(0, separator.clone());
+        right.insert(
+            0,
+            Span::styled(
+                format!(" {}", visible_text(&git, 0, usize::from(area.width) / 3)),
+                style.fg(color),
+            ),
+        );
+    }
     let width = usize::from(area.width);
     let lsp = editor.lsp_summary();
-    let right = if area.width >= 70 && !lsp.is_empty() {
-        format!(" {} |{}", visible_text(&lsp, 0, 30), right)
-    } else {
-        right
-    };
-    let right = visible_text(
-        &right,
-        0,
+    if area.width >= 70 && !lsp.is_empty() {
+        right.insert(0, separator);
+        right.insert(
+            0,
+            Span::styled(
+                format!(" {}", visible_text(&lsp, 0, 30)),
+                style.fg(theme.command),
+            ),
+        );
+    }
+    let right = clipped_line(
+        right,
         width.saturating_sub(mode.len() + identity.len() + modified.len() + external.len() + 3),
     );
-    let right_cells = display_column(&right, right.chars().count());
+    let right_cells = right.width();
     let name_width = width.saturating_sub(
         mode.len() + identity.len() + modified.len() + external.len() + right_cells + 2,
     );
@@ -664,13 +855,13 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
                 .bg(theme.mode_color(editor.mode))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(identity, style.fg(theme.muted)),
-        Span::raw(format!(" {name}")),
+        Span::styled(identity, style.fg(theme.normal)),
+        Span::styled(format!(" {name}"), style.add_modifier(Modifier::BOLD)),
         Span::styled(modified, style.fg(theme.modified)),
         Span::styled(external, style.fg(theme.error)),
     ];
     frame.render_widget(Paragraph::new(Line::from(spans)).style(style), area);
-    if !right.is_empty() {
+    if right_cells > 0 {
         let right_width = right_cells.min(width) as u16;
         frame.render_widget(
             Paragraph::new(right).style(style),

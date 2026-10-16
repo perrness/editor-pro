@@ -190,7 +190,16 @@ fn rendering_handles_tiny_terminals_and_control_characters() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("界\x1b.txt"), "").unwrap();
     let mut e = tree(dir.path());
-    for (w, h) in [(80, 24), (12, 4), (1, 1)] {
+    for (w, h) in [
+        (80, 24),
+        (12, 4),
+        (1, 3),
+        (2, 2),
+        (1, 1),
+        (0, 0),
+        (0, 3),
+        (3, 0),
+    ] {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         terminal
@@ -208,6 +217,111 @@ fn rendering_handles_tiny_terminals_and_control_characters() {
             assert!(text.contains("a/A new"));
         }
     }
+}
+
+#[test]
+fn themed_tree_distinguishes_entries_selection_and_active_source() {
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    let source = root.join("src/main.rs");
+    let original = "fn main() { /* 界 */ }\r\n";
+    fs::write(&source, original).unwrap();
+    for name in ["Cargo.toml", "README.md", "logo.svg", "unknown.bin"] {
+        fs::write(root.join(name), "").unwrap();
+    }
+    let mut e = Editor::new(Document::open(&source).unwrap());
+    e.document.buffer.insert("// local\r\n");
+    e.document.buffer.commit();
+    let text = e.document.buffer.text().to_string();
+    let cursor = e.document.buffer.cursor();
+    e.toggle_tree(Some(&root)).unwrap();
+    settle(&mut e);
+    e.handle_key(Key::Right);
+    settle(&mut e);
+    let mut terminal = Terminal::new(TestBackend::new(90, 14)).unwrap();
+    for theme in [Theme::night(), Theme::catppuccin(), Theme::gruvbox()] {
+        for selected in 0..e.tree.entries.len() {
+            e.tree.selected = selected;
+            terminal.draw(|f| ui::render(f, &mut e, &theme)).unwrap();
+            let cells = terminal.backend().buffer();
+            let row = |y| (0..90).map(|x| cells[(x, y)].symbol()).collect::<String>();
+            assert_eq!(cells[(0, 0)].bg, theme.normal);
+            assert!(row(0).contains(&format!("{}/6", selected + 1)));
+            assert!(row(1).contains("▾ src/"));
+            assert!(row(2).contains("│ [rs] main.rs •"));
+            assert_eq!(cells[(2, 2)].fg, theme.border);
+            assert_eq!(cells[(4, 2)].fg, theme.number);
+            assert_eq!(cells[(2, 3)].fg, theme.command);
+            assert_eq!(cells[(2, 4)].fg, theme.type_name);
+            assert_eq!(cells[(2, 5)].fg, theme.insert);
+            assert_eq!(cells[(2, 6)].fg, theme.muted);
+            for y in 1..=6 {
+                let active = y as usize == selected + 1;
+                assert_eq!(cells[(0, y)].symbol(), if active { "▎" } else { " " });
+                assert_eq!(
+                    cells[(89, y)].bg,
+                    if active { theme.selection } else { theme.panel }
+                );
+                assert_eq!(cells[(89, y)].modifier.contains(Modifier::BOLD), active);
+            }
+            assert_eq!(e.document.buffer.text().to_string(), text);
+            assert_eq!(e.document.buffer.cursor(), cursor);
+        }
+    }
+    e.handle_key(Key::Escape);
+    assert_eq!(e.view, View::Editing);
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), original);
+    assert_eq!(fs::read_to_string(source).unwrap(), original);
+}
+
+#[test]
+fn tree_clips_deep_unicode_entries_and_keeps_prompt_cursor_visible() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("界e\u{301}😀\x1b.rs"), "").unwrap();
+    let mut e = tree(dir.path());
+    // Rendering must remain bounded by the screen width, not nesting depth.
+    e.tree.entries[0].depth = 10_000;
+    let mut terminal = Terminal::new(TestBackend::new(32, 5)).unwrap();
+    terminal
+        .draw(|f| ui::render(f, &mut e, &Theme::night()))
+        .unwrap();
+    let cells = terminal.backend().buffer();
+    let row: String = (0..32).map(|x| cells[(x, 1)].symbol()).collect();
+    assert!(row.contains("… [rs]"), "{row}");
+    for (x, grapheme) in [
+        (23, "界"),
+        (25, "e\u{301}"),
+        (26, "😀"),
+        (28, "�"),
+        (29, "."),
+        (30, "r"),
+        (31, "s"),
+    ] {
+        assert_eq!(cells[(x, 1)].symbol(), grapheme);
+    }
+    e.handle_key(Key::Char('a'));
+    type_keys(&mut e, "新しいe\u{301}😀.txt");
+    for width in [1, 2, 8, 16, 80] {
+        terminal.backend_mut().resize(width, 5);
+        terminal
+            .draw(|f| ui::render(f, &mut e, &Theme::night()))
+            .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert!(cursor.x < width);
+        assert_eq!(cursor.y, 3);
+        let cells = terminal.backend().buffer();
+        let row: String = (0..width).map(|x| cells[(x, 3)].symbol()).collect();
+        assert!(!row.contains('\x1b'));
+        if width >= 8 {
+            assert!(row.contains(".txt"), "{row}");
+        }
+    }
+    e.handle_key(Key::Escape);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 #[test]
