@@ -1440,6 +1440,20 @@ fn git_leader_shortcuts_show_help_and_restore_source_after_browsing() {
     e.handle_key(Key::Char('n'));
     settle_editor(&mut e);
     assert_eq!(e.git.diff_view.as_ref().unwrap().path, r.path("b"));
+    let diff = e.git.diff_view.as_ref().unwrap();
+    let diff_origin = (diff.selected, diff.top, diff.left, diff.paired);
+    e.handle_key(Key::F1);
+    keys(&mut e, "diff");
+    e.handle_key(Key::Tab);
+    e.handle_key(Key::Enter);
+    draw(&mut e, 20, 5);
+    e.handle_key(Key::Escape);
+    assert_eq!(e.view, View::Diff);
+    let diff = e.git.diff_view.as_ref().unwrap();
+    assert_eq!(
+        (diff.selected, diff.top, diff.left, diff.paired),
+        diff_origin
+    );
     for (width, height) in [(130, 20), (40, 8), (1, 1), (1, 3)] {
         draw(&mut e, width, height);
         assert_eq!(e.document.buffer.cursor(), origin.0);
@@ -1453,8 +1467,9 @@ fn git_leader_shortcuts_show_help_and_restore_source_after_browsing() {
     e.handle_key(Key::Escape);
     assert_eq!(e.document.buffer.cursor(), origin.0);
     assert_eq!(e.viewport, origin.1);
-    e.execute_command("help").unwrap();
-    assert!(draw(&mut e, 80, 12).contains("Space g d diff"));
+    e.execute_command("help git diff").unwrap();
+    assert!(draw(&mut e, 80, 12).contains("Space g d"));
+    e.handle_key(Key::Escape);
     assert!(e.document.buffer.undo());
     assert_eq!(e.document.buffer.text().to_string(), original);
 }

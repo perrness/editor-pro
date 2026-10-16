@@ -540,6 +540,32 @@ fn navigation_shortcut(editor: &mut Editor, key: char) {
 }
 
 #[test]
+fn help_defers_definition_results_without_losing_the_request_or_origin() {
+    let mut f = Fixture::new("navigation-slow");
+    f.ready();
+    f.editor.document.buffer.set_cursor(4, false);
+    let origin = f.editor.document.path().unwrap().to_path_buf();
+    let viewport = f.editor.viewport.clone();
+    navigation_shortcut(&mut f.editor, 'd');
+    f.editor.handle_key(Key::F1);
+    f.wait_log("textDocument/definition", 1);
+    settle(&mut f.editor);
+    assert!(f.editor.lsp.pending);
+    assert!(f.editor.help.is_some());
+    assert_eq!(f.editor.document.path(), Some(origin.as_path()));
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert_eq!(f.editor.viewport, viewport);
+    f.editor.handle_key(Key::Escape);
+    assert_eq!(f.editor.document.path(), Some(origin.as_path()));
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(f.editor.document.path().unwrap().ends_with("Other.kt"));
+    f.editor.handle_key(Key::Ctrl('o'));
+    assert_eq!(f.editor.document.path(), Some(origin.as_path()));
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+}
+
+#[test]
 fn navigation_shortcuts_jump_to_single_locations_and_preserve_history_and_dirty_buffers() {
     for scenario in ["normal", "navigation-location", "navigation-unicode"] {
         let mut f = Fixture::new(scenario);
@@ -642,6 +668,12 @@ fn navigation_shortcuts_offer_multiple_locations_and_allow_cancel_or_selection()
             assert_eq!(f.editor.document.buffer.cursor(), 7);
             assert_eq!(f.editor.viewport, viewport);
             f.editor.handle_key(Key::Down);
+            f.editor.handle_key(Key::F1);
+            f.editor.handle_key(Key::Down);
+            f.editor.handle_key(Key::Enter);
+            f.editor.handle_key(Key::Escape);
+            assert_eq!(f.editor.view, View::Lsp);
+            assert_eq!(f.editor.lsp.panel.as_ref().unwrap().selected, 1);
             if select {
                 f.editor.handle_key(Key::Enter);
                 assert_eq!(f.editor.active_buffer_id, 2);

@@ -18,6 +18,8 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    BackTab,
+    F1,
 }
 
 pub fn decode(event: KeyEvent) -> Option<Key> {
@@ -49,6 +51,8 @@ pub fn decode(event: KeyEvent) -> Option<Key> {
         KeyCode::End => Key::End,
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
+        KeyCode::BackTab => Key::BackTab,
+        KeyCode::F(1) => Key::F1,
         _ => return None,
     })
 }

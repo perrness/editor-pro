@@ -192,6 +192,11 @@ impl Editor {
         Ok(())
     }
     pub fn tick(&mut self) -> bool {
+        // Workers keep running, but applying a result can jump to a definition,
+        // finish a note, or replace a contextual list. Keep the help origin intact.
+        if self.help.is_some() {
+            return false;
+        }
         let picker = self.picker.as_mut().is_some_and(FilePicker::tick);
         let tree = self.tick_tree();
         let git = self.tick_git();

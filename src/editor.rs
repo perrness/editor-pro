@@ -90,6 +90,7 @@ pub struct Editor {
     pub(crate) next_buffer_id: usize,
     pub(crate) buffers: BTreeMap<usize, BufferSlot>,
     pub view: View,
+    pub help: Option<crate::help::Help>,
     pub picker: Option<FilePicker>,
     pub tree: crate::file_tree::FileTree,
     pub git: crate::git_view::GitState,
@@ -124,6 +125,7 @@ impl Editor {
             next_buffer_id: 2,
             buffers: BTreeMap::new(),
             view: View::Editing,
+            help: None,
             picker: None,
             tree: crate::file_tree::FileTree::default(),
             git: crate::git_view::GitState::default(),
@@ -138,7 +140,7 @@ impl Editor {
             mode: Mode::Normal,
             viewport: Viewport::default(),
             command: String::new(),
-            message: "i  insert   :w  save   :q  quit   :help  keys".into(),
+            message: "F1 / :help  keys   i  insert   :w  save   :q  quit".into(),
             message_is_error: false,
             quit: false,
             pending: Pending::default(),
@@ -154,6 +156,16 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if let Some(help) = &mut self.help {
+            if help.handle_key(key) {
+                self.help = None;
+            }
+            return;
+        }
+        if key == Key::F1 {
+            self.open_help("");
+            return;
+        }
         if self.view == View::Tree {
             self.tree_key(key);
             return;
@@ -341,18 +353,13 @@ impl Editor {
             } else if stage == 1 && key == Key::Char('g') {
                 self.pending.leader = 3;
                 self.info("Git: d diff  c changed files  ]c/[c hunks  ]f/[f files");
-            } else if stage == 3 {
-                let command = match key {
-                    Key::Char('d') => "diff",
-                    Key::Char('c') => "changes",
-                    _ => return,
-                };
-                if let Err(error) = self.execute_command(command) {
-                    self.error(&error.to_string());
-                }
-            } else if stage == 2
-                && key == Key::Char('v')
-                && let Err(error) = self.toggle_tree(None)
+            } else if matches!(stage, 2 | 3)
+                && let Some(command) = crate::help::normal_command(&[
+                    Key::Char(' '),
+                    Key::Char(if stage == 3 { 'g' } else { 'p' }),
+                    key,
+                ])
+                && let Err(error) = self.execute_command(command)
             {
                 self.error(&error.to_string());
             }
@@ -416,14 +423,9 @@ impl Editor {
                 self.run_motion(Motion::FirstLine);
             } else if self.mode == Mode::Normal
                 && self.pending.operator.is_none()
-                && matches!(key, Key::Char('d' | 'r'))
+                && let Some(command) = crate::help::normal_command(&[Key::Char('g'), key])
             {
                 self.pending = Pending::default();
-                let command = if key == Key::Char('d') {
-                    "Definition"
-                } else {
-                    "References"
-                };
                 if let Err(e) = self.lsp_navigation_shortcut(command) {
                     self.error(&e.to_string());
                 }
@@ -912,6 +914,9 @@ impl Editor {
     }
 
     pub fn paste(&mut self, text: &str) {
+        if self.help.is_some() {
+            return;
+        }
         self.dismiss_completion();
         if self.view != View::Editing || self.mode != Mode::Insert {
             self.info("Enter Insert mode before pasting");
@@ -1010,6 +1015,13 @@ impl Editor {
         let (name, argument) = command
             .split_once(char::is_whitespace)
             .map_or((command, ""), |(name, argument)| (name, argument.trim()));
+        if name == "help" {
+            self.open_help(argument);
+            return Ok(());
+        }
+        if self.help.is_some() {
+            return Err(io::Error::other("Help is read-only; Escape returns"));
+        }
         if self.note_edit.is_some() {
             return if name == "note" {
                 self.note_command(argument)
@@ -1026,10 +1038,10 @@ impl Editor {
         }
         match name {
             "ai" => self.ai_command(argument)?,
-            "LspInfo" | "LspRestart" | "LspLog" | "LspInstall" | "LspInstallCancel" | "Doctor" | "Complete" | "Hover" | "Signature"
-                | "Definition" | "References" | "Rename" | "CodeAction" | "Format" | "Symbols"
-                | "Outline" | "WorkspaceSymbols" | "Calls"
-                | "Diagnostics" | "Dnext" | "Dprev" => self.lsp_command(name, argument)?,
+            "LspInfo" | "LspRestart" | "LspLog" | "LspInstall" | "LspInstallCancel" | "Doctor"
+            | "Complete" | "Hover" | "Signature" | "Definition" | "References" | "Rename"
+            | "CodeAction" | "Format" | "Symbols" | "Outline" | "WorkspaceSymbols" | "Calls"
+            | "Diagnostics" | "Dnext" | "Dprev" => self.lsp_command(name, argument)?,
             "w" | "wq" => {
                 let path = if argument.is_empty() {
                     None
@@ -1057,7 +1069,11 @@ impl Editor {
             "tree" => self.toggle_tree((!argument.is_empty()).then(|| Path::new(argument)))?,
             "grep" => self.search_project(argument)?,
             "grepdir" => {
-                self.project_search.config.root = if argument.is_empty() { None } else { Some(crate::file::absolute_path(Path::new(argument))?) };
+                self.project_search.config.root = if argument.is_empty() {
+                    None
+                } else {
+                    Some(crate::file::absolute_path(Path::new(argument))?)
+                };
                 self.info("Search root updated; :grep TEXT starts a new search");
             }
             "files" => {
@@ -1073,13 +1089,27 @@ impl Editor {
             "notes" if argument.is_empty() => self.open_review_list("notes")?,
             "changes" if argument.is_empty() => self.open_changes(),
             "diff" => {
-                let path = self.git.diff_view.as_ref().map(|v| v.path.clone()).or_else(|| self.document.path().map(Path::to_path_buf)).ok_or_else(|| io::Error::other("Name a file before comparing"))?;
-                let comparison = if argument.is_empty() { self.git.comparison.clone() } else { crate::git::Comparison::parse(argument) };
+                let path = self
+                    .git
+                    .diff_view
+                    .as_ref()
+                    .map(|v| v.path.clone())
+                    .or_else(|| self.document.path().map(Path::to_path_buf))
+                    .ok_or_else(|| io::Error::other("Name a file before comparing"))?;
+                let comparison = if argument.is_empty() {
+                    self.git.comparison.clone()
+                } else {
+                    crate::git::Comparison::parse(argument)
+                };
                 self.open_diff(path, comparison);
             }
             "gitbase" => {
                 let comparison = crate::git::Comparison::parse(argument);
-                if comparison == crate::git::Comparison::Staged { return Err(io::Error::other("Use :diff staged for HEAD versus index; source bases are HEAD, index or REV")); }
+                if comparison == crate::git::Comparison::Staged {
+                    return Err(io::Error::other(
+                        "Use :diff staged for HEAD versus index; source bases are HEAD, index or REV",
+                    ));
+                }
                 self.git.comparison = comparison;
                 self.refresh_git();
             }
@@ -1119,9 +1149,6 @@ impl Editor {
                 self.view = View::Buffers { selected };
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
-            "help" if argument.is_empty() => self.info(
-                "Git: ]c/[c hunks  ]f/[f files  Space g d diff  Space g c changes; i insert  v/V select  d/c/y + motion  u undo  / search  gd definition  gr references  Ctrl-p files  Space p v tree  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :review help  :w save  :q quit; README.md has all keys",
-            ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),
         }

@@ -37,6 +37,9 @@ fn informational_options_work_without_a_terminal_or_valid_config() {
             .unwrap();
         assert!(output.status.success(), "{flag}: {output:?}");
         assert!(output.stderr.is_empty());
+        if matches!(flag, "--help" | "-h") {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("F1 or :help [QUERY]"));
+        }
         if matches!(flag, "--version" | "-V") {
             assert_eq!(
                 output.stdout,

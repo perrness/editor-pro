@@ -23,6 +23,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     }
     let base = Style::default().fg(theme.foreground).bg(theme.background);
     frame.render_widget(Block::default().style(base), area);
+    if let Some(help) = &mut editor.help {
+        crate::help::render(frame, help, theme);
+        return;
+    }
     if editor.view == View::Tree {
         crate::file_tree::render(frame, editor, theme);
         return;

@@ -1607,3 +1607,66 @@ Release preparation bumps the Cargo package and lockfile to **v0.2.9**. The
 stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
+
+## Issue 9 — Searchable keyboard help
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. F1 opens a read-only
+help overlay in any mode/view; `:help [QUERY]`, `:ai help` and `:review help`
+provide command access. The categorized reference covers editing, files,
+language navigation/diagnostics, Git, review notes and Codex questions. Normal
+definition/reference and leader commands share metadata with the reference.
+No dependency, external lookup or document copy is needed to open help.
+
+Seven new help tests cover representative bindings, case-insensitive multiword
+search, category cycling, paging, query bounds and Unicode grapheme deletion;
+narrow wrapping and zero/one-cell layouts; read-only keys/paste; all editing
+modes, pending operators, selections, search, viewport and Insert undo groups;
+and buffer/file-picker selection and file-tree prompt restoration. A new LSP
+regression checks that a late definition response stays deferred under help and
+is handled after dismissal. Existing Git/LSP/review tests now check preservation
+of diff/list selections and note drafts, including a note save that becomes
+durable while help is open. Workers continue running, but their results cannot
+move the underlying context until help closes.
+
+Formatting, Clippy with warnings denied, the debug build, all **334 Rust tests**
+(eleven opt-in tests ignored), and all **14 Python tests** passed:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+```
+
+All **39 PTY sessions** passed. The new workflow opens help during Insert, finds
+definition, Git diff and Codex question bindings, cycles categories and resizes
+through narrow/one-cell layouts, then resumes at the original cursor. One undo
+removes the text typed both before and after help; saved CRLF/Unicode bytes and
+terminal restoration are checked. Reproduction and capture:
+
+```sh
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue9-terminal python3 tools/terminal_smoke.py
+```
+
+- `/tmp/editor-pro-issue9-terminal/keyboard-help.ansi`
+- `/tmp/editor-pro-issue9-rust-tests.log`
+- `/tmp/editor-pro-issue9-terminal-tests.log`
+
+Final review corrected the reference's inherited Normal/Visual label for
+half-screen movement to match its actual Normal-mode handler; help and CLI
+regressions, formatting, Clippy and the debug build passed again afterward.
+The early help assertion was adjusted for wrapped text, and the note-save test
+waits for on-disk durability rather than expecting a deferred UI reply to apply.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process/socket access because the sandbox could not initialize its loopback
+interface. macOS, physical terminals and real language servers/providers were
+not retested for this help/input change.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.10**. The
+stable-tag check, all three CLI/version tests, all three release-tool tests,
+offline Cargo check, formatting and whitespace checks passed. The tag-triggered
+release workflow gates publication and the Homebrew tap update on hosted checks.

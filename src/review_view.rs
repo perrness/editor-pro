@@ -365,7 +365,9 @@ impl Editor {
         match words.as_slice() {
             ["snapshot"] => {
                 self.review_ready()?;
-                let request = self.git_request().ok_or_else(|| error("Name a source file before capturing"))?;
+                let request = self
+                    .git_request()
+                    .ok_or_else(|| error("Name a source file before capturing"))?;
                 self.review.submit(Job::Snapshot(Box::new(request)))?;
                 self.info("Review snapshot pending: capturing disk and unsaved buffers; source files are not saved");
             }
@@ -374,41 +376,98 @@ impl Editor {
             ["since", id] => self.open_review_comparison(Some(id), true)?,
             ["snapshots"] => {
                 let store = self.review_ready()?;
-                let history = store.history.as_ref().ok_or_else(|| error("No snapshots; :review snapshot creates the first"))?;
+                let history = store
+                    .history
+                    .as_ref()
+                    .ok_or_else(|| error("No snapshots; :review snapshot creates the first"))?;
                 self.info(&format!("Review snapshots #1–#{}; latest #{} ({} files). :review since ID; full base {} stays fixed", history.latest(), history.latest(), history.checkpoints.last().unwrap().files.len(), history.baseline.comparison.label()));
             }
-            [] | ["help"] => self.info("Review: :review snapshot; :review full|since [ID]; :review snapshots; :review file|hunk reviewed|attention|unreviewed|clear; :note file|hunk|old|new; :notes; :review list [FILTER]; :review revalidate ID TARGET; :review clear ID; :review next file|hunk [FILTER]; :review export /outside/worktree/new.md"),
+            [] | ["help"] => self.open_help("Review"),
             ["file" | "hunk", state] => {
                 let mut record = self.review_target(words[0])?;
                 let store = self.review_ready()?;
-                let expected = store.records.iter().find(|r| r.state.is_some() && r.attachment == record.attachment && self.review_diff().is_some_and(|d| r.matches_diff(d)) && self.review_freshness(r) == Freshness::Fresh).cloned();
+                let expected = store
+                    .records
+                    .iter()
+                    .find(|r| {
+                        r.state.is_some()
+                            && r.attachment == record.attachment
+                            && self.review_diff().is_some_and(|d| r.matches_diff(d))
+                            && self.review_freshness(r) == Freshness::Fresh
+                    })
+                    .cloned();
                 if *state == "clear" {
-                    let expected = expected.ok_or_else(|| error("No mark on this exact content; :review clear ID removes a stale mark"))?;
-                    return self.save_review_change(Change { expected: Some(expected), replacement: None });
+                    let expected = expected.ok_or_else(|| {
+                        error(
+                            "No mark on this exact content; :review clear ID removes a stale mark",
+                        )
+                    })?;
+                    return self.save_review_change(Change {
+                        expected: Some(expected),
+                        replacement: None,
+                    });
                 }
-                record.state = Some(State::parse(state).ok_or_else(|| error("State: reviewed, attention, unreviewed or clear"))?);
-                self.save_review_change(Change { expected, replacement: Some(record) })?;
+                record.state = Some(
+                    State::parse(state)
+                        .ok_or_else(|| error("State: reviewed, attention, unreviewed or clear"))?,
+                );
+                self.save_review_change(Change {
+                    expected,
+                    replacement: Some(record),
+                })?;
             }
-            ["clear", id] => { let old = self.review_record(id)?; self.save_review_change(Change { expected: Some(old), replacement: None })?; }
+            ["clear", id] => {
+                let old = self.review_record(id)?;
+                self.save_review_change(Change {
+                    expected: Some(old),
+                    replacement: None,
+                })?;
+            }
             ["revalidate", id, target @ ("file" | "hunk")] => {
                 let old = self.review_record(id)?;
-                if old.state.is_none() { return Err(error("Use :note attach ID TARGET to correct a note attachment")); }
-                let mut new = self.review_target(target)?; new.state = old.state;
-                self.save_review_change(Change { expected: Some(old), replacement: Some(new) })?;
+                if old.state.is_none() {
+                    return Err(error(
+                        "Use :note attach ID TARGET to correct a note attachment",
+                    ));
+                }
+                let mut new = self.review_target(target)?;
+                new.state = old.state;
+                self.save_review_change(Change {
+                    expected: Some(old),
+                    replacement: Some(new),
+                })?;
             }
             ["reload"] => {
-                let repo = self.git.snapshot.as_ref().map(|s| s.repository.clone()).ok_or_else(|| error("No repository"))?;
+                let repo = self
+                    .git
+                    .snapshot
+                    .as_ref()
+                    .map(|s| s.repository.clone())
+                    .ok_or_else(|| error("No repository"))?;
                 self.review.submit(Job::Load(repo))?;
             }
             ["retry"] => {
-                let change = self.review.failed.clone().ok_or_else(|| error("No failed review action; use :review reload for a load error"))?;
-                let repo = change.expected.as_ref().or(change.replacement.as_ref()).unwrap().identity.repository.clone();
+                let change = self.review.failed.clone().ok_or_else(|| {
+                    error("No failed review action; use :review reload for a load error")
+                })?;
+                let repo = change
+                    .expected
+                    .as_ref()
+                    .or(change.replacement.as_ref())
+                    .unwrap()
+                    .identity
+                    .repository
+                    .clone();
                 self.review.submit(Job::Change(repo, Box::new(change)))?;
             }
             ["list"] => self.open_review_list("all")?,
             ["list", filter] => self.open_review_list(filter)?,
-            ["next" | "prev", target @ ("file" | "hunk")] => self.review_navigate(target, "unreviewed", words[0] == "prev")?,
-            ["next" | "prev", target @ ("file" | "hunk"), filter] => self.review_navigate(target, filter, words[0] == "prev")?,
+            ["next" | "prev", target @ ("file" | "hunk")] => {
+                self.review_navigate(target, "unreviewed", words[0] == "prev")?
+            }
+            ["next" | "prev", target @ ("file" | "hunk"), filter] => {
+                self.review_navigate(target, filter, words[0] == "prev")?
+            }
             _ if argument.starts_with("export ") => self.export_review(argument[7..].trim())?,
             _ => return Err(error("Use :review help for commands")),
         }

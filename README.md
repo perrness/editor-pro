@@ -101,6 +101,20 @@ still start normally, and `:LspInstall` remains available.
 
 ## Editing
 
+Press **F1** in any mode or view, or enter **`:help [QUERY]`**, for searchable,
+categorized keyboard help. Type words to filter keys, descriptions and contexts;
+search ignores case. Try `:help definition`, `:help git diff`, or `:help Codex`.
+Use arrows or Ctrl-n/Ctrl-p to scroll, Page Up/Down for pages, Home/End for the
+first/last line, and Tab/Shift-Tab to cycle categories. Backspace removes a
+grapheme; Ctrl-u clears the query. Long commands wrap in narrow terminals.
+
+**Escape** (also F1, Ctrl-[ or Ctrl-c) returns to the original cursor, viewport,
+mode and selection. Help is read-only: Enter does not run the displayed command,
+and pasted text does not edit the source. F1 also preserves unfinished prompts,
+operators and Insert undo groups. Background workers continue running; their
+results are applied after help closes. `:ai help` and `:review help` open the same
+reference filtered to those topics.
+
 | Mode | Keys | Action |
 | --- | --- | --- |
 | Normal/Visual | `h j k l`, arrows | Move by grapheme or line |
@@ -108,7 +122,7 @@ still start normally, and `:LspInstall` remains available.
 | Normal/Visual | `0`, `^`, `$`, `gg`, `G` | Line start, first nonblank, end, first/last line; `12G` goes to line 12 |
 | Normal/Visual | `fX`, `FX`, `tX`, `TX` | Find/till character X on this line, forward/backward |
 | Normal/Visual | `;`, `,`, `%` | Repeat/reverse character find; matching bracket |
-| Normal/Visual | `Ctrl-u`, `Ctrl-d`, Page Up/Down | Move half a screen |
+| Normal | `Ctrl-u`, `Ctrl-d`, Page Up/Down | Move half a screen |
 | Normal | `gd`, `gr` | Go to definition or references; jump to one location or choose among multiple results |
 | Normal | `i a I A`, `o O` | Insert before/after, first nonblank/end; open line below/above |
 | Normal | `d`, `c`, `y` + motion/object | Delete, change, yank; counts multiply (`2d3w`) |
@@ -681,7 +695,8 @@ bytes. Inspect narrow/normal terminal layouts on Linux and macOS.
 | `:bd`, `:bd!` | Close the active buffer; ! discards its edits |
 | `:files [directory]` | Open the fuzzy file picker |
 | `:theme [name]` | Select a theme, or report the current/available themes |
-| `:noh`, `:help` | Hide search highlights; show the compact key reference |
+| `:noh` | Hide search highlights |
+| `:help [QUERY]`, F1 | Open searchable, categorized keyboard help; Escape returns |
 
 Themes are **tokyo-night** (default), **catppuccin**, and **gruvbox**, inspired by
 those palettes. Try `:theme gruvbox`. Selection applies to syntax, search,

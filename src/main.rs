@@ -41,7 +41,8 @@ Editing: i a I A o O, v/V, d/c/y + motion or object, x, p/P, u, Ctrl-r
 Objects: iw/aw, iW/aW, quotes, parentheses, brackets, braces (e.g. ciw, di{)
 Search: / or ?, Enter, n/N; Escape cancels prompts and selections
 Files: Ctrl-p or :files [directory]; :e path, :enew, :bn/:bp, :b ID, :ls
-Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh, :help
+Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh
+Help: F1 or :help [QUERY]; type to search, arrows scroll, Tab category, Esc returns
 Git: :changes, :diff HEAD|index|REV|staged, :gitbase REV, :gitrefresh, :gnext/:gprev
 Git keys (Normal): ]c/[c hunks, ]f/[f changed files, Space g d diff, Space g c changes
 Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refresh
@@ -195,7 +196,9 @@ fn event_loop(
                 redraw = true;
             }
         }
-        let poll_ms = if editor.view == View::Files
+        let poll_ms = if editor.help.is_some() {
+            200
+        } else if editor.view == View::Files
             || editor.git.loading
             || editor.review.busy
             || editor.lsp.pending

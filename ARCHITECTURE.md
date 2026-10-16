@@ -14,6 +14,7 @@ plugin API, generic backend trait, event bus, dependency injection, or GUI layer
 main.rs      terminal lifetime, CLI, event loop, disk checks and worker polling
 config.rs    optional bounded user settings and native configuration paths
 input.rs     Crossterm events -> terminal-independent Key values
+help.rs      shared shortcut metadata, bounded search and read-only help overlay
 editor.rs    editing modes, pending counts/operators, prompts, unnamed register
 buffer.rs    Rope, grapheme cursor, bounded undo, edit descriptions and generation
 motion.rs    motions and text-object ranges in Unicode scalar coordinates
@@ -62,6 +63,23 @@ invalidated on every buffer switch.
 Buffers, Files, Recent, ProjectSearch, Changes, Diff, Review, Lsp, Ai) are separate. Contextual views intercept their own keys and do not
 edit the underlying text. Closing a picker/list returns to the originating
 location. M3 adds only a paired diff projection, not a general window framework.
+
+Help is an optional overlay above both `Mode` and `View`, opened by F1 or
+`:help [QUERY]`. It intercepts keys, paste and rendering before the underlying
+context without resetting it or committing its undo group. The source cursor,
+viewport, selection, prompt, pending operator and contextual list selection stay
+in place. `Editor::tick` defers applying worker results until dismissal, so a
+definition response or completed note save cannot change the origin under help;
+workers themselves continue and retain their existing bounds and deadlines.
+Disk-conflict checks still run without replacing source text.
+
+One categorized catalog supplies the in-editor reference, including mode/view
+scope. Normal `gd`, `gr` and leader command dispatch share that catalog's mappings;
+the existing state machine retains operator/count/mode guards. Help searches
+keys, context and descriptions case-insensitively with a 256-byte query cap and
+grapheme Backspace. Wrapped rows are rebuilt only when the query, category or
+terminal width changes, and scroll independently even in a one-cell terminal.
+Opening/searching/rendering help performs no document edits or external work.
 
 ## Dependency choices
 

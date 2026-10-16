@@ -12,6 +12,7 @@ pub mod file_tree;
 pub mod git;
 mod git_ui;
 pub mod git_view;
+pub mod help;
 pub mod input;
 pub mod lsp;
 pub mod lsp_edit;

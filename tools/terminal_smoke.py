@@ -151,6 +151,30 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_help_session(binary, directory, resize, capture_dir=None):
+    source = Path(directory) / "help-source.txt"
+    original = "é界\r\n" + "".join(f"source line {line}\r\n" for line in range(2, 41))
+    source.write_bytes(original.encode())
+    # Open help during Insert, search the three discovery workflows, resize,
+    # then continue the same edit at the original cursor with one undo group.
+    edited = original.replace("source line 30\r\n", "source line 30beforeafter\r\n")
+    output = run_session(binary, source, [
+        b"30GAbefore", b"\x1bOP", (b"Help | All", 10),
+        b"definition", resize(24, 81), (b"gd", 10),
+        b"\x15git diff", resize(24, 80), (b"Space g d", 10),
+        b"\x15", b"\x1b[Z", (b"AI / Codex", 10),
+        b"ask", resize(24, 81), (b":ai ask QUESTION", 10),
+        resize(7, 20), b"\x1b[6~", b"\x1b[5~", resize(1, 1),
+        resize(24, 80), b"\x1b", (b"INSERT", 10), b"after", b"\x1b",
+        b":w\r", (lambda: source.read_bytes() == edited.encode(), 10),
+        b"u", b":w\r", (lambda: source.read_bytes() == original.encode(), 10),
+        b":help Codex\r", resize(24, 81), (b":ai context file", 10),
+        b"\x1b", b":q\r",
+    ], original.encode())
+    if capture_dir:
+        (Path(capture_dir) / "keyboard-help.ansi").write_bytes(output)
+
+
 def run_completion_acceptance_session(binary, directory, resize, capture_dir=None):
     project = Path(directory) / "completion-acceptance"
     project.mkdir()
@@ -721,7 +745,8 @@ def main():
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 38 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        run_help_session(binary, directory, resize, capture_dir)
+    print("PASS: 39 PTY sessions; searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

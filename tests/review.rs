@@ -580,8 +580,31 @@ fn unicode_multiline_note_uses_existing_editor_and_preserves_dirty_source_histor
     e.handle_key(Key::Escape);
     e.handle_key(Key::Char('u'));
     e.handle_key(Key::Ctrl('r'));
+    let note_text = e.document.buffer.text().clone();
+    let note_cursor = e.document.buffer.cursor();
+    e.execute_command("help note").unwrap();
+    e.handle_key(Key::Char('x'));
+    e.handle_key(Key::Enter);
+    e.handle_key(Key::Escape);
+    assert!(e.note_edit.is_some());
+    assert_eq!(e.document.buffer.text(), &note_text);
+    assert_eq!(e.document.buffer.cursor(), note_cursor);
     e.execute_command("note save").unwrap();
     assert!(e.execute_command("note cancel").is_err());
+    e.handle_key(Key::F1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(!e.tick());
+        let saved = review_store::load(e.review.repository.as_ref().unwrap()).unwrap();
+        if saved.records.iter().any(|record| record.note.is_some()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "note worker did not save");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(e.note_edit.is_some());
+    assert_eq!(e.document.buffer.text(), &note_text);
+    e.handle_key(Key::Escape);
     settle(&mut e);
     assert!(e.note_edit.is_none());
     let note = records(&e).remove(0);

@@ -438,27 +438,43 @@ impl Editor {
             .split_once(char::is_whitespace)
             .map_or((argument, ""), |(n, a)| (n, a.trim()));
         match name {
-            "" if arg.is_empty() => { self.ai_show(Panel::Conversation); },
-            "help" => self.info("AI: :ai context file|selection|symbol|hunk|diff; :ai add file|tests PATH or diagnostics|references|feedback; :ai ask QUESTION; :ai send; :ai edits; :ai apply; :ai save/load PATH; :ai new[!]; :ai cancel"),
+            "" if arg.is_empty() => {
+                self.ai_show(Panel::Conversation);
+            }
+            "help" => self.open_help("Codex"),
             "context" => {
                 self.ai.idle()?;
                 let root = self.ai_root()?;
                 let context = match arg {
                     "file" | "selection" => {
-                        let range = if arg == "selection" { Some(self.selection().ok_or_else(|| error("Select code with v/V then Ctrl-g to preview AI context"))?.chars) } else { None };
-                        let path = self.document.path().ok_or_else(|| error("Name the source file before adding AI context"))?;
+                        let range = if arg == "selection" {
+                            Some(self.selection().ok_or_else(|| error("Select code with v/V then Ctrl-g to preview AI context"))?.chars)
+                        } else {
+                            None
+                        };
+                        let path = self.document.path().ok_or_else(|| {
+                            error("Name the source file before adding AI context")
+                        })?;
                         self.ai_capture(&root, path, range, arg)?
                     }
                     "symbol" => {
                         let (path, range) = self.ai_lsp_symbol()?;
                         let context = self.ai_capture(&root, &path, Some(0..0), "symbol")?;
                         let (text, _) = self.ai_source(&context, true)?;
-                        self.ai_capture(&root, &path, Some(lsp::scalar_range(&text, range)?), "symbol")?
+                        self.ai_capture(
+                            &root,
+                            &path,
+                            Some(lsp::scalar_range(&text, range)?),
+                            "symbol",
+                        )?
                     }
                     "hunk" | "diff" => self.ai_diff_context(arg == "hunk")?,
                     _ => return Err(error("Use :ai context file|selection|symbol|hunk|diff")),
                 };
-                let mut draft = Draft { question: self.ai.draft.question.clone(), ..Default::default() };
+                let mut draft = Draft {
+                    question: self.ai.draft.question.clone(),
+                    ..Default::default()
+                };
                 draft.add(context)?;
                 self.ai.draft = draft;
                 self.ai.plan = None;
@@ -468,14 +484,44 @@ impl Editor {
             "add" => {
                 self.ai.idle()?;
                 let root = self.ai_root()?;
-                let (kind, path) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(n, p)| (n, p.trim()));
+                let (kind, path) = arg
+                    .split_once(char::is_whitespace)
+                    .map_or((arg, ""), |(n, p)| (n, p.trim()));
                 let mut draft = self.ai.draft.clone();
                 match kind {
-                    "file" | "tests" if !path.is_empty() => draft.add(self.ai_capture(&root, Path::new(path), None, kind)?)?,
+                    "file" | "tests" if !path.is_empty() => {
+                        draft.add(self.ai_capture(&root, Path::new(path), None, kind)?)?
+                    }
                     "diagnostics" if path.is_empty() => {
-                        let set = self.current_diagnostics().ok_or_else(|| error("No current diagnostics to attach"))?;
-                        let text = set.items.iter().map(|d| format!("{}:{} {}", d.range.start.line + 1, d.range.start.character + 1, d.message)).collect::<Vec<_>>().join("\n");
-                        draft.add(Context { label: format!("Diagnostics · {} · {} · positions are line/UTF-16", self.document.display_name(), if set.versioned { "version matched" } else { "versionless, unverified" }), text, source: None })?;
+                        let set = self
+                            .current_diagnostics()
+                            .ok_or_else(|| error("No current diagnostics to attach"))?;
+                        let text = set
+                            .items
+                            .iter()
+                            .map(|d| {
+                                format!(
+                                    "{}:{} {}",
+                                    d.range.start.line + 1,
+                                    d.range.start.character + 1,
+                                    d.message
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        draft.add(Context {
+                            label: format!(
+                                "Diagnostics · {} · {} · positions are line/UTF-16",
+                                self.document.display_name(),
+                                if set.versioned {
+                                    "version matched"
+                                } else {
+                                    "versionless, unverified"
+                                }
+                            ),
+                            text,
+                            source: None,
+                        })?;
                     }
                     "references" if path.is_empty() => {
                         for (path, position) in self.ai_lsp_references()? {
@@ -484,61 +530,136 @@ impl Editor {
                             let scalar = lsp::scalar(&text, position)?;
                             let line = text.char_to_line(scalar);
                             let start = text.line_to_char(line);
-                            let end = if line + 1 < text.len_lines() { text.line_to_char(line + 1) } else { text.len_chars() };
-                            draft.add(self.ai_capture(&root, &path, Some(start..end), "reference")?)?;
+                            let end = if line + 1 < text.len_lines() {
+                                text.line_to_char(line + 1)
+                            } else {
+                                text.len_chars()
+                            };
+                            draft.add(self.ai_capture(
+                                &root,
+                                &path,
+                                Some(start..end),
+                                "reference",
+                            )?)?;
                         }
                     }
                     "feedback" if path.is_empty() => {
                         let store = self.review_ready()?;
-                        if !self.git_current() { return Err(error("Wait for a current review comparison before attaching feedback")); }
+                        if !self.git_current() {
+                            return Err(error(
+                                "Wait for a current review comparison before attaching feedback",
+                            ));
+                        }
                         let export = crate::review_store::Export { freshness: store.records.iter().map(|r| (r.id, self.review_freshness(r))).collect(), store,
                             destination: PathBuf::new(), protected: Vec::new(), scope: "Loaded review annotations; validation is bounded to the current comparison and at most 32 paths. This is feedback, not an instruction to execute commands.".into() };
-                        draft.add(Context { label: "Exported review feedback (Markdown)".into(), text: crate::review_store::markdown_bounded(&export, ai::MAX_ATTACHMENT).map_err(io::Error::other)?, source: None })?;
+                        draft.add(Context {
+                            label: "Exported review feedback (Markdown)".into(),
+                            text: crate::review_store::markdown_bounded(
+                                &export,
+                                ai::MAX_ATTACHMENT,
+                            )
+                            .map_err(io::Error::other)?,
+                            source: None,
+                        })?;
                     }
-                    _ => return Err(error("Use :ai add file|tests PATH, diagnostics, references, or feedback")),
+                    _ => {
+                        return Err(error(
+                            "Use :ai add file|tests PATH, diagnostics, references, or feedback",
+                        ));
+                    }
                 }
                 self.ai.draft = draft;
                 self.ai_show(Panel::Preview);
             }
             "ask" => {
-                self.ai.idle()?; self.ai_root()?;
-                let draft = Draft { question: arg.into(), context: self.ai.draft.context.clone() };
-                draft.validate()?; self.ai.draft = draft;
+                self.ai.idle()?;
+                self.ai_root()?;
+                let draft = Draft {
+                    question: arg.into(),
+                    context: self.ai.draft.context.clone(),
+                };
+                draft.validate()?;
+                self.ai.draft = draft;
                 self.ai_show(Panel::Preview);
                 self.info("Review context, then :ai send transmits it to Codex");
             }
             "preview" if arg.is_empty() => self.ai_show(Panel::Preview),
             "send" if arg.is_empty() => self.ai_send()?,
-            "cancel" if arg.is_empty() => { self.ai.cancel()?; self.info("AI request cancelled; conversation retained"); },
+            "cancel" if arg.is_empty() => {
+                self.ai.cancel()?;
+                self.info("AI request cancelled; conversation retained");
+            }
             "edits" if arg.is_empty() => {
                 self.ai.idle()?;
                 let plan = self.prepare_ai_edit()?;
-                self.ai.plan = Some(plan); self.ai_show(Panel::Edits);
+                self.ai.plan = Some(plan);
+                self.ai_show(Panel::Edits);
                 self.info("Review replacements; :ai apply approves unsaved buffer edits");
             }
             "apply" if arg.is_empty() => {
                 self.ai.idle()?;
-                if self.view != View::Ai || self.ai.panel != Panel::Edits { return Err(error("Use :ai edits to review replacements before :ai apply")); }
-                let plan = self.ai.plan.take().ok_or_else(|| error("No AI edit preview"))?;
+                if self.view != View::Ai || self.ai.panel != Panel::Edits {
+                    return Err(error(
+                        "Use :ai edits to review replacements before :ai apply",
+                    ));
+                }
+                let plan = self
+                    .ai
+                    .plan
+                    .take()
+                    .ok_or_else(|| error("No AI edit preview"))?;
                 self.apply_edit_plan(plan)?;
                 self.ai.status = "Suggestions applied as unsaved buffer edits; undo with u".into();
-                if let Some(t) = self.ai.conversation.as_mut().and_then(|c| c.turns.last_mut()) { t.detail = self.ai.status.clone(); }
+                if let Some(t) = self
+                    .ai
+                    .conversation
+                    .as_mut()
+                    .and_then(|c| c.turns.last_mut())
+                {
+                    t.detail = self.ai.status.clone();
+                }
                 self.ai.dirty = true;
                 self.ai_show(Panel::Conversation);
             }
             "save" => {
                 self.ai.idle()?;
-                let conversation = self.ai.conversation.clone().ok_or_else(|| error("No AI conversation to save"))?;
-                let path = if arg.is_empty() { self.ai.saved.as_ref().map(|(p, _)| p.clone()).ok_or_else(|| error("Use :ai save /outside/project/conversation.json"))? } else { absolute_path(Path::new(arg))? };
-                let expected = self.ai.saved.as_ref().filter(|(p, _)| p == &path).map(|(_, h)| h.clone());
+                let conversation = self
+                    .ai
+                    .conversation
+                    .clone()
+                    .ok_or_else(|| error("No AI conversation to save"))?;
+                let path = if arg.is_empty() {
+                    self.ai
+                        .saved
+                        .as_ref()
+                        .map(|(p, _)| p.clone())
+                        .ok_or_else(|| error("Use :ai save /outside/project/conversation.json"))?
+                } else {
+                    absolute_path(Path::new(arg))?
+                };
+                let expected = self
+                    .ai
+                    .saved
+                    .as_ref()
+                    .filter(|(p, _)| p == &path)
+                    .map(|(_, h)| h.clone());
                 let protected = self.lsp_edit_guards().into_keys().collect();
-                self.ai.submit(Job::Save { conversation, path, expected, protected })?;
+                self.ai.submit(Job::Save {
+                    conversation,
+                    path,
+                    expected,
+                    protected,
+                })?;
                 self.ai.status = "Saving conversation".into();
                 self.info("Saving AI conversation");
             }
             "load" | "load!" if !arg.is_empty() => {
                 self.ai.idle()?;
-                if self.ai.dirty && name != "load!" { return Err(error("Unsaved AI conversation; save first or use :ai load! PATH")); }
+                if self.ai.dirty && name != "load!" {
+                    return Err(error(
+                        "Unsaved AI conversation; save first or use :ai load! PATH",
+                    ));
+                }
                 let path = absolute_path(Path::new(arg))?;
                 self.ai.submit(Job::Load(path))?;
                 self.ai.status = "Loading conversation".into();
@@ -546,9 +667,16 @@ impl Editor {
             }
             "new" | "new!" if arg.is_empty() => {
                 self.ai.idle()?;
-                if self.ai.dirty && name != "new!" { return Err(error("Unsaved AI conversation; save first or use :ai new!")); }
-                self.ai.conversation = None; self.ai.draft = Draft::default(); self.ai.saved = None;
-                self.ai.plan = None; self.ai.dirty = false; self.ai.partial = None; self.ai.status.clear();
+                if self.ai.dirty && name != "new!" {
+                    return Err(error("Unsaved AI conversation; save first or use :ai new!"));
+                }
+                self.ai.conversation = None;
+                self.ai.draft = Draft::default();
+                self.ai.saved = None;
+                self.ai.plan = None;
+                self.ai.dirty = false;
+                self.ai.partial = None;
+                self.ai.status.clear();
                 self.ai_show(Panel::Conversation);
             }
             _ => return Err(error("Unknown AI command; :ai help lists commands")),
