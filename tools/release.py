@@ -14,7 +14,7 @@ import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin")
+TARGETS = ("aarch64-apple-darwin",)
 STABLE_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 
@@ -52,7 +52,7 @@ def package(version, target, binary, output):
 
 
 def checksums(version, archives):
-    # Require every supported architecture before updating the public formula.
+    # Require the release archive before updating the public formula.
     hashes = {}
     for target in TARGETS:
         with (archives / archive_name(version, target)).open("rb") as archive:
@@ -71,7 +71,7 @@ def formula(version, repository, archives, local=False):
     template = Template((ROOT / "packaging/homebrew/editor-pro.rb.in").read_text())
     return template.substitute(
         repository=repository, version=version, base_url=base_url,
-        arm_sha256=hashes[TARGETS[0]], intel_sha256=hashes[TARGETS[1]],
+        arm_sha256=hashes[TARGETS[0]],
     )
 
 

@@ -43,15 +43,9 @@ jobs:
 
   build:
     needs: version
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
+    env:
+      TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -62,24 +56,19 @@ jobs:
       - name: Build and package native binary
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          TARGET: ${{ matrix.target }}
         run: |
           cargo +stable build --locked --release --bin editor-pro --target "$TARGET"
           python3 tools/release.py --tag "$RELEASE_TAG" package \
             --target "$TARGET" --binary "target/$TARGET/release/editor-pro"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: ${{ env.TARGET }}
           path: dist/*.tar.gz
           if-no-files-found: error
 
   homebrew-test:
     needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -87,9 +76,8 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          pattern: '*-apple-darwin'
+          name: aarch64-apple-darwin
           path: dist
-          merge-multiple: true
       - name: Install and test the formula with local release archives
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -116,9 +104,8 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          pattern: '*-apple-darwin'
+          name: aarch64-apple-darwin
           path: dist
-          merge-multiple: true
       - name: Prepare checksums and publish a complete release
         env:
           RELEASE_TAG: ${{ github.ref_name }}

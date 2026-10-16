@@ -70,10 +70,10 @@ directory). It installs the single `editor-pro` binary. The helper adds `ep` as
 a symlink, installs in your Cargo user directory, and can be rerun for updates
 without administrator privileges. It leaves user configuration alone.
 
-macOS users can install with `brew install perrness/tap/editor-pro` and update
-with `brew update` followed
-by `brew upgrade editor-pro`. Releases contain versioned ARM64 and Intel binaries
-for macOS 14+. Linux binaries are planned; source builds are available today.
+Apple Silicon Mac users can install with `brew install perrness/tap/editor-pro`
+and update with `brew update` followed by `brew upgrade editor-pro`. Releases
+contain versioned ARM64 binaries for macOS 14+. Linux binaries are planned;
+source builds are available today.
 The editor has no self-updater. See [installation and release setup](docs/RELEASING.md)
 for the tap bootstrap, automated formula updates and manual binary installation.
 
@@ -534,7 +534,7 @@ absent, the editor downloads and installs its pinned distribution in the backgro
 then starts it with the latest unsaved buffers. Failed explicit overrides and
 incompatible runtimes remain visible errors. Editing continues during installation.
 
-Managed installations support macOS and glibc Linux on Intel/AMD64 and ARM64.
+Managed installations support macOS on ARM64 and glibc Linux on x86_64 and ARM64.
 Kotlin **263.6379.0** includes its Java 25 runtime. JDT LS **1.60.0-202606262232**
 needs an installed **JDK 21+** selected by JAVA_HOME/PATH; `csharp-ls` **0.28.0**
 needs an installed **.NET SDK 10+** on PATH. The editor checks runtime versions,
@@ -944,10 +944,10 @@ cargo run --locked --release --example git_performance
 cargo run --locked --release --example review_performance
 ```
 
-`Cargo.lock` records resolved dependencies. CI is configured for Linux and both
-macOS architectures; Python 3.11+ is needed for release tooling.
-no hosted CI run has been observed here. Real-server acceptance is opt-in and
-requires the [pinned distributions and SDKs](tools/lsp/README.md). The isolated
+`Cargo.lock` records resolved dependencies. CI uses only `ubuntu-latest` and
+`macos-latest` (ARM64); Python 3.11+ is needed for release tooling.
+Real-server acceptance is opt-in and requires the
+[pinned distributions and SDKs](tools/lsp/README.md). The isolated
 Kotlin probe and its test double remain independent of the editor.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the

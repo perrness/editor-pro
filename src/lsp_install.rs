@@ -72,10 +72,13 @@ fn recipe(language: Language, options: &Options) -> io::Result<Recipe> {
 }
 
 fn recipe_for(language: Language, os: &str, arch: &str) -> io::Result<Recipe> {
-    if !matches!((os, arch), ("linux" | "macos", "x86_64" | "aarch64")) || cfg!(target_env = "musl")
+    if !matches!(
+        (os, arch),
+        ("linux", "x86_64" | "aarch64") | ("macos", "aarch64")
+    ) || cfg!(target_env = "musl")
     {
         return Err(io::Error::other(
-            "Managed LSP installations support macOS and glibc Linux on x86_64/ARM64; configure an external server on this platform",
+            "Managed LSP installations support macOS on ARM64 and glibc Linux on x86_64/ARM64; configure an external server on this platform",
         ));
     }
     let (version, url, sha256, format) = match language {
@@ -83,7 +86,6 @@ fn recipe_for(language: Language, os: &str, arch: &str) -> io::Result<Recipe> {
             let (suffix, hash, format) = match (os, arch) {
                 ("linux", "x86_64") => (".tar.gz", "ab8ca4455dc2fc5fe1a24db2bccc46c104254d2c465155c4251ee65df8f3f7cc", Format::Tar),
                 ("linux", _) => ("-aarch64.tar.gz", "50999901ef8bcfa1e58561b6a8d782a72dea5620fcf92a64130807f8924a56fc", Format::Tar),
-                ("macos", "x86_64") => (".sit", "e69e0c9d27b915b2db9ee692ec08d097df1a394d9f21190457ef199f2905f77e", Format::Zip),
                 _ => ("-aarch64.sit", "ebef2e13cd4adc4ec9e04084b848000a3ec7a9d2917c64f269574ce2efe9ecad", Format::Zip),
             };
             (KOTLIN_VERSION, format!("https://download.jetbrains.com/language-server/kotlin-server/{KOTLIN_VERSION}/kotlin-server-{KOTLIN_VERSION}{suffix}"), hash, format)

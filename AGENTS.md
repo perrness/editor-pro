@@ -14,6 +14,8 @@
 
 Use stable Rust (1.88+), rustfmt, Clippy, Git, and Python 3. Interactive execution requires a terminal.
 
+GitHub Actions must use only `ubuntu-latest` and regular `macos-latest` runners. Do not add builds, tests, release artifacts, or other workflow jobs for Intel macOS; macOS support is ARM64 only.
+
 - `cargo run --locked -- src/main.rs`: open a file during development.
 - `cargo build --locked`: build the debug binary; add `--release` for optimized builds.
 - `cargo fmt --check`: check formatting; use `cargo fmt` to apply it.

@@ -37,17 +37,17 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release.package("1.2.4", release.TARGETS[0], binary, root / "dist")
 
-    def test_formula_requires_both_archives_and_uses_their_real_hashes(self):
+    def test_formula_requires_arm64_archive_and_uses_its_real_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with self.assertRaises(FileNotFoundError):
                 release.formula("1.2.3", "perrness/editor-pro", root)
-            for target in release.TARGETS:
-                (root / release.archive_name("1.2.3", target)).write_bytes(target.encode())
+            target = "aarch64-apple-darwin"
+            (root / release.archive_name("1.2.3", target)).write_bytes(target.encode())
             formula = release.formula("1.2.3", "perrness/editor-pro", root)
-            for target in release.TARGETS:
-                self.assertIn(hashlib.sha256(target.encode()).hexdigest(), formula)
-                self.assertIn(f"https://github.com/perrness/editor-pro/releases/download/v1.2.3/{release.archive_name('1.2.3', target)}", formula)
+            self.assertIn(hashlib.sha256(target.encode()).hexdigest(), formula)
+            self.assertIn(f"https://github.com/perrness/editor-pro/releases/download/v1.2.3/{release.archive_name('1.2.3', target)}", formula)
+            self.assertIn("depends_on arch: :arm64", formula)
             self.assertIn('bin.install_symlink bin/"editor-pro" => "ep"', formula)
             self.assertNotIn("file://", formula)
             self.assertIn(root.as_uri(), release.formula("1.2.3", "perrness/editor-pro", root, local=True))

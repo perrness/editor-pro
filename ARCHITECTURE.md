@@ -129,7 +129,7 @@ editors and core tests do not read environment-dependent settings. Runtime theme
 changes stay session-local. No configuration lives in a binary installation or
 is discovered in a project directory.
 
-Stable version tags gate reusable Linux/macOS checks, native macOS ARM64/Intel
+Stable version tags gate reusable Linux/macOS checks, native macOS ARM64
 builds, installed Homebrew/PTY tests, complete GitHub release publication and a
 tap formula update using published SHA-256 values. Published assets remain
 unchanged on retries. The tap update is a separate job with a repository-scoped
@@ -598,7 +598,8 @@ because its idle-read adapter uses the unversioned transport API. TLS verificati
 and HTTPS-only redirects remain enabled. Shutdown cancels and joins install jobs
 after terminal restoration, subject to network/filesystem stalls.
 
-The catalog pins version, URL, SHA-256, archive format and platform. Linux uses
+The catalog pins version, URL, SHA-256, archive format and platform. Managed
+installations support macOS ARM64 and glibc Linux x86_64/ARM64. Linux uses
 `$XDG_DATA_HOME/editor-pro/lsp` or `~/.local/share/editor-pro/lsp`; macOS uses
 Application Support. Downloads cap at 1 GiB; extraction at 100,000 entries/4 GiB.
 Absolute/parent paths, special files, duplicate regular files and escaping links

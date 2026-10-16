@@ -1065,7 +1065,7 @@ The observed config session is captured at
 `/tmp/editor-pro-install-captures/installation-config.ansi`.
 
 The release-tool tests reject mismatched and prerelease tags, verify archive
-layout/executable permissions and the relative symlink, require both architecture
+layout/executable permissions and the relative symlink, require release
 archives and check formula URLs/SHA-256 values. They use fixture executables,
 not macOS binaries. One initial full PTY run exposed an existing raw-output
 assertion that missed a headline split across ANSI diff writes; waiting for the
@@ -1079,7 +1079,7 @@ repository's Actions secrets. API reads confirmed the key's write setting and
 the secret's presence; the temporary local key was removed. The first successful
 tagged release will generate the installable formula from published assets.
 
-The macOS ARM64/Intel builds, Homebrew installation/tests, release asset upload
+The macOS builds, Homebrew installation/tests, release asset upload
 and automatic tap update are configured but have not run on hosted Actions in
 this change. No release tag or binary release was published. macOS 14 is the
 deployment target; the workflow tests on macOS 15, so macOS 14 runtime behavior
@@ -1148,8 +1148,8 @@ in [tools/lsp/README.md](tools/lsp/README.md).
 
 ### Platform and operational limits
 
-Official Kotlin SHA-256 files were fetched for all four Linux/macOS architectures.
-Range reads confirmed both Mac `.sit` archives are ZIP files; the ARM64 central
+Official Kotlin SHA-256 files were fetched for Linux/macOS archives.
+Range reads confirmed the Mac ARM64 `.sit` archive is a ZIP file; its central
 directory/product metadata confirmed `bin/intellij-server` and
 `jbr/Contents/Home/bin/java`, including relative JBR license symlinks. Native macOS
 execution, Linux ARM64, minimum-Rust execution, hosted CI, physical-terminal
@@ -1165,10 +1165,10 @@ registry, SDK installation or server update/removal commands were added.
 
 ### Release checks and fixture corrections
 
-The v0.2.0 candidate passed the main-branch CI suite on Linux, macOS ARM64 and
-macOS Intel, and both native macOS release archives passed Homebrew installation
+The v0.2.0 candidate passed the main-branch CI suite on Linux and macOS,
+and native macOS release archives passed Homebrew installation
 and all 28 installed-command PTY sessions. Its separate release CI run exposed
-two intermittent Intel fixture failures and did not publish a release:
+two intermittent fixture failures and did not publish a release:
 
 - The local HTTP server closed immediately after writing its response, racing
   the client's socket setup/read and producing `Invalid argument (os error 22)`.
@@ -1876,7 +1876,7 @@ stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
 
-The v0.2.12 hosted run passed Linux checks, both native macOS builds, and the
+The v0.2.12 hosted run passed Linux checks, native macOS builds, and the
 Homebrew installation/terminal suite. The macOS debug terminal suite exposed a
 timing assumption in the new hunk workflow: review loading invalidated the first
 Git snapshot just before Ctrl-g, and the editor correctly refused stale context.
@@ -2034,3 +2034,27 @@ stable-tag check, all three CLI tests, all eleven rendering tests, all three
 release-tool tests, offline Cargo check, formatting and whitespace checks passed
 again. The tag-triggered workflow gates publication and the Homebrew tap update
 on hosted checks.
+
+## Issue 19 — ARM64 macOS builds and releases
+
+Validated on Linux x86_64, 2026-10-16, with Rust/Cargo 1.99.0 and Python 3.12.
+All workflow jobs now use only `ubuntu-latest` or regular `macos-latest`.
+macOS release packaging, Homebrew installation and managed language-server
+recipes target ARM64. `AGENTS.md` records the runner and platform restrictions.
+
+| Check | Result |
+| --- | --- |
+| `actionlint` 1.7.12 | Both workflows passed. |
+| YAML runner validation and `bash -n` | Only permitted runners; all workflow shell blocks parsed. |
+| `python3 -W error -m unittest discover -s tools -p 'test_*.py' -v` | All six release/harness tests passed. |
+| Release CLI fixture | Version check, packaging, local/published formula generation and `SHA256SUMS` passed with only the ARM64 archive. |
+| `cargo test --locked --lib lsp_install::tests` | All 11 installer tests passed. |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `git diff --check` | Passed. |
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process access because the sandbox failed to initialize its loopback interface.
+The release CLI check used a fixture executable; hosted macOS builds, Homebrew
+execution and release publication were not run for this change.

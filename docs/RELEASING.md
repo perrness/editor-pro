@@ -76,8 +76,9 @@ brew update
 brew upgrade editor-pro
 ```
 
-The formula selects the native ARM64 or Intel archive and installs both command
-names. Release binaries target macOS 14 or newer and are tested on macOS 15.
+The formula requires Apple Silicon, downloads the ARM64 archive and installs both
+command names. Release binaries target macOS 14 or newer and are tested on
+`macos-latest`.
 Use an existing user-writable Homebrew installation; the editor formula needs no
 `sudo`. `brew uninstall editor-pro` removes the commands and keeps user settings.
 Homebrew's own initial installation is separate from the editor installation.
@@ -141,19 +142,20 @@ tags are supported initially; prerelease tags fail validation.
 
 The [release workflow](../.github/workflows/release.yml):
 
-1. Checks the tag and tap access, and runs the reusable Linux/macOS CI suite.
-2. Builds native `aarch64-apple-darwin` and `x86_64-apple-darwin` release binaries
-   with the locked dependency set. Packaging verifies each binary's `--version`.
-3. Tests the generated Homebrew formula against the local archives on both
-   macOS architectures, including PTY sessions through the installed `ep` command.
-4. Creates a draft GitHub release, uploads both versioned `.tar.gz` archives and
+1. Checks the tag and tap access, and runs the reusable CI suite on `ubuntu-latest`
+   and `macos-latest`. These are the only permitted workflow runners.
+2. Builds the native `aarch64-apple-darwin` release binary on `macos-latest`
+   with the locked dependency set. Packaging verifies the binary's `--version`.
+3. Tests the generated Homebrew formula against the local ARM64 archive on
+   `macos-latest`, including PTY sessions through the installed `ep` command.
+4. Creates a draft GitHub release, uploads the versioned ARM64 `.tar.gz` archive and
    `SHA256SUMS`, then publishes it only after all checks pass.
 5. Downloads the published assets, verifies their checksums, generates the formula
    with those exact hashes, and commits it to the tap. Only the latest stable
    release updates the tap.
 
 Each archive contains one `editor-pro` executable, an `ep` symlink and the README.
-For manual installation, download the archive matching your CPU and `SHA256SUMS`
+For manual installation on Apple Silicon, download the ARM64 archive and `SHA256SUMS`
 from the release page. On macOS, `shasum -a 256 ARCHIVE.tar.gz` must match the
 corresponding entry. Extract it, put `editor-pro` in `~/.local/bin`, and create
 `~/.local/bin/ep` as a symlink to `editor-pro`; add that directory to PATH.
@@ -165,8 +167,8 @@ the tap formula from the downloaded release, not rebuilt tarballs. If only the
 tap update fails, fix its credentials/branch policy and rerun that job. Rerunning
 an older release cannot downgrade the formula while a newer release is latest.
 
-To add Linux later, extend the release matrix, `TARGETS` in `tools/release.py`,
-and the formula's platform selection together, then validate the installed
+To add Linux later, extend the release build jobs, `TARGETS` in `tools/release.py`,
+and the formula's platform requirements together, then validate the installed
 binaries on those platforms. Do not add update logic to the editor.
 
 References: [GitHub runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),

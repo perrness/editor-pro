@@ -546,13 +546,15 @@ fn extraction_rejects_duplicate_files_truncation_and_cancelled_work() {
 
 #[test]
 fn platform_catalog_has_pinned_recipes_and_rejects_unsupported_platforms() {
-    for os in ["linux", "macos"] {
-        for arch in ["x86_64", "aarch64"] {
-            for language in [Language::Kotlin, Language::Java, Language::CSharp] {
-                let recipe = recipe_for(language, os, arch).unwrap();
-                assert!(recipe.url.starts_with("https://"));
-                assert_eq!(recipe.sha256.len(), 64);
-            }
+    for (os, arch) in [
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("macos", "aarch64"),
+    ] {
+        for language in [Language::Kotlin, Language::Java, Language::CSharp] {
+            let recipe = recipe_for(language, os, arch).unwrap();
+            assert!(recipe.url.starts_with("https://"));
+            assert_eq!(recipe.sha256.len(), 64);
         }
     }
     assert!(recipe_for(Language::Kotlin, "windows", "x86_64").is_err());
