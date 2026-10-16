@@ -616,6 +616,10 @@ def main():
         status_source = repo / "src" / "界 status.txt"
         status_source.parent.mkdir()
         status_source.write_bytes(b"status fixture\r\n")
+        short_status_path = "Gjensidige.Alarm.Bff.Notifications/Functions/NotificationOutboxFunction.cs"
+        long_status_source = repo / "Gjensidige.Alarm.Bff" / short_status_path
+        long_status_source.parent.mkdir(parents=True)
+        long_status_source.write_bytes(b"// status fixture\r\n")
         git("add", "--all")
         git("commit", "-m", "base")
         # Ratatui can emit a cursor move after a wide glyph. Check the relative
@@ -629,6 +633,16 @@ def main():
         ], b"status fixture\r\n", cwd=status_source.parent)
         if capture_dir:
             (Path(capture_dir) / "repository-relative-status.ansi").write_bytes(output)
+        shortened_status = f" {short_status_path}".encode()
+        output = run_session(binary, long_status_source, [
+            b":gitrefresh\r", resize(24, 260), (b"main", 10),
+            resize(24, 195), (shortened_status, 10), b"i// LOCAL ", b"\x1b",
+            resize(7, 45), resize(3, 1), resize(24, 195), (shortened_status, 10),
+            b"u", resize(24, 260), (f" Gjensidige.Alarm.Bff/{short_status_path}".encode(), 10),
+            b":q\r",
+        ], b"// status fixture\r\n", cwd=long_status_source.parent)
+        if capture_dir:
+            (Path(capture_dir) / "shortened-status-path.ansi").write_bytes(output)
         rows[2] = "STAGED change\n"
         source.write_text("".join(rows))
         git("add", "source.rs")
@@ -992,7 +1006,7 @@ def main():
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 55 PTY sessions; ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 56 PTY sessions; ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

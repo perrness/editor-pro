@@ -2058,3 +2058,48 @@ Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
 process access because the sandbox failed to initialize its loopback interface.
 The release CLI check used a fixture executable; hosted macOS builds, Homebrew
 execution and release publication were not run for this change.
+
+## Issue 16 — Whole-directory status paths
+
+Validated on Linux x86_64, 2026-10-16, with Rust/Cargo 1.99.0 and Python 3.12.
+Long statusline paths now drop complete outer directories only when they exceed
+the available cells. The issue's example shows
+`Gjensidige.Alarm.Bff.Notifications/Functions/NotificationOutboxFunction.cs`
+without a fragment of its outer directory. Wider terminals restore the longer
+path; an overlong filename retains the existing grapheme-safe tail clipping.
+
+The new example regression and expanded Unicode regression failed with the
+previous renderer. Coverage includes dirty buffers, pending/completed Git
+refreshes, CRLF bytes, undo, Unicode directory names, combining/emoji graphemes,
+control characters, and widths from one to 160 columns. The existing repository,
+linked-worktree, buffer-switch and save-as regressions also pass. Rendering keeps
+the original document identity and performs no filesystem work.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 373 passed; 13 opt-in real-service tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | All six tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | All eight tests passed. |
+| `python3 tools/terminal_smoke.py` | All 56 PTY sessions passed, including the new long-path edit/undo/resize session. |
+
+The terminal suite used
+`EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue16-terminal`. The new capture
+is `shortened-status-path.ansi`; a reconstructed 195-column frame is saved beside
+it as `shortened-status-path.txt` and `shortened-status-path.svg`. Full Rust and
+PTY logs are `/tmp/editor-pro-issue16-rust-tests.log` and
+`/tmp/editor-pro-issue16-terminal-tests.log`.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process access because the sandbox failed to initialize its loopback interface.
+macOS, physical terminals, real language servers and AI providers were not
+retested for this display-only change.
+
+Release preparation updates the Cargo package and lockfile to **v0.2.17**.
+Offline Cargo check, all three CLI tests, all eleven rendering tests, all three
+release-tool tests, the matching-tag check, formatting and whitespace checks
+passed after the version bump. The tag-triggered workflow gates publication and
+the Homebrew tap update on its hosted checks and installed-binary acceptance.

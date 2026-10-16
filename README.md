@@ -761,6 +761,9 @@ compact layout. `[plain]` identifies a syntax fallback.
 File paths are relative to the Git worktree root once repository discovery
 completes. Outside a repository, or while repository information is unavailable,
 the statusline uses the full path; unnamed buffers show `[No Name]`.
+When a path does not fit, the statusline drops whole outer directories until it
+fits. If the filename alone is too wide, it shows the end of the filename without
+splitting Unicode graphemes. Widening the terminal restores the longer path.
 
 Paths can contain spaces: enter them directly, without shell quoting. Tilde,
 environment variables, wildcards and shell commands are not expanded. There is

@@ -524,6 +524,47 @@ fn status_path_is_repository_relative_and_stable_during_refresh() {
     assert!(status_line(&mut e, 400).contains(&absolute.display().to_string()));
 }
 #[test]
+fn status_path_drops_whole_outer_directories_when_space_is_limited() {
+    let r = Repo::new();
+    let short = "Gjensidige.Alarm.Bff.Notifications/Functions/NotificationOutboxFunction.cs";
+    let relative = format!("Gjensidige.Alarm.Bff/{short}");
+    r.write(&relative, "// original\r\n");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path(&relative)).unwrap());
+    settle_editor(&mut e);
+    let absolute = e.document.path().unwrap().to_path_buf();
+
+    for width in [195, 400, 195] {
+        let expected = if width == 400 { &relative } else { short };
+        let status = status_line(&mut e, width);
+        assert!(
+            status.starts_with(&format!(" NORMAL  [B1] {expected} ")),
+            "{width}: {status}"
+        );
+        for label in ["HEAD→buffer", "main", "LSP", "C# UTF-8 CRLF", "1:1"] {
+            assert!(status.contains(label), "{width}: {status}");
+        }
+    }
+
+    e.document.buffer.insert("// local\r\n");
+    e.document.buffer.commit();
+    e.refresh_git();
+    for pending in [true, false] {
+        if !pending {
+            settle_editor(&mut e);
+        }
+        let status = status_line(&mut e, 190);
+        assert!(
+            status.starts_with(&format!(" NORMAL  [B1] {short} [+] ")),
+            "{status}"
+        );
+    }
+    assert_eq!(e.document.path(), Some(absolute.as_path()));
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "// original\r\n");
+    assert_eq!(fs::read(absolute).unwrap(), b"// original\r\n");
+}
+#[test]
 fn status_path_does_not_reuse_a_previous_buffers_repository() {
     let r = Repo::new();
     r.write("outer.txt", "outer\n");
@@ -591,19 +632,36 @@ fn status_path_uses_linked_worktree_root_and_follows_save_as() {
 #[test]
 fn status_path_preserves_unicode_and_safe_clipping() {
     let r = Repo::new();
-    let relative = "src/界 e\u{301} 👩‍💻\nfile.txt";
+    let relative = "outer directory/界 e\u{301} 👩‍💻/src/界 e\u{301} 👩‍💻\nfile.txt";
     r.write(relative, "unchanged\r\n");
     let mut e = Editor::new(Document::open(&r.path(relative)).unwrap());
     settle_editor(&mut e);
     let status = status_line(&mut e, 400);
     assert!(
-        status.starts_with(" NORMAL  [B1] src/界 e\u{301} 👩‍💻�file.txt "),
+        status.starts_with(
+            " NORMAL  [B1] outer directory/界 e\u{301} 👩‍💻/src/界 e\u{301} 👩‍💻�file.txt "
+        ),
         "{status}"
     );
-    for width in [1, 8, 20, 40, 69, 70, 80, 120] {
+    for width in 1..=160 {
         let status = status_line(&mut e, width);
         assert!(!status.chars().any(char::is_control));
         assert!(unicode_width::UnicodeWidthStr::width(status.as_str()) <= usize::from(width));
+        if width >= 40 {
+            let name = status.strip_prefix(" NORMAL  [B1] ").unwrap().trim_end();
+            if name.contains('/') {
+                assert!(
+                    [
+                        relative,
+                        "界 e\u{301} 👩‍💻/src/界 e\u{301} 👩‍💻\nfile.txt",
+                        "src/界 e\u{301} 👩‍💻\nfile.txt"
+                    ]
+                    .iter()
+                    .any(|suffix| name.starts_with(&suffix.replace('\n', "�"))),
+                    "{width}: {status}"
+                );
+            }
+        }
     }
     assert_eq!(e.document.buffer.text().to_string(), "unchanged\r\n");
     assert_eq!(fs::read(r.path(relative)).unwrap(), b"unchanged\r\n");

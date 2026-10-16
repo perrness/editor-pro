@@ -342,6 +342,9 @@ comparison refreshes and edits; buffer switches and save-as cannot reuse another
 path's root. Before discovery or outside Git, it falls back to the document's
 absolute name. Rendering performs no repository discovery or filesystem access,
 and document identities and save targets remain absolute.
+Paths that exceed the available statusline cells lose whole leading directory
+components until they fit. Only an overlong filename is clipped within a component,
+using the shared grapheme/cell rules; non-file labels retain ordinary text clipping.
 
 ## Durable review without another editor
 

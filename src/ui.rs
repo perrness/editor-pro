@@ -654,8 +654,18 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
             || editor.document.display_name(),
             |path| path.display().to_string(),
         );
-    let name_cells = display_column(&name, name.chars().count());
-    let name = visible_text(&name, name_cells.saturating_sub(name_width), name_width);
+    let mut name = name.as_str();
+    let mut name_cells = display_column(name, name.chars().count());
+    // Keep directory names whole when shortening a file path. Only clip within
+    // the filename if it cannot fit by itself; non-file labels keep their layout.
+    while name_cells > name_width
+        && editor.document.path().is_some()
+        && let Some((_, suffix)) = name.split_once(std::path::MAIN_SEPARATOR)
+    {
+        name = suffix;
+        name_cells = display_column(name, name.chars().count());
+    }
+    let name = visible_text(name, name_cells.saturating_sub(name_width), name_width);
     let spans = vec![
         Span::styled(
             mode,
