@@ -390,26 +390,42 @@ def main():
         gone.unlink()
         (repo / "untracked.rs").write_text("untracked addition\n")
         index_before = (repo / ".git" / "index").read_bytes()
+        shortcut_rows = rows.copy()
+        shortcut_rows[2] = "KEYS" + shortcut_rows[2]
+        output = run_session(binary, source, [
+            (b"gg2]c", b"Git hunk 2/2", 10), b"[c", b" gd", (b"OLD ", 10),
+            b"\t", resize(24, 130), (b"paired", 10),
+            (b"n", b"untracked addition", 10), resize(8, 40), resize(3, 1),
+            resize(24, 130), b"\x1b", b"iKEYS", b"\x1b", b":wq\r",
+        ], "".join(shortcut_rows).encode())
+        assert (repo / ".git" / "index").read_bytes() == index_before
+        if capture_dir:
+            (Path(capture_dir) / "git-keyboard-navigation.ansi").write_bytes(output)
+        source.write_text("".join(rows))
         expected_rows = rows.copy()
         expected_rows[0] = "LOCAL" + expected_rows[0]
         expected_rows[29] = "RETURN" + expected_rows[29]
-        output = run_session(binary, source, [b"iLOCAL", b"\x1b", b"30G0", b":diff HEAD\r",
+        output = run_session(binary, source, [b"iLOCAL", b"\x1b", b"30G0", b" gd",
             (b"UNSAVED", 10), b"\t", resize(24, 130), (b"paired", 10), b"]", b"[",
             resize(10, 45), b"\x06", b"r", resize(3, 1), resize(24, 130), b"\x1b",
             b"iRETURN", b"\x1b", b":wq\r"], "".join(expected_rows).encode())
         assert b"OLD " in output and b"NEW " in output
         assert (repo / ".git" / "index").read_bytes() == index_before
-        output = run_session(binary, source, [b":changes\r", (b"gone.rs", 10),
+        if capture_dir:
+            (Path(capture_dir) / "git-shortcut-dirty-origin.ansi").write_bytes(output)
+        output = run_session(binary, source, [b" gc", (b"gone.rs", 10),
             # Review loading can briefly invalidate the list after it renders.
             # Retry navigation until the destination appears instead of losing
             # a single Enter during that refresh window.
-            (b"\r", b"historical deletion", 10), b"\r", b"\x1b", b":changes\r", (b"second.rs", 10), b"j",
+            (b"\r", b"historical deletion", 10), b"\r", b"\x1b", b" gc", (b"second.rs", 10), b"j",
             (b"\r", b"changed second", 10),
-            b"iSECOND ", b"\x1b", b":w\r", b":gnext\r", b":gprev\r", b":q\r"],
+            b"iSECOND ", b"\x1b", b":w\r", b"]f", b"[f", b":q\r"],
             "".join(expected_rows).encode())
         assert second.read_bytes() == b"SECOND changed second\n", (second.read_bytes(), output[-12000:])
         assert not gone.exists()
         assert (repo / ".git" / "index").read_bytes() == index_before
+        if capture_dir:
+            (Path(capture_dir) / "git-shortcut-changed-files.ansi").write_bytes(output)
         output = run_session(binary, source, [b":diff staged\r", (b"index@", 10), b":diff index\r",
             b":diff HEAD\r", b":diff missing-revision\r", (b"Unavailable revision", 10),
             b":diff HEAD\r", b"n", b"r", b"\x1b", b":q\r"], "".join(expected_rows).encode())
@@ -705,7 +721,7 @@ def main():
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 37 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 38 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

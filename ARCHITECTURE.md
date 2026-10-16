@@ -305,6 +305,16 @@ race, and later polling refreshes them. Stale/loading/error labels remain visibl
 stale gutters and source jumps are disabled. Neither polling nor refresh reloads
 an open document or alters its history, cursor or viewport.
 
+Normal-mode `]c`/`[c` navigate the first changed row of each existing diff hunk,
+using its source anchor and clamping deletions at EOF. Counts clamp to the first
+or last hunk; `]f`/`[f` use the same changed-file list as `:gnext`/`:gprev`, with
+counted wraparound. Both paths validate the current document/base stamp before
+navigating, including mutations before the next worker tick. Pending work reports
+stale/loading feedback without queuing a jump or waiting on Git. Source hunk jumps
+enter the existing location history. `Space g d`/`Space g c` call the ordinary
+diff/Changes commands; diff dismissal retains the established origin restoration.
+These prefixes are Normal-mode commands, separate from operators and find motions.
+
 The source statusline uses a repository-relative path from the latest accepted
 Git discovery for that exact document path. This display-only value survives
 comparison refreshes and edits; buffer switches and save-as cannot reuse another

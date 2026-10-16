@@ -130,6 +130,60 @@ fn navigation_shortcuts_do_not_intercept_insert_visual_or_operator_input() {
 }
 
 #[test]
+fn git_shortcut_prefixes_cancel_and_do_not_consume_later_editing_keys() {
+    for prefix in ["[", "]", "3]", " ", " g"] {
+        for cancel in [Key::Escape, Key::Ctrl('c'), Key::Ctrl('[')] {
+            let mut editor = editor("abc\r\n");
+            keys(&mut editor, prefix);
+            assert!(!editor.pending_label().is_empty());
+            editor.handle_key(cancel);
+            assert!(editor.pending_label().is_empty());
+            keys(&mut editor, "liX");
+            assert_eq!(content(&editor), "aXbc\r\n");
+        }
+    }
+    for invalid in ["]x", "[d", "3]g", " gx", " d"] {
+        let mut editor = editor("abc");
+        keys(&mut editor, invalid);
+        assert_eq!(content(&editor), "abc");
+        assert!(editor.pending_label().is_empty());
+        keys(&mut editor, "l");
+        assert_eq!(editor.document.buffer.position(), (0, 1));
+    }
+}
+
+#[test]
+fn git_shortcuts_preserve_insert_text_objects_find_and_operator_input() {
+    let mut e = editor("");
+    keys(&mut e, "i]c[c]f[f gd gc");
+    assert_eq!(content(&e), "]c[c]f[f gd gc");
+    assert_eq!(e.mode, Mode::Insert);
+    let mut e = editor("a[b]c");
+    keys(&mut e, "f]");
+    assert_eq!(e.document.buffer.position(), (0, 3));
+    keys(&mut e, "F[");
+    assert_eq!(e.document.buffer.position(), (0, 1));
+    keys(&mut e, "di[");
+    assert_eq!(content(&e), "a[]c");
+    let mut e = editor("a[b]c");
+    keys(&mut e, "df]");
+    assert_eq!(content(&e), "c");
+    for prefix in ["v", "V", "d", "c", "y"] {
+        for bracket in ['[', ']'] {
+            let mut e = editor("abc");
+            keys(&mut e, prefix);
+            let mode = e.mode;
+            let anchor = e.selection_anchor;
+            e.handle_key(Key::Char(bracket));
+            assert_eq!(e.mode, mode);
+            assert_eq!(e.selection_anchor, anchor);
+            assert!(e.pending_label().is_empty());
+            assert_eq!(content(&e), "abc");
+        }
+    }
+}
+
+#[test]
 fn crlf_line_join_and_newline_are_atomic_and_preserved() {
     let mut editor = editor("ab\r\ncd\r\n");
     keys(&mut editor, "ji");

@@ -1552,3 +1552,58 @@ Release preparation bumps the Cargo package and lockfile to v0.2.8. The stable
 tag check, all three CLI/version tests, all three release-tool tests, an offline
 Cargo check, formatting and whitespace checks passed. The tag-triggered release
 workflow gates native macOS archives and Homebrew publication on hosted checks.
+
+## Issue 8 — Git keyboard navigation
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. Normal-mode `]c`/`[c`
+navigate hunks, `]f`/`[f` navigate changed files, and `Space g d`/`Space g c`
+open the existing diff/Changes views. Prefix hints, `:help`, CLI help and README
+document the bindings. No dependency, diff algorithm or Git worker was added.
+
+Nine new regressions cover first-changed-line coordinates instead of context
+headers; counts, boundaries and file wraparound; HEAD/index/revision comparisons;
+unsaved Unicode/CRLF content; deletion and EOF anchors; deleted-file history;
+buffer, cursor, viewport and undo preservation; source location history;
+paired/narrow rendering; empty/error feedback; prefix cancellation and ordinary
+Insert, Visual, operator, text-object and find input. Freshness checks reject
+buffer/base changes before the next worker tick and report pending refreshes
+without queuing a later jump. The Changes list retains its existing disk/index
+and separately labeled unsaved-buffer semantics.
+
+Formatting, Clippy with warnings denied, the debug build, all **326 Rust tests**
+(eleven opt-in tests ignored), and all **14 Python tests** passed:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+```
+
+All **38 PTY sessions** passed with the debug binary, including a new keyboard
+workflow that jumps forward by two hunks, moves backward, opens a diff, browses
+another file, resizes through paired/narrow/tiny layouts, then edits the restored
+source line. Existing dirty-origin and changed-file sessions now use the new
+shortcuts. The fixtures check saved bytes, retained unsaved text and the unchanged
+Git index, along with terminal restoration. Reproduction and captures:
+
+```sh
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue8-terminal python3 tools/terminal_smoke.py
+```
+
+- `/tmp/editor-pro-issue8-terminal/git-keyboard-navigation.ansi`
+- `/tmp/editor-pro-issue8-terminal/git-shortcut-dirty-origin.ansi`
+- `/tmp/editor-pro-issue8-terminal/git-shortcut-changed-files.ansi`
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process/socket access because the sandbox failed to initialize its loopback
+interface. macOS, physical terminals and real language servers were not retested
+for this keyboard/navigation change.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.9**. The
+stable-tag check, all three CLI/version tests, all three release-tool tests,
+offline Cargo check, formatting and whitespace checks passed. The tag-triggered
+release workflow gates publication and the Homebrew tap update on hosted checks.

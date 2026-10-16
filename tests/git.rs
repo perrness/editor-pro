@@ -434,13 +434,18 @@ fn slow_git_times_out_and_shutdown_reaps_the_process() {
 }
 
 use editor_pro::{
-    editor::{Editor, View, Viewport},
+    editor::{Editor, Mode, View, Viewport},
     file::Document,
     input::Key,
     theme::Theme,
     ui,
 };
 use ratatui::{Terminal, backend::TestBackend};
+fn keys(editor: &mut Editor, input: &str) {
+    for character in input.chars() {
+        editor.handle_key(Key::Char(character));
+    }
+}
 fn settle_editor(editor: &mut Editor) {
     let until = Instant::now() + Duration::from_secs(15);
     loop {
@@ -1106,4 +1111,350 @@ fn dirty_document_remains_a_source_destination_after_parent_directory_deletion()
     assert!(e.document.buffer.undo());
     assert_eq!(e.document.buffer.text().to_string(), "base\n");
     assert!(!r.path("sub").exists());
+}
+
+#[test]
+fn normal_hunk_shortcuts_use_changed_lines_counts_boundaries_and_history() {
+    let r = Repo::new();
+    let original = (0..70).map(|n| format!("row{n}\r\n")).collect::<String>();
+    r.write("a", &original);
+    r.commit();
+    let changed = original
+        .replace("row6\r\n", "界e\u{301}\r\n")
+        .replace("row30\r\n", "middle\r\n")
+        .replace("row58\r\n", "last\r\n");
+    r.write("a", &changed);
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    settle_editor(&mut e);
+    let generation = e.document.buffer.generation();
+    e.register.text = "saved register".into();
+    keys(&mut e, "]c");
+    assert_eq!(e.document.buffer.position(), (6, 0));
+    assert_eq!(e.view, View::Editing);
+    assert_eq!(e.mode, Mode::Normal);
+    let location = e.document.buffer.cursor();
+    e.viewport = Viewport {
+        top: 4,
+        left: 2,
+        height: 8,
+    };
+    let viewport = e.viewport.clone();
+    keys(&mut e, "2]c");
+    assert_eq!(e.document.buffer.position(), (58, 0));
+    assert_eq!(e.message, "Git hunk 3/3");
+    keys(&mut e, "]c");
+    assert_eq!(e.document.buffer.position(), (58, 0));
+    assert_eq!(e.message, "No next Git hunk");
+    assert!(!e.message_is_error);
+    e.handle_key(Key::Ctrl('o'));
+    assert_eq!(e.document.buffer.cursor(), location);
+    assert_eq!(e.viewport, viewport);
+    settle_editor(&mut e);
+    keys(&mut e, "99]c99[c");
+    assert_eq!(e.document.buffer.position(), (6, 0));
+    keys(&mut e, "[c");
+    assert_eq!(e.message, "No previous Git hunk");
+    assert_eq!(e.document.buffer.generation(), generation);
+    assert_eq!(e.register.text, "saved register");
+    assert_eq!(e.document.buffer.text().to_string(), changed);
+    assert!(!e.document.buffer.undo());
+    assert_eq!(fs::read(r.path("a")).unwrap(), changed.as_bytes());
+}
+
+#[test]
+fn git_shortcuts_respect_head_index_revision_and_unsaved_crlf_content() {
+    let r = Repo::new();
+    let original = (0..65).map(|n| format!("row{n}\r\n")).collect::<String>();
+    r.write("a", &original);
+    r.commit();
+    let revision = r.git(&["rev-parse", "HEAD"]).trim().to_owned();
+    let head = original.replace("row5\r\n", "committed\r\n");
+    r.write("a", &head);
+    r.commit();
+    let staged = head.replace("row25\r\n", "staged\r\n");
+    r.write("a", &staged);
+    r.git(&["add", "a"]);
+    let working = staged.replace("row45\r\n", "working\r\n");
+    r.write("a", &working);
+    let index_before = fs::read(r.path(".git/index")).unwrap();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.document.buffer.goto_line(55, true);
+    e.document.buffer.insert("界e\u{301} ");
+    e.document.buffer.commit();
+    let dirty = e.document.buffer.text().to_string();
+    for (base, comparison, first, second) in [
+        ("HEAD", Comparison::Head, 25, 45),
+        ("index", Comparison::Index, 45, 55),
+        (
+            revision.as_str(),
+            Comparison::Revision(revision.clone()),
+            5,
+            25,
+        ),
+    ] {
+        e.execute_command(&format!("gitbase {base}")).unwrap();
+        e.document.buffer.goto_line(0, false);
+        settle_editor(&mut e);
+        keys(&mut e, "]c");
+        assert_eq!(e.document.buffer.position(), (first, 0), "{base}");
+        keys(&mut e, "]c");
+        assert_eq!(e.document.buffer.position(), (second, 0), "{base}");
+        let origin = e.document.buffer.cursor();
+        keys(&mut e, " gd");
+        settle_editor(&mut e);
+        assert_eq!(e.view, View::Diff);
+        assert_eq!(e.git.comparison, comparison);
+        assert!(e.git.diff().unwrap().right_label.contains("UNSAVED"));
+        assert!(draw(&mut e, 180, 15).contains("[CRLF]"));
+        e.handle_key(Key::Escape);
+        assert_eq!(e.document.buffer.cursor(), origin);
+        assert_eq!(e.git.comparison, comparison);
+        assert_eq!(e.document.buffer.text().to_string(), dirty);
+    }
+    assert_eq!(fs::read(r.path("a")).unwrap(), working.as_bytes());
+    assert_eq!(fs::read(r.path(".git/index")).unwrap(), index_before);
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), working);
+    assert!(e.document.buffer.redo());
+    assert_eq!(e.document.buffer.text().to_string(), dirty);
+}
+
+#[test]
+fn normal_hunk_shortcuts_anchor_deletions_and_handle_empty_or_deleted_source() {
+    for (old, new, start, shortcut, expected) in [
+        ("removed\r\nkeep\r\nlast", "keep\r\nlast", 1, "[c", 0),
+        ("first\nremoved\nlast", "first\nlast", 0, "]c", 1),
+        ("first\nkeep\ntail", "first\nkeep", 0, "]c", 1),
+        ("only", "", 0, "]c", 0),
+    ] {
+        let r = Repo::new();
+        r.write("a", old);
+        r.commit();
+        r.write("a", new);
+        let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+        e.document.buffer.goto_line(start, false);
+        settle_editor(&mut e);
+        keys(&mut e, shortcut);
+        assert_eq!(e.document.buffer.position(), (expected, 0), "{old:?}");
+        assert_eq!(e.view, View::Editing);
+        assert_eq!(e.document.buffer.text().to_string(), new);
+        assert!(!e.document.buffer.undo());
+    }
+    let r = Repo::new();
+    r.write("a", "history\n");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    fs::remove_file(r.path("a")).unwrap();
+    settle_editor(&mut e);
+    keys(&mut e, "]c");
+    assert!(e.message.contains("Deleted file has no current source"));
+    keys(&mut e, " gd");
+    settle_editor(&mut e);
+    assert_eq!(text(e.git.diff().unwrap(), Kind::Delete), ["history"]);
+    e.handle_key(Key::Escape);
+    assert_eq!(e.document.buffer.text().to_string(), "history\n");
+    assert!(!r.path("a").exists());
+}
+
+#[test]
+fn changed_file_shortcuts_wrap_count_and_preserve_dirty_buffers_and_diff_origin() {
+    let r = Repo::new();
+    r.write("a", "a\n");
+    r.write("b", "b\nsecond\n");
+    r.write("deleted", "history\n");
+    r.write("unchanged", "same\n");
+    r.commit();
+    r.write("b", "changed\nsecond\n");
+    fs::remove_file(r.path("deleted")).unwrap();
+    r.write("z", "untracked\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    keys(&mut e, "iunsaved ");
+    e.handle_key(Key::Escape);
+    let dirty_cursor = e.document.buffer.cursor();
+    settle_editor(&mut e);
+    keys(&mut e, "]f");
+    assert_eq!(e.document.path(), Some(r.path("b").as_path()));
+    e.document.buffer.goto_line(1, false);
+    e.viewport = Viewport {
+        top: 1,
+        left: 2,
+        height: 6,
+    };
+    let origin = (e.document.buffer.cursor(), e.viewport.clone());
+    settle_editor(&mut e);
+    keys(&mut e, "]f");
+    settle_editor(&mut e);
+    assert_eq!(e.view, View::Diff);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().path, r.path("deleted"));
+    e.handle_key(Key::Char('n'));
+    settle_editor(&mut e);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().path, r.path("z"));
+    for (width, height) in [(130, 15), (40, 6), (1, 1), (1, 3)] {
+        e.handle_key(Key::Tab);
+        draw(&mut e, width, height);
+        assert_eq!(e.document.buffer.cursor(), origin.0);
+        assert_eq!(e.viewport, origin.1);
+    }
+    e.handle_key(Key::Escape);
+    assert_eq!(e.document.path(), Some(r.path("b").as_path()));
+    assert_eq!(e.document.buffer.cursor(), origin.0);
+    assert_eq!(e.viewport, origin.1);
+    settle_editor(&mut e);
+    keys(&mut e, "2]f");
+    assert_eq!(e.document.path(), Some(r.path("z").as_path()));
+    settle_editor(&mut e);
+    keys(&mut e, "]f");
+    assert_eq!(e.document.path(), Some(r.path("a").as_path()));
+    assert_eq!(e.active_buffer_id, 1);
+    assert_eq!(e.document.buffer.cursor(), dirty_cursor);
+    assert_eq!(e.document.buffer.text().to_string(), "unsaved a\n");
+    settle_editor(&mut e);
+    keys(&mut e, "[f");
+    assert_eq!(e.document.path(), Some(r.path("z").as_path()));
+    settle_editor(&mut e);
+    keys(&mut e, "3[f");
+    assert_eq!(e.document.path(), Some(r.path("a").as_path()));
+    e.open_buffer(&r.path("unchanged")).unwrap();
+    settle_editor(&mut e);
+    keys(&mut e, "2[f");
+    assert_eq!(e.git.diff_view.as_ref().unwrap().path, r.path("deleted"));
+    e.handle_key(Key::Escape);
+    e.switch_buffer(1).unwrap();
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "a\n");
+    assert_eq!(fs::read(r.path("a")).unwrap(), b"a\n");
+    assert!(!r.path("deleted").exists());
+}
+
+#[test]
+fn git_shortcuts_reject_stale_data_without_deferred_jumps_or_lost_input() {
+    let r = Repo::new();
+    r.write("a", "first\nold\n");
+    r.write("b", "other\n");
+    r.commit();
+    r.write("a", "first\nnew\n");
+    r.write("b", "changed\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    settle_editor(&mut e);
+    // Mutation can precede the next worker tick while ready() is still true.
+    e.document.buffer.insert("unsaved\n");
+    e.document.buffer.commit();
+    assert!(e.git.ready());
+    assert!(!e.git_current());
+    let origin = e.document.buffer.cursor();
+    for shortcut in ["]c", "[c", "]f", "[f"] {
+        keys(&mut e, shortcut);
+        assert!(e.message.contains("stale or loading"));
+        assert_eq!(e.document.buffer.cursor(), origin);
+        assert_eq!(e.active_buffer_id, 1);
+        assert_eq!(e.view, View::Editing);
+        assert!(e.pending_label().is_empty());
+    }
+    e.refresh_git();
+    keys(&mut e, "]c");
+    // Ordinary input remains usable while the comparison runs.
+    keys(&mut e, "j");
+    let moved = e.document.buffer.cursor();
+    settle_editor(&mut e);
+    assert_eq!(e.document.buffer.cursor(), moved);
+    keys(&mut e, " gc");
+    e.handle_key(Key::Enter);
+    assert!(e.message.contains("stale or loading"));
+    assert_eq!(e.view, View::Changes);
+    settle_editor(&mut e);
+    e.handle_key(Key::Escape);
+    assert_eq!(e.document.buffer.cursor(), moved);
+    // Even a base changed before invalidation must not reuse old coordinates.
+    e.git.comparison = Comparison::Index;
+    keys(&mut e, "]c");
+    assert!(e.message.contains("stale or loading"));
+    assert_eq!(e.document.buffer.cursor(), moved);
+    settle_editor(&mut e);
+    assert_eq!(e.document.buffer.cursor(), moved);
+}
+
+#[test]
+fn git_shortcuts_report_no_changes_and_unavailable_comparisons() {
+    let r = Repo::new();
+    r.write("a", "unchanged\n");
+    r.commit();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    settle_editor(&mut e);
+    for shortcut in ["]c", "[c"] {
+        keys(&mut e, shortcut);
+        assert!(e.message.contains("No Git hunks"));
+        assert!(!e.message_is_error);
+    }
+    for shortcut in ["]f", "[f"] {
+        keys(&mut e, shortcut);
+        assert_eq!(e.message, "No changed files");
+        assert!(!e.message_is_error);
+    }
+    e.execute_command("gitbase missing-revision").unwrap();
+    settle_editor(&mut e);
+    keys(&mut e, "]c");
+    assert!(e.message.contains("Unavailable revision"));
+    assert!(e.message_is_error);
+    assert_eq!(e.view, View::Editing);
+    assert_eq!(e.document.buffer.cursor(), 0);
+    assert!(!e.document.buffer.undo());
+    let outside = tempdir().unwrap();
+    let path = outside.path().join("outside");
+    fs::write(&path, "outside\n").unwrap();
+    e.open_buffer(&path).unwrap();
+    settle_editor(&mut e);
+    keys(&mut e, "]f");
+    assert!(e.message.contains("outside repository"));
+    e.new_buffer();
+    keys(&mut e, " gd");
+    assert!(e.message.contains("Name a file"));
+    assert_eq!(e.view, View::Editing);
+}
+
+#[test]
+fn git_leader_shortcuts_show_help_and_restore_source_after_browsing() {
+    let r = Repo::new();
+    let original = (0..80).map(|n| format!("row{n}\n")).collect::<String>();
+    r.write("a", &original);
+    r.write("b", "other\n");
+    r.commit();
+    r.write("b", "changed\n");
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.document.buffer.goto_line(40, true);
+    e.document.buffer.insert("界");
+    e.document.buffer.commit();
+    e.viewport = Viewport {
+        top: 35,
+        left: 2,
+        height: 10,
+    };
+    let origin = (e.document.buffer.cursor(), e.viewport.clone());
+    keys(&mut e, " g");
+    assert_eq!(e.pending_label(), "Space g");
+    assert!(e.message.contains("d diff"));
+    assert!(e.message.contains("c changed files"));
+    keys(&mut e, "d");
+    settle_editor(&mut e);
+    assert!(e.pending_label().is_empty());
+    assert_eq!(e.view, View::Diff);
+    e.handle_key(Key::Char('n'));
+    settle_editor(&mut e);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().path, r.path("b"));
+    for (width, height) in [(130, 20), (40, 8), (1, 1), (1, 3)] {
+        draw(&mut e, width, height);
+        assert_eq!(e.document.buffer.cursor(), origin.0);
+        assert_eq!(e.viewport, origin.1);
+    }
+    e.handle_key(Key::Escape);
+    keys(&mut e, " gc");
+    settle_editor(&mut e);
+    assert_eq!(e.view, View::Changes);
+    keys(&mut e, "j");
+    e.handle_key(Key::Escape);
+    assert_eq!(e.document.buffer.cursor(), origin.0);
+    assert_eq!(e.viewport, origin.1);
+    e.execute_command("help").unwrap();
+    assert!(draw(&mut e, 80, 12).contains("Space g d diff"));
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), original);
 }

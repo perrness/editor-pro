@@ -126,7 +126,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             "inline"
         };
         format!(
-            "DIFF {layout} — ]/[ hunks  Tab layout  F file reviewed  R hunk reviewed  A attention  :review help  Esc return"
+            "DIFF {layout} — ]/[ hunks  n/p files  Enter source  Esc return  Tab layout  F/R reviewed  A attention  :review help"
         )
     };
     if area.height > 1 {

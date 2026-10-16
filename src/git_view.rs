@@ -1,7 +1,7 @@
 //! Git contextual views share the editor's documents and own only navigation and
 //! derived results. They never replace source text or its undo history.
 use crate::{
-    diff::{Diff, Mark},
+    diff::{Diff, Kind, Mark},
     editor::{Editor, Mode, View, Viewport},
     git::{self, BufferVersion, Comparison, Request, Snapshot, Worker},
     input::Key,
@@ -532,12 +532,94 @@ impl Editor {
         }
     }
     pub fn cycle_changed_file(&mut self, backward: bool) -> io::Result<()> {
-        if !self.git.ready() {
-            return Err(io::Error::other("Wait for fresh Git status"));
+        self.jump_changed_file(backward, 1)
+    }
+    fn require_current_git(&self) -> io::Result<()> {
+        if self.note_edit.is_some() {
+            return Err(io::Error::other("Return to source before Git navigation"));
         }
+        if self.git_current() {
+            return Ok(());
+        }
+        Err(io::Error::other(
+            if !self.git.loading && !self.git.message.is_empty() {
+                self.git.message.as_str()
+            } else {
+                "Git data is stale or loading; retry after refresh"
+            },
+        ))
+    }
+    pub(crate) fn jump_git_hunk(&mut self, backward: bool, count: usize) -> io::Result<()> {
+        self.require_current_git()?;
+        let diff = self
+            .git
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .diff
+            .as_ref()
+            .map_err(|e| io::Error::other(e.clone()))?;
+        if diff.hunks.is_empty() {
+            self.info("No Git hunks in the selected comparison");
+            return Ok(());
+        }
+        if !diff.source_available {
+            return Err(io::Error::other(
+                "Deleted file has no current source; Space g d opens its diff",
+            ));
+        }
+        let last_line = self.document.buffer.line_count().saturating_sub(1);
+        // Hunk headers include leading context. Source navigation targets the
+        // first changed row, using the same deletion/mapping anchors as Enter.
+        let mut anchors: Vec<_> = diff
+            .hunks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, start)| {
+                let end = diff
+                    .hunks
+                    .get(index + 1)
+                    .copied()
+                    .unwrap_or(diff.rows.len());
+                diff.rows[start + 1..end]
+                    .iter()
+                    .find(|row| matches!(row.kind, Kind::Add | Kind::Delete))
+                    .map(|row| row.anchor.min(last_line))
+            })
+            .collect();
+        anchors.dedup();
+        let line = self.document.buffer.position().0;
+        let target = if backward {
+            let end = anchors.partition_point(|anchor| *anchor < line);
+            (end > 0).then(|| end.saturating_sub(count.max(1)))
+        } else {
+            let start = anchors.partition_point(|anchor| *anchor <= line);
+            (start < anchors.len()).then(|| {
+                start
+                    .saturating_add(count.saturating_sub(1))
+                    .min(anchors.len() - 1)
+            })
+        };
+        if let Some(index) = target {
+            let origin = self.source_location();
+            self.document.buffer.goto_line(anchors[index], false);
+            self.record_navigation(origin);
+            self.info(&format!("Git hunk {}/{}", index + 1, anchors.len()));
+        } else {
+            self.info(if backward {
+                "No previous Git hunk"
+            } else {
+                "No next Git hunk"
+            });
+        }
+        Ok(())
+    }
+    pub(crate) fn jump_changed_file(&mut self, backward: bool, count: usize) -> io::Result<()> {
+        self.require_current_git()?;
         let files = self.changed_files();
         if files.is_empty() {
-            return Err(io::Error::other("No changed files"));
+            self.info("No changed files");
+            return Ok(());
         }
         let current = self
             .git
@@ -546,11 +628,12 @@ impl Editor {
             .map(|v| v.path.as_path())
             .or(self.document.path());
         let index = current.and_then(|p| files.iter().position(|f| f.path == p));
+        let step = count.max(1) % files.len();
         let index = match index {
-            Some(i) if backward => (i + files.len() - 1) % files.len(),
-            Some(i) => (i + 1) % files.len(),
-            None if backward => files.len() - 1,
-            None => 0,
+            Some(i) if backward => (i + files.len() - step) % files.len(),
+            Some(i) => (i + step) % files.len(),
+            None if backward => (files.len() - step) % files.len(),
+            None => (count.max(1) - 1) % files.len(),
         };
         let file = &files[index];
         if self.view == View::Diff || file.deleted {
@@ -636,13 +719,19 @@ impl Editor {
                     self.git.selected = (self.git.selected + 1).min(files.len().saturating_sub(1))
                 }
                 Key::Up | Key::Char('k') => self.git.selected = self.git.selected.saturating_sub(1),
-                Key::Enter | Key::Char('d') if self.git.ready() => {
+                Key::Enter | Key::Char('d') => {
+                    if let Err(error) = self.require_current_git() {
+                        self.error(&error.to_string());
+                        return;
+                    }
                     if let Some(file) = files.get(self.git.selected) {
                         if key == Key::Char('d') || file.deleted {
                             self.open_diff(file.path.clone(), self.git.comparison.clone());
                         } else if let Err(e) = self.open_git_source(&file.path) {
                             self.error(&e.to_string());
                         }
+                    } else {
+                        self.info("No changed files");
                     }
                 }
                 _ => {}

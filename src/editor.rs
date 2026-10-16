@@ -55,6 +55,7 @@ struct Pending {
     operator_count: usize,
     g: bool,
     leader: u8,
+    git_backward: Option<bool>,
     object: Option<bool>,
     find: Option<(bool, bool)>,
 }
@@ -277,6 +278,15 @@ impl Editor {
         if self.pending.g {
             label.push('g');
         }
+        if let Some(backward) = self.pending.git_backward {
+            label.push(if backward { '[' } else { ']' });
+        }
+        match self.pending.leader {
+            1 => label.push_str("Space"),
+            2 => label.push_str("Space p"),
+            3 => label.push_str("Space g"),
+            _ => {}
+        }
         if let Some(around) = self.pending.object {
             label.push(if around { 'a' } else { 'i' });
         }
@@ -310,11 +320,36 @@ impl Editor {
             self.escape();
             return;
         }
+        if let Some(backward) = self.pending.git_backward {
+            let count = self.pending.count.max(1);
+            self.pending = Pending::default();
+            let result = match key {
+                Key::Char('c') => self.jump_git_hunk(backward, count),
+                Key::Char('f') => self.jump_changed_file(backward, count),
+                _ => return,
+            };
+            if let Err(error) = result {
+                self.error(&error.to_string());
+            }
+            return;
+        }
         if self.pending.leader > 0 {
             let stage = self.pending.leader;
             self.pending = Pending::default();
             if stage == 1 && key == Key::Char('p') {
                 self.pending.leader = 2;
+            } else if stage == 1 && key == Key::Char('g') {
+                self.pending.leader = 3;
+                self.info("Git: d diff  c changed files  ]c/[c hunks  ]f/[f files");
+            } else if stage == 3 {
+                let command = match key {
+                    Key::Char('d') => "diff",
+                    Key::Char('c') => "changes",
+                    _ => return,
+                };
+                if let Err(error) = self.execute_command(command) {
+                    self.error(&error.to_string());
+                }
             } else if stage == 2
                 && key == Key::Char('v')
                 && let Err(error) = self.toggle_tree(None)
@@ -332,6 +367,7 @@ impl Editor {
         {
             self.pending = Pending::default();
             self.pending.leader = 1;
+            self.info("Space: g Git (d diff, c changes)  p v file tree");
             return;
         }
         if let Some(around) = self.pending.object.take() {
@@ -394,6 +430,13 @@ impl Editor {
             } else {
                 self.pending = Pending::default();
             }
+            return;
+        }
+        if self.mode == Mode::Normal
+            && self.pending.operator.is_none()
+            && matches!(key, Key::Char('[' | ']'))
+        {
+            self.pending.git_backward = Some(key == Key::Char('['));
             return;
         }
         if let Key::Char(digit @ '0'..='9') = key
@@ -1077,7 +1120,7 @@ impl Editor {
             }
             "noh" | "nohlsearch" if argument.is_empty() => self.search.visible = false,
             "help" if argument.is_empty() => self.info(
-                "i insert  v/V select  d/c/y + motion  u undo  / search  gd definition  gr references  Ctrl-p files  Space p v tree  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :changes  :diff  :review help  :w save  :q quit; README.md has all keys",
+                "Git: ]c/[c hunks  ]f/[f files  Space g d diff  Space g c changes; i insert  v/V select  d/c/y + motion  u undo  / search  gd definition  gr references  Ctrl-p files  Space p v tree  :grep TEXT  :recent  Ctrl-o back  Tab forward  :Outline  :WorkspaceSymbols  :Calls  :ls  :review help  :w save  :q quit; README.md has all keys",
             ),
             "" => {}
             _ => return Err(io::Error::other(format!("Unknown command: {command}"))),

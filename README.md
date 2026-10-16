@@ -209,15 +209,28 @@ needed. This workflow is read-only: it has no staging, committing, checkout or
 reset commands. Run the editor from any directory and open a file in a repository;
 discovery follows its containing repository, including linked worktrees.
 
-| Command | Action |
+| Command / Normal-mode key | Action |
 | --- | --- |
-| `:changes` | List repository disk/index changes and separately labeled unsaved buffers |
-| `:diff [HEAD\|index\|REV]` | Compare that base with the current file's working content |
+| `:changes`, `Space g c` | List repository disk/index changes and separately labeled unsaved buffers |
+| `:diff [HEAD\|index\|REV]`, `Space g d` | Compare that base with the current file's working content; the shortcut keeps the selected base |
 | `:diff staged` | Inspect staged changes: HEAD versus index, excluding unsaved edits |
 | `:gitbase HEAD\|index\|REV` | Choose the source-gutter and subsequent diff baseline |
 | `:gitrefresh` | Request fresh status and comparison data |
-| `:gnext`, `:gprev` | Open next/previous changed file, retaining other buffers |
+| `]c`, `[c` | Jump to the next/previous hunk in the current source buffer |
+| `:gnext`, `:gprev`, `]f`, `[f` | Open next/previous changed file, retaining other buffers |
 | `:diffclose` | Close a diff and restore its originating source location |
+
+Type the shortcut keys in sequence in **Normal mode**. `Space g` shows the Git
+keys; Escape cancels an unfinished sequence. Counts work before bracket shortcuts
+(for example, `2]c` or `3[f`). Hunk jumps use the first changed line, skip leading
+diff context, and stop at the first/last hunk with a message. File navigation wraps
+through the Changes list. `Ctrl-o` returns from a source jump.
+
+Hunks and diffs use the selected HEAD/index/revision base and current unsaved
+buffer text. The Changes list still reports repository disk/index status plus
+unsaved buffers. Loading or stale data reports a retry message without moving the
+source; navigation never waits for Git or queues a later jump. Empty comparisons
+and lists report that there are no hunks or changed files.
 
 In **Changes**, `j`/`k` or arrows select; Enter opens source, or a historical diff
 for a deleted file; `d` opens a diff; `r` refreshes; Escape returns. `XY` reports

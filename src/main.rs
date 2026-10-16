@@ -43,6 +43,7 @@ Search: / or ?, Enter, n/N; Escape cancels prompts and selections
 Files: Ctrl-p or :files [directory]; :e path, :enew, :bn/:bp, :b ID, :ls
 Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh, :help
 Git: :changes, :diff HEAD|index|REV|staged, :gitbase REV, :gitrefresh, :gnext/:gprev
+Git keys (Normal): ]c/[c hunks, ]f/[f changed files, Space g d diff, Space g c changes
 Diff: ]/[ hunks, Tab paired/inline, Enter source, Esc origin, n/p files, r refresh
 Snapshots: :review snapshot, :review full, :review since [ID], :review snapshots
 Review: :review help, :review file|hunk reviewed|attention|unreviewed, :notes\nNotes: :note file|hunk|old|new; :note save or :note cancel; :review export PATH\nThemes: :theme tokyo-night|catppuccin|gruvbox
