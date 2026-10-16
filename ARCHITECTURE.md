@@ -632,6 +632,26 @@ closes stdin so stdio transport loops can finish, then kills/reaps remaining
 processes (and the Unix process group). The manager
 joins at editor destruction after terminal restoration.
 
+Startup visibility uses typed Starting/Indexing/Ready/Degraded/Failed states on
+that same session, with worker timestamps and bounded work-done progress keyed by
+string or numeric token (distinct namespaces). At most 32 tasks retain 512-character
+titles/messages and server-supplied percentages; tokens cap at 1 KiB. Unknown end
+notifications and partial-result progress cannot complete other work. Initialization
+never clears active tasks; finishing tasks before initialize cannot claim readiness.
+Ready explicitly means protocol readiness with no reported work, not proven complete
+project indexing. JDT `language/status` startup/error notifications and typed
+window errors/warnings feed the same state. Issues remain Degraded until explicit
+restart so ordinary progress cannot hide an import/SDK error. Unsupported client
+actions in server messages are not executed.
+
+Lifecycle/progress status delivery waits for bounded queue capacity, cancellable
+by the session stop signal, so Help or notification bursts cannot discard the final
+state. Logs remain lossy and bounded. Stopping invalidates capabilities/diagnostics
+before process teardown; explicit restart also rejects queued results from the old
+epoch immediately. The UI redraws active elapsed time once a second, and refreshes
+LspInfo/LspLog while preserving their scroll position. No process, SDK probe or
+indexing work runs on the input/render thread.
+
 Headers cap at 8 KiB and messages at 8 MiB; command/frame queues have 32 slots,
 the UI result queue 128. Stderr/messages retain sixteen chunks of at most 4,096
 characters per session. Queue saturation and timeouts fail visibly. Pull

@@ -560,6 +560,36 @@ runtime SDK and project's target SDK can differ; see the
 [server report](docs/LANGUAGE_SERVERS.md). Other highlighted languages, including
 Rust, do not yet have LSP integration or automatic installers.
 
+The statusline links to `:LspInfo` and distinguishes these states:
+
+| State | Meaning and next step |
+| --- | --- |
+| Starting | Discovering/probing the executable, waiting for initialization, or retrying a stopped process. Elapsed seconds remain visible while you edit. |
+| Indexing | The server reports active import/index tasks. `:LspInfo` lists concurrent tasks and retains their titles across updates. Finishing one task does not finish another. |
+| Ready | Initialization completed and no reported work remains. This is protocol readiness; a server can continue unreported indexing or start more work when a file opens. |
+| Degraded | The server reported an error or warning, such as a missing project SDK or failed Gradle/Maven import. The reason stays visible through later progress updates; inspect it before relying on language results. |
+| Failed | Discovery/runtime/launch failed, or a stopped session exhausted its automatic retries. Editing remains available. |
+
+`:LspInfo` shows elapsed time for Starting/Indexing, active tasks and any percentage
+**supplied by the server**; it never estimates project completion. After 30 seconds
+it also reminds you to inspect import logs and project SDKs. Initialization has a
+180-second deadline; indexing after initialization has no guessed completion
+deadline. `:LspLog` updates live with bounded recent stderr/messages. Both views
+link to `:Doctor`, and F1 or `:help LSP` explains these commands.
+
+For a missing executable, use `:Doctor` and `:LspInstall kotlin` / `:LspInstall java`.
+For a missing runtime, JDT LS needs JDK 21+ selected by `JAVA_HOME`/`PATH`; the
+managed Kotlin server bundles its own runtime. The project's Gradle/Maven JDK or
+SDK is separate and may still be missing. For import failures, inspect the exact
+server message in `:LspInfo`/`:LspLog`, check the project root in `:Doctor`, and run
+the project's normal Gradle/Maven build to diagnose toolchains, dependency
+repositories, authentication/proxies or invalid build files. After fixing the
+cause, use `:LspRestart`; changes to the editor's inherited environment require
+relaunching it from the corrected shell. Restart reopens current unsaved text.
+Reported warnings remain Degraded until restart, even if another task completes.
+Crashes retry at most twice per session; edits never trigger a new retry cycle.
+Stopping/restarting invalidates that session's diagnostics and pending results.
+
 Use `:Doctor` for actual executable/root/SDK discovery and runtime version output,
 `:LspInfo` for negotiated features and import status, and `:LspLog` for recent
 stderr/messages. Missing prerequisites and unsupported features produce useful

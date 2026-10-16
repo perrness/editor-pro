@@ -4,7 +4,7 @@ use std::{
     ffi::OsString,
     io,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use lsp_types::{Position, Range, Url};
@@ -115,6 +115,61 @@ pub struct Request {
     pub params: Value,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    #[default]
+    Starting,
+    Indexing,
+    Ready,
+    Degraded,
+    Failed,
+}
+impl Phase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Starting => "Starting",
+            Self::Indexing => "Indexing",
+            Self::Ready => "Ready",
+            Self::Degraded => "Degraded",
+            Self::Failed => "Failed",
+        }
+    }
+    pub fn busy(self) -> bool {
+        matches!(self, Self::Starting | Self::Indexing)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Status {
+    pub phase: Phase,
+    /// Worker timestamp, retained across progress reports in the same phase.
+    pub since: Instant,
+    pub message: String,
+    pub progress: Vec<String>,
+}
+impl Status {
+    pub fn new(phase: Phase, message: impl Into<String>) -> Self {
+        Self {
+            phase,
+            since: Instant::now(),
+            message: message.into(),
+            progress: Vec::new(),
+        }
+    }
+    pub fn summary(&self) -> String {
+        if self.phase.busy() {
+            format!("{} {}s", self.phase.label(), self.since.elapsed().as_secs())
+        } else {
+            self.phase.label().into()
+        }
+    }
+}
+impl Default for Status {
+    fn default() -> Self {
+        Self::new(Phase::Starting, "Discovering language server")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Sessions {
@@ -137,7 +192,7 @@ pub enum Event {
     Status {
         key: ServerKey,
         epoch: u64,
-        message: String,
+        state: Status,
         capabilities: Option<Value>,
     },
     Log {

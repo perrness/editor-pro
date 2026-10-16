@@ -120,6 +120,27 @@ def diagnostics(uri, version):
             "diagnostics": [{"range": span(), "message": "OBSOLETE"}]}})
 
 
+# External notification script for deterministic lifecycle tests. This keeps the
+# protocol loop responsive while tests choose exactly when imports finish/fail.
+if args.scenario.startswith("lifecycle"):
+    notifications = Path(args.log + ".notifications")
+    consumed = len(notifications.read_text().splitlines()) if notifications.exists() else 0
+
+    def scripted_notifications():
+        global consumed
+        while True:
+            lines = notifications.read_text().splitlines() if notifications.exists() else []
+            for line in lines[consumed:]:
+                try:
+                    notification = json.loads(line)
+                except json.JSONDecodeError:
+                    break  # A writer may still be appending the last line.
+                send(notification)
+                consumed += 1
+            time.sleep(.01)
+
+    threading.Thread(target=scripted_notifications, daemon=True).start()
+
 while True:
     try:
         message = read()
@@ -166,8 +187,9 @@ while True:
         if args.scenario == "encoding":
             caps["positionEncoding"] = "utf-8"
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "fake"}]}})
-        send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "begin", "title": "fake import"}}})
-        if args.scenario == "initialize-held":
+        if not args.scenario.startswith("lifecycle"):
+            send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "begin", "title": "fake import"}}})
+        if args.scenario in ("initialize-held", "lifecycle-held"):
             while not Path(args.log + ".initialize").exists():
                 time.sleep(.01)
         send({"id": ident, "result": {"capabilities": caps, "serverInfo": {"name": "TEST DOUBLE"}}})
@@ -176,8 +198,9 @@ while True:
         documents[doc["uri"]] = {"text": doc["text"], "version": doc["version"]}
         if not args.scenario.startswith("pull"):
             diagnostics(doc["uri"], doc["version"])
-        send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "end"}}})
-        send({"method": "window/logMessage", "params": {"type": 3, "message": "fake import ready"}})
+        if not args.scenario.startswith("lifecycle"):
+            send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "end"}}})
+            send({"method": "window/logMessage", "params": {"type": 3, "message": "fake import ready"}})
         if args.scenario == "unsolicited":
             send({"id": 999, "method": "workspace/applyEdit", "params": {
                 "edit": {"changes": {doc["uri"]: [edit("UNSOLICITED")]}}}})
@@ -199,7 +222,7 @@ while True:
     elif method == "textDocument/didClose":
         documents.pop(p["textDocument"]["uri"], None)
     elif method == "textDocument/hover":
-        if args.scenario == "crash" and count == 1:
+        if (args.scenario == "crash" and count == 1) or args.scenario == "crash-always":
             os._exit(7)
         if args.scenario == "timeout":
             continue

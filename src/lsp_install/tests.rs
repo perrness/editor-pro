@@ -423,7 +423,7 @@ fn disabled_policy_and_explicit_overrides_never_download() {
         e.lsp
             .servers
             .values()
-            .any(|s| s.status.contains("Launch failed"))
+            .any(|s| s.status.message.contains("Launch failed"))
     });
     assert_eq!(server.requests.load(Ordering::Relaxed), 1);
     assert!(!temp.path().join("other").exists());

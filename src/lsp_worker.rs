@@ -470,19 +470,31 @@ fn command_for(config: &Config, language: Language) -> io::Result<Launch> {
     })
 }
 
-fn status(
+// Lifecycle states must survive a full UI queue (for example while Help is open).
+// Waiting here affects only this session and remains cancellable at shutdown.
+async fn status(
     events: &mpsc::Sender<Event>,
     key: &ServerKey,
     epoch: u64,
-    message: String,
+    state: Status,
     capabilities: Option<Value>,
+    stop: &mut watch::Receiver<bool>,
 ) {
-    let _ = events.try_send(Event::Status {
-        key: key.clone(),
-        epoch,
-        message,
-        capabilities,
-    });
+    if *stop.borrow() {
+        return;
+    }
+    let failure = (state.phase == Phase::Failed || state.message.starts_with("LSP stopped:"))
+        .then(|| format!("{}: {}", state.phase.label(), state.message));
+    tokio::select! {
+        _ = stop.changed() => {},
+        _ = events.send(Event::Status { key: key.clone(), epoch, state, capabilities }) => {},
+    }
+    if let Some(message) = failure {
+        let _ = events.try_send(Event::Log {
+            key: key.clone(),
+            message,
+        });
+    }
 }
 
 async fn session_loop(
@@ -494,6 +506,19 @@ async fn session_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     static EPOCH: AtomicU64 = AtomicU64::new(1);
+    let mut epoch = EPOCH.fetch_add(1, Ordering::Relaxed);
+    status(
+        &events,
+        &key,
+        epoch,
+        Status::default(),
+        Some(Value::Null),
+        &mut stop,
+    )
+    .await;
+    if *stop.borrow() {
+        return;
+    }
     let discovery_started = Instant::now();
     let launch = match command_for(&config, key.language) {
         Ok(launch) => launch,
@@ -501,12 +526,19 @@ async fn session_loop(
             status(
                 &events,
                 &key,
-                EPOCH.fetch_add(1, Ordering::Relaxed),
-                e.to_string(),
+                epoch,
+                Status::new(
+                    Phase::Failed,
+                    format!("{e}; :Doctor checks setup, :LspRestart retries"),
+                ),
                 Some(Value::Null),
-            );
+                &mut stop,
+            )
+            .await;
             // Remain addressable until explicit restart, avoiding a spawn loop on every edit.
-            let _ = stop.changed().await;
+            if !*stop.borrow() {
+                let _ = stop.changed().await;
+            }
             return;
         }
     };
@@ -519,6 +551,21 @@ async fn session_loop(
             discovery_started.elapsed().as_secs_f64()
         ),
     });
+    status(
+        &events,
+        &key,
+        epoch,
+        Status::new(
+            Phase::Starting,
+            "Checking server runtime; :Doctor shows SDK details",
+        ),
+        None,
+        &mut stop,
+    )
+    .await;
+    if *stop.borrow() {
+        return;
+    }
     let runtime_started = Instant::now();
     let runtime = tokio::select! {
         _ = stop.changed() => return,
@@ -528,11 +575,18 @@ async fn session_loop(
         status(
             &events,
             &key,
-            EPOCH.fetch_add(1, Ordering::Relaxed),
-            error.to_string(),
+            epoch,
+            Status::new(
+                Phase::Failed,
+                format!("{error}; :Doctor checks setup, :LspRestart retries"),
+            ),
             Some(Value::Null),
-        );
-        let _ = stop.changed().await;
+            &mut stop,
+        )
+        .await;
+        if !*stop.borrow() {
+            let _ = stop.changed().await;
+        }
         return;
     }
     let _ = events.try_send(Event::Log {
@@ -546,26 +600,39 @@ async fn session_loop(
         if *stop.borrow() {
             return;
         }
-        let epoch = EPOCH.fetch_add(1, Ordering::Relaxed);
+        if attempt > 0 {
+            epoch = EPOCH.fetch_add(1, Ordering::Relaxed);
+        }
         status(
             &events,
             &key,
             epoch,
-            format!("Starting {} (attempt {})", key.language.id(), attempt + 1),
+            Status::new(
+                Phase::Starting,
+                format!(
+                    "Starting {} (attempt {}/{})",
+                    key.language.id(),
+                    attempt + 1,
+                    config.restart_limit.saturating_add(1)
+                ),
+            ),
             Some(Value::Null),
-        );
+            &mut stop,
+        )
+        .await;
+        if *stop.borrow() {
+            return;
+        }
         let launch_started = Instant::now();
         let mut transport = match Transport::start(&launch, &key, &events) {
             Ok(transport) => transport,
             Err(e) => {
-                status(
-                    &events,
-                    &key,
-                    epoch,
-                    format!("Launch failed: {e}; :LspRestart retries"),
-                    Some(Value::Null),
-                );
-                let _ = stop.changed().await;
+                status(&events, &key, epoch,
+                    Status::new(Phase::Failed, format!("Launch failed: {e}; :Doctor checks executable/SDK, :LspLog shows errors; :LspRestart retries")),
+                    Some(Value::Null), &mut stop).await;
+                if !*stop.borrow() {
+                    let _ = stop.changed().await;
+                }
                 return;
             }
         };
@@ -580,28 +647,22 @@ async fn session_loop(
             _ = stop.changed() => Ok(()),
             result = run(&mut transport, &key, epoch, &config, &mut documents, &mut commands, &events) => result,
         };
+        let restarting = attempt < config.restart_limit;
+        if !*stop.borrow() {
+            // Invalidate capabilities/diagnostics before the bounded process teardown.
+            status(&events, &key, epoch,
+                Status::new(if restarting { Phase::Starting } else { Phase::Failed }, format!(
+                    "LSP stopped: {}; {}. :LspLog shows server errors; :Doctor checks SDK/project setup",
+                    result.err().map_or_else(|| "closed".into(), |e| e.to_string()),
+                    if restarting { format!("restarting (retry {}/{})", attempt + 1, config.restart_limit) }
+                    else { "automatic retries exhausted; :LspRestart retries".into() }
+                )), Some(Value::Null), &mut stop).await;
+        }
         transport.close().await;
         if *stop.borrow() {
             return;
         }
-        status(
-            &events,
-            &key,
-            epoch,
-            format!(
-                "LSP stopped: {}; {}",
-                result
-                    .err()
-                    .map_or_else(|| "closed".into(), |e| e.to_string()),
-                if attempt < config.restart_limit {
-                    "restarting"
-                } else {
-                    ":LspRestart retries"
-                }
-            ),
-            Some(Value::Null),
-        );
-        if attempt == config.restart_limit {
+        if !restarting {
             let _ = stop.changed().await;
             return;
         }
@@ -609,6 +670,163 @@ async fn session_loop(
             _ = stop.changed() => return,
             _ = tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))) => {}
         }
+    }
+}
+
+/// Protocol activity belongs to the existing session, never to a second supervisor.
+/// Work tokens are independent: finishing one cannot finish another or initialization.
+#[derive(Default)]
+struct Activity {
+    initialized: bool,
+    java_starting: bool,
+    tasks: BTreeMap<String, ProgressTask>,
+    problem: Option<String>,
+    state: Status,
+}
+struct ProgressTask {
+    title: String,
+    message: String,
+    percentage: Option<u64>,
+}
+fn bounded_message(value: &Value) -> String {
+    value.as_str().unwrap_or("").chars().take(512).collect()
+}
+impl Activity {
+    fn observe(&mut self, language: Language, frame: &Value) -> bool {
+        let params = &frame["params"];
+        match frame["method"].as_str().unwrap_or("") {
+            "$/progress" => {
+                let token = &params["token"];
+                if !(token.is_string() || token.as_i64().is_some()) {
+                    return false;
+                }
+                if token.as_str().is_some_and(|token| token.len() > 1024) {
+                    self.problem =
+                        Some("Server progress token exceeds 1 KiB; progress is incomplete".into());
+                    return true;
+                }
+                let token = token.to_string();
+                let value = &params["value"];
+                match value["kind"].as_str().unwrap_or("") {
+                    "begin" => {
+                        if self.tasks.len() >= QUEUE && !self.tasks.contains_key(&token) {
+                            self.problem = Some("Server exceeded 32 concurrent progress tasks; progress is incomplete".into());
+                        } else {
+                            self.tasks.insert(
+                                token,
+                                ProgressTask {
+                                    title: bounded_message(&value["title"]),
+                                    message: bounded_message(&value["message"]),
+                                    percentage: value["percentage"].as_u64().filter(|p| *p <= 100),
+                                },
+                            );
+                        }
+                    }
+                    "report" => {
+                        let Some(task) = self.tasks.get_mut(&token) else {
+                            return false;
+                        };
+                        if value["message"].is_string() {
+                            task.message = bounded_message(&value["message"]);
+                        }
+                        if let Some(p) = value["percentage"].as_u64().filter(|p| *p <= 100) {
+                            task.percentage = Some(p);
+                        }
+                    }
+                    "end" => {
+                        if self.tasks.remove(&token).is_none() {
+                            return false;
+                        }
+                    }
+                    _ => return false, // Partial-result progress is not work-done progress.
+                }
+            }
+            "window/logMessage"
+            | "window/showMessage"
+            | "window/showMessageRequest"
+            | "language/actionableNotification"
+                if matches!(
+                    params["type"]
+                        .as_u64()
+                        .or_else(|| params["severity"].as_u64()),
+                    Some(1 | 2)
+                ) =>
+            {
+                self.problem = Some(bounded_message(&params["message"]));
+            }
+            "language/status" if language == Language::Java => {
+                match params["type"].as_str().unwrap_or("") {
+                    "Starting" => self.java_starting = true,
+                    "Started" | "ServiceReady" => self.java_starting = false,
+                    "Error" => self.problem = Some(bounded_message(&params["message"])),
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+    async fn publish(
+        &mut self,
+        key: &ServerKey,
+        epoch: u64,
+        events: &mpsc::Sender<Event>,
+        capabilities: Option<Value>,
+    ) -> io::Result<()> {
+        let phase = if self.problem.is_some() {
+            Phase::Degraded
+        } else if !self.tasks.is_empty() || self.java_starting {
+            Phase::Indexing
+        } else if self.initialized {
+            Phase::Ready
+        } else {
+            Phase::Starting
+        };
+        if self.state.phase != phase {
+            self.state.since = std::time::Instant::now();
+            self.state.phase = phase;
+        }
+        self.state.progress = self
+            .tasks
+            .values()
+            .map(|task| {
+                format!(
+                    "{}: {}{}",
+                    task.title,
+                    task.message,
+                    task.percentage
+                        .map_or(String::new(), |p| format!(" ({p}%, server reported)"))
+                )
+            })
+            .collect();
+        self.state.message = if let Some(problem) = &self.problem {
+            format!(
+                "Server reported: {problem}\nCheck :LspLog for Gradle/Maven import errors and :Doctor for SDK/root setup. Fix the reported cause, then :LspRestart. Warning retained until restart."
+            )
+        } else if phase == Phase::Indexing {
+            format!(
+                "Importing/indexing: {}",
+                self.state
+                    .progress
+                    .first()
+                    .map_or("Java project startup", String::as_str)
+            )
+        } else if self.initialized {
+            "Protocol ready; no reported work remains. Unreported indexing may continue.".into()
+        } else {
+            "Waiting for initialize response; :LspLog shows server output".into()
+        };
+        // The run's outer stop select cancels this wait; do not lose the final state
+        // to try_send when progress/log notifications fill the UI queue.
+        events
+            .send(Event::Status {
+                key: key.clone(),
+                epoch,
+                state: self.state.clone(),
+                capabilities,
+            })
+            .await
+            .map_err(|_| io::Error::other("LSP result receiver closed"))
     }
 }
 
@@ -824,6 +1042,7 @@ async fn run(
     events: &mpsc::Sender<Event>,
 ) -> io::Result<()> {
     let root = file_uri(&key.root)?;
+    let mut activity = Activity::default();
     let initialize_started = Instant::now();
     wire.request(1, "initialize", json!({
         "processId":std::process::id(),"clientInfo":{"name":"editor-pro","version":env!("CARGO_PKG_VERSION")},
@@ -859,7 +1078,7 @@ async fn run(
             wire.frames.recv(),
         )
         .await
-        .map_err(|_| io::Error::other("LSP initialize/import timed out"))?
+        .map_err(|_| io::Error::other("LSP initialize timed out (project import may be slow)"))?
         .ok_or_else(|| io::Error::other("Language server closed stdout"))??;
         if frame["id"] == 1 && frame.get("method").is_none() {
             if let Some(error) = frame.get("error") {
@@ -883,6 +1102,9 @@ async fn run(
             }
             break capabilities;
         }
+        if activity.observe(key.language, &frame) {
+            activity.publish(key, epoch, events, None).await?;
+        }
         server_message(wire, key, epoch, &frame, &BTreeMap::new(), None, events).await?;
     };
     wire.notify("initialized", json!({})).await?;
@@ -893,13 +1115,10 @@ async fn run(
             initialize_started.elapsed().as_secs_f64()
         ),
     });
-    status(
-        events,
-        key,
-        epoch,
-        "Ready".into(),
-        Some(capabilities.clone()),
-    );
+    activity.initialized = true;
+    activity
+        .publish(key, epoch, events, Some(capabilities.clone()))
+        .await?;
     let mut open = BTreeMap::new();
     let mut version = 0;
     let mut next_id = 2;
@@ -1039,6 +1258,9 @@ async fn run(
                     if frame["method"] == "workspace/applyEdit" && frame.get("id").is_some()
                         && let Some(p) = &action && p.deadline > Instant::now() && documents_match(&p.documents,&open) {
                         awaiting_edit = Some(p.request.serial);
+                    }
+                    if activity.observe(key.language, &frame) {
+                        activity.publish(key, epoch, events, None).await?;
                     }
                     server_message(wire,key,epoch,&frame,&open,action.as_ref(),events).await?;
                     if frame["method"] == "workspace/diagnostic/refresh" {
@@ -1224,6 +1446,38 @@ async fn server_message(
 ) -> io::Result<()> {
     let method = frame["method"].as_str().unwrap_or("");
     let params = &frame["params"];
+    if method == "$/progress" && matches!(params["value"]["kind"].as_str(), Some("begin" | "end")) {
+        let _ = events.try_send(Event::Log {
+            key: key.clone(),
+            message: format!(
+                "Progress {}: {} {}",
+                params["value"]["kind"].as_str().unwrap_or(""),
+                bounded_message(&params["value"]["title"]),
+                bounded_message(&params["value"]["message"])
+            ),
+        });
+    }
+    if matches!(
+        method,
+        "window/logMessage"
+            | "window/showMessage"
+            | "window/showMessageRequest"
+            | "language/status"
+            | "language/actionableNotification"
+    ) {
+        let _ = events.try_send(Event::Log {
+            key: key.clone(),
+            message: format!(
+                "{method}: {}",
+                params["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(4096)
+                    .collect::<String>()
+            ),
+        });
+    }
     if let Some(id) = frame.get("id") {
         let result = match method {
             "workspace/configuration" => json!(
@@ -1279,58 +1533,27 @@ async fn server_message(
         };
         return wire.reply(id.clone(), result).await;
     }
-    match method {
-        "textDocument/publishDiagnostics" => {
-            if let Some(uri) = params["uri"].as_str()
-                && let Ok(path) = uri_path(uri)
-                && let Some(document) = open.get(&path)
-            {
-                let report_version = params["version"].as_i64();
-                if report_version.is_some_and(|v| v != i64::from(document.version)) {
-                    return Ok(());
-                }
-                emit(
-                    events,
-                    Event::Diagnostics {
-                        key: key.clone(),
-                        epoch,
-                        document: document.clone(),
-                        dependencies: None,
-                        versioned: report_version.is_some(),
-                        items: diagnostics(&params["diagnostics"])?,
-                    },
-                )
-                .await?;
-            }
+    if method == "textDocument/publishDiagnostics"
+        && let Some(uri) = params["uri"].as_str()
+        && let Ok(path) = uri_path(uri)
+        && let Some(document) = open.get(&path)
+    {
+        let report_version = params["version"].as_i64();
+        if report_version.is_some_and(|v| v != i64::from(document.version)) {
+            return Ok(());
         }
-        "$/progress" => {
-            let value = &params["value"];
-            let message = if value["kind"] == "end" {
-                "Ready".into()
-            } else {
-                format!(
-                    "Indexing: {} {} {}",
-                    value["title"].as_str().unwrap_or(""),
-                    value["message"].as_str().unwrap_or(""),
-                    value["percentage"]
-                        .as_u64()
-                        .map_or(String::new(), |p| format!("{p}%"))
-                )
-            };
-            status(events, key, epoch, message, None);
-        }
-        "window/logMessage" | "window/showMessage" => {
-            let _ = events.try_send(Event::Log {
+        emit(
+            events,
+            Event::Diagnostics {
                 key: key.clone(),
-                message: params["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(4096)
-                    .collect(),
-            });
-        }
-        _ => {}
+                epoch,
+                document: document.clone(),
+                dependencies: None,
+                versioned: report_version.is_some(),
+                items: diagnostics(&params["diagnostics"])?,
+            },
+        )
+        .await?;
     }
     Ok(())
 }

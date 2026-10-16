@@ -14,6 +14,35 @@ runtime; Java and C# still require installed JDK 21+ and .NET SDK 10+ respective
 The earlier feasibility observations below describe separately provisioned servers;
 the automatic-installation evidence is recorded in VALIDATION.md.
 
+## Startup and import troubleshooting
+
+The statusline's `:LspInfo` hint opens live Starting, Indexing, Ready, Degraded or
+Failed state, elapsed time and reported work. `:LspLog` shows recent server output;
+`:Doctor` checks executable/runtime discovery and project roots. These commands
+are also searchable with `:help LSP`. Ready means initialization completed with
+no reported work remaining, not proof that every dependency or index is ready.
+Overlapping work is tracked independently. Percentages appear only when supplied
+by the server; slow work is not assigned a fabricated completion estimate.
+
+For **Failed**, inspect `:Doctor` for a missing server/runtime and `:LspLog` for a
+launch failure or crash. `:LspInstall LANGUAGE` provisions a server; it does not
+install project SDKs. JDT LS needs JDK 21+; the managed Kotlin bundle supplies its
+server runtime, while the Gradle/Maven project can require a different JDK.
+
+For **Degraded**, read the retained error/warning in `:LspInfo`. Check Gradle/Maven
+build output for missing toolchains/SDKs, broken build files, unresolved artifacts,
+repository credentials or network/proxy problems. Verify the selected project root.
+After correcting the reported cause, use `:LspRestart` (or relaunch from a corrected
+shell when changing inherited environment variables). Ordinary progress completion
+does not dismiss an error. Server messages are evidence; Doctor does not certify
+that a project can import successfully.
+
+For **Indexing**, leave the editor usable while imports run and inspect active
+tasks/logs. Initialization times out after 180 seconds; post-initialization
+indexing can take longer. Automatic crash recovery is capped at two retries and
+preserves unsaved buffers. A failed session stays failed until an explicit restart;
+its previous diagnostics cannot be reused after a crash.
+
 ## Selected servers
 
 | Language | Candidate | Requirements and limits | Decision |

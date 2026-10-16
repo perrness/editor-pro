@@ -435,7 +435,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Navigation / LSP",
         "Command",
         ":LspInfo / :LspLog / :Doctor / :LspRestart",
-        "Inspect server capabilities, logs, discovery or restart the current language-server session.",
+        "Troubleshoot Starting / Indexing / Ready / Degraded / Failed: :LspInfo shows elapsed time and progress; :LspLog shows Gradle/Maven errors; :Doctor checks server, JDK/SDK and root. Fix setup, then :LspRestart.",
     ),
     entry(
         "Navigation / LSP",

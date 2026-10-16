@@ -2,7 +2,7 @@ use editor_pro::{
     editor::{Editor, Mode, View},
     file::Document,
     input::Key,
-    lsp::{self, Language, Stamp, Versioned},
+    lsp::{self, Language, Phase, Stamp, Versioned},
     lsp_worker::read_frame,
     theme::Theme,
     ui,
@@ -13,6 +13,7 @@ use ropey::Rope;
 use serde_json::{Value, json};
 use std::{
     fs,
+    io::Write,
     path::Path,
     thread,
     time::{Duration, Instant},
@@ -60,6 +61,17 @@ impl Fixture {
         self.editor.execute_command(command).unwrap();
         until(&mut self.editor, |e| !e.lsp.pending);
         assert!(!self.editor.message_is_error, "{}", self.editor.message);
+    }
+    fn notify(&self, frame: Value) {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.directory.path().join("protocol.jsonl.notifications"))
+            .unwrap();
+        writeln!(file, "{frame}").unwrap();
+    }
+    fn progress(&self, token: Value, value: Value) {
+        self.notify(json!({"method":"$/progress","params":{"token":token,"value":value}}));
     }
     fn log(&self) -> Vec<Value> {
         fs::read_to_string(self.directory.path().join("protocol.jsonl"))
@@ -2133,6 +2145,440 @@ fn stale_hover_after_edit_switch_reload_cursor_or_new_request_never_opens_old_re
 }
 
 #[test]
+fn delayed_initialization_and_overlapping_imports_keep_editing_and_elapsed_status_live() {
+    let mut f = Fixture::new("lifecycle-held");
+    f.editor.lsp.config.initialize_timeout = Duration::from_secs(6);
+    f.wait_log("initialize", 1);
+    assert_eq!(
+        f.editor.lsp.servers.values().next().unwrap().status.phase,
+        Phase::Starting
+    );
+    f.progress(json!(1), json!({"kind":"begin","title":"Gradle import"}));
+    f.progress(
+        json!("1"),
+        json!({"kind":"begin","title":"Maven dependencies"}),
+    );
+    until(&mut f.editor, |e| {
+        e.lsp.servers.values().any(|s| s.status.progress.len() == 2)
+    });
+    f.progress(json!(1), json!({"kind":"end"}));
+    f.progress(json!("unrelated"), json!({"kind":"end"}));
+    f.progress(json!("partial-results"), json!([{"name":"symbol"}]));
+    f.progress(
+        json!("1"),
+        json!({"kind":"report","message":"Resolving project JDK"}),
+    );
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.message.contains("Resolving project JDK"))
+    });
+    let server = f.editor.lsp.servers.values().next().unwrap();
+    assert_eq!(server.status.phase, Phase::Indexing);
+    assert_eq!(server.status.progress.len(), 1);
+    assert!(server.status.progress[0].contains("Maven dependencies"));
+    assert!(!server.status.progress[0].contains('%'));
+    assert!(server.capabilities.is_null());
+    f.progress(json!("1"), json!({"kind":"end"}));
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Starting)
+    });
+    f.progress(
+        json!("index"),
+        json!({"kind":"begin","title":"Index project"}),
+    );
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Indexing)
+    });
+    let since = f.editor.lsp.servers.values().next().unwrap().status.since;
+    f.editor.handle_key(Key::Char('i'));
+    f.editor.paste("unsaved 😀\r\n");
+    escape(&mut f.editor);
+    let expected = f.editor.document.buffer.text().to_string();
+    f.editor.execute_command("LspInfo").unwrap();
+    until(&mut f.editor, |e| {
+        e.lsp
+            .panel
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|r| r.label == "Status: Indexing 1s")
+    });
+    assert!(
+        f.editor
+            .lsp
+            .panel
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|r| r.label.contains(":Doctor"))
+    );
+    fs::write(
+        f.directory.path().join("protocol.jsonl.initialize"),
+        "ready",
+    )
+    .unwrap();
+    f.ready();
+    assert_eq!(
+        f.editor.lsp.servers.values().next().unwrap().status.phase,
+        Phase::Indexing
+    );
+    f.progress(
+        json!("index"),
+        json!({"kind":"report","message":"Indexing sources","percentage":37}),
+    );
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.message.contains("37%"))
+    });
+    assert_eq!(
+        f.editor.lsp.servers.values().next().unwrap().status.since,
+        since
+    );
+    f.progress(json!("index"), json!({"kind":"end"}));
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Ready)
+    });
+    f.wait_log("textDocument/didOpen", 1);
+    assert!(f.log().iter().any(|m| m["method"] == "textDocument/didOpen"
+        && m["params"]["textDocument"]["text"] == expected));
+    escape(&mut f.editor);
+    assert!(f.editor.document.buffer.undo());
+    assert_eq!(
+        fs::read(f.directory.path().join("Main.kt")).unwrap(),
+        "bad value\r\n😀 e\u{301}界\r\n".as_bytes()
+    );
+}
+
+#[test]
+fn import_errors_remain_actionable_through_progress_and_recover_on_explicit_restart() {
+    for (method, kind) in [
+        ("window/logMessage", 1),
+        ("window/showMessage", 2),
+        ("window/showMessageRequest", 1),
+    ] {
+        let mut f = Fixture::new("lifecycle");
+        f.ready();
+        until(&mut f.editor, |e| e.current_diagnostics().is_some());
+        f.progress(
+            json!("import"),
+            json!({"kind":"begin","title":"Gradle import"}),
+        );
+        let mut frame = json!({"method":method,"params":{"type":kind,"message":"Gradle import failed: project JDK 21 missing"}});
+        if method == "window/showMessageRequest" {
+            frame["id"] = json!("setup-error");
+        }
+        f.notify(frame);
+        f.progress(json!("import"), json!({"kind":"end"}));
+        until(&mut f.editor, |e| {
+            e.lsp
+                .servers
+                .values()
+                .any(|s| s.status.phase == Phase::Degraded && s.status.progress.is_empty())
+        });
+        assert!(f.editor.lsp_summary().contains("Degraded"));
+        assert!(f.editor.lsp_summary().contains(":LspInfo"));
+        f.editor.execute_command("LspInfo").unwrap();
+        let text = f
+            .editor
+            .lsp
+            .panel
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.label.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for message in [
+            "project JDK 21 missing",
+            ":LspLog",
+            ":Doctor",
+            ":LspRestart",
+        ] {
+            assert!(text.contains(message), "{text}");
+        }
+        f.editor.execute_command("LspLog").unwrap();
+        f.notify(json!({"method":"window/logMessage","params":{"type":3,"message":"Maven repository authentication details"}}));
+        until(&mut f.editor, |e| {
+            e.lsp
+                .panel
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .any(|r| r.label.contains("authentication details"))
+        });
+        escape(&mut f.editor);
+        f.editor.document.buffer.insert("unsaved ");
+        f.editor.document.buffer.commit();
+        settle(&mut f.editor);
+        assert_eq!(f.log().iter().filter(|m| m["event"] == "start").count(), 1);
+        f.editor.execute_command("LspRestart").unwrap();
+        assert!(f.editor.current_diagnostics().is_none());
+        f.wait_log("textDocument/didOpen", 2);
+        until(&mut f.editor, |e| {
+            e.lsp
+                .servers
+                .values()
+                .any(|s| s.status.phase == Phase::Ready)
+        });
+        assert!(
+            f.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .starts_with("unsaved ")
+        );
+        assert!(f.editor.document.buffer.undo());
+    }
+}
+
+#[test]
+fn java_startup_notifications_do_not_hide_import_errors_or_overlapping_work() {
+    let mut f = Fixture::new("lifecycle");
+    let command = f
+        .editor
+        .lsp
+        .config
+        .commands
+        .remove(&Language::Kotlin)
+        .unwrap();
+    let path = f.directory.path().join("Main.java");
+    fs::write(&path, "bad value\n").unwrap();
+    f.editor = Editor::new(Document::open(&path).unwrap());
+    f.editor.lsp.config.commands.insert(Language::Java, command);
+    f.ready();
+    f.notify(json!({"method":"language/status","params":{"type":"Starting","message":"Importing Maven projects"}}));
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Indexing)
+    });
+    f.progress(
+        json!("java"),
+        json!({"kind":"begin","title":"Resolve dependencies"}),
+    );
+    f.notify(
+        json!({"method":"language/status","params":{"type":"Started","message":"Service started"}}),
+    );
+    until(&mut f.editor, |e| {
+        e.lsp.servers.values().any(|s| s.status.progress.len() == 1)
+    });
+    f.notify(json!({"method":"language/status","params":{"type":"Error","message":"Maven import failed: unresolved parent POM"}}));
+    f.progress(json!("java"), json!({"kind":"end"}));
+    f.notify(json!({"method":"language/status","params":{"type":"ServiceReady","message":"Service ready"}}));
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Degraded && s.status.progress.is_empty())
+    });
+    assert!(
+        f.editor
+            .lsp
+            .servers
+            .values()
+            .next()
+            .unwrap()
+            .status
+            .message
+            .contains("unresolved parent POM")
+    );
+}
+
+#[test]
+fn crash_retry_limit_invalidates_diagnostics_and_never_loops_on_edits() {
+    let mut f = Fixture::new("crash-always");
+    f.editor.lsp.config.restart_limit = 1;
+    f.ready();
+    until(&mut f.editor, |e| e.current_diagnostics().is_some());
+    f.editor.execute_command("Hover").unwrap();
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.message.contains("restarting (retry"))
+    });
+    assert!(f.editor.current_diagnostics().is_none());
+    f.editor.handle_key(Key::Char('i'));
+    f.editor.paste("unsaved ");
+    escape(&mut f.editor);
+    f.wait_log("textDocument/didOpen", 2);
+    f.ready();
+    f.editor.execute_command("Hover").unwrap();
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Failed)
+    });
+    assert!(f.editor.current_diagnostics().is_none());
+    assert!(f.editor.lsp_summary().contains("Failed"));
+    f.editor.document.buffer.insert("more ");
+    settle(&mut f.editor);
+    assert_eq!(f.log().iter().filter(|m| m["event"] == "start").count(), 2);
+    f.editor.execute_command("LspRestart").unwrap();
+    f.wait_log("textDocument/didOpen", 3);
+    f.ready();
+    assert!(
+        f.editor
+            .document
+            .buffer
+            .text()
+            .to_string()
+            .contains("unsaved")
+    );
+    assert_eq!(
+        fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
+        "bad value\r\n😀 e\u{301}界\r\n"
+    );
+}
+
+#[test]
+fn progress_queue_pressure_keeps_final_failure_and_does_not_restart() {
+    let mut f = Fixture::new("lifecycle");
+    f.ready();
+    f.editor.execute_command("help LSP").unwrap();
+    f.progress(
+        json!("import"),
+        json!({"kind":"begin","title":"Gradle import"}),
+    );
+    for i in 0..200 {
+        f.progress(
+            json!("import"),
+            json!({"kind":"report","message":format!("Resolving dependency {i}")}),
+        );
+    }
+    f.notify(json!({"method":"window/showMessage","params":{"type":1,"message":"Gradle dependency resolution failed"}}));
+    f.progress(json!("import"), json!({"kind":"end"}));
+    thread::sleep(Duration::from_millis(300));
+    escape(&mut f.editor);
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Degraded && s.status.progress.is_empty())
+    });
+    assert_eq!(f.log().iter().filter(|m| m["event"] == "start").count(), 1);
+    assert!(
+        f.editor
+            .lsp
+            .servers
+            .values()
+            .next()
+            .unwrap()
+            .status
+            .message
+            .contains("dependency resolution failed")
+    );
+}
+
+#[test]
+fn malformed_or_excessive_progress_is_bounded_and_cannot_claim_readiness() {
+    let mut f = Fixture::new("lifecycle");
+    f.ready();
+    f.progress(json!(true), json!({"kind":"begin","title":"invalid token"}));
+    for i in 0..33 {
+        f.progress(json!(i), json!({"kind":"begin","title":"index".repeat(300),"message":"source".repeat(300),"percentage":101}));
+    }
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Degraded)
+    });
+    let status = &f.editor.lsp.servers.values().next().unwrap().status;
+    assert_eq!(status.progress.len(), 32);
+    assert!(
+        status
+            .progress
+            .iter()
+            .all(|task| task.chars().count() <= 1026 && !task.contains('%'))
+    );
+    for i in 0..33 {
+        f.progress(json!(i), json!({"kind":"end"}));
+    }
+    until(&mut f.editor, |e| {
+        e.lsp.servers.values().any(|s| s.status.progress.is_empty())
+    });
+    assert_eq!(
+        f.editor.lsp.servers.values().next().unwrap().status.phase,
+        Phase::Degraded
+    );
+    f.progress(
+        json!("x".repeat(1025)),
+        json!({"kind":"begin","title":"oversized token"}),
+    );
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.message.contains("1 KiB"))
+    });
+}
+
+#[test]
+fn lsp_status_and_troubleshooting_are_rendered_safely_at_narrow_sizes() {
+    let mut f = Fixture::new("lifecycle");
+    f.ready();
+    f.notify(json!({"method":"window/showMessage","params":{"type":1,"message":"Missing JDK\u{1b}[2J\t界"}}));
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == Phase::Degraded)
+    });
+    for width in [0, 1, 20, 70, 100] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        if width >= 70 {
+            let cells = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(cells.contains("LSP Degraded :LspInfo"), "{cells}");
+        }
+    }
+    f.editor.execute_command("LspInfo").unwrap();
+    for width in [0, 1, 20, 100] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|c| !c.symbol().contains('\u{1b}'))
+        );
+    }
+}
+
+#[test]
 fn crash_restart_resynchronizes_current_unsaved_content_and_reaps_old_process() {
     let mut f = Fixture::new("crash");
     f.editor.lsp.config.restart_limit = 1;
@@ -2193,7 +2639,10 @@ fn unsupported_missing_malformed_encoding_and_timeout_fail_without_losing_text()
             }
         } else {
             until(&mut f.editor, |e| {
-                e.lsp.servers.values().any(|s| s.status.contains("stopped"))
+                e.lsp
+                    .servers
+                    .values()
+                    .any(|s| s.status.message.contains("stopped"))
             });
         }
         assert!(
@@ -2216,8 +2665,13 @@ fn unsupported_missing_malformed_encoding_and_timeout_fail_without_losing_text()
         e.lsp
             .servers
             .values()
-            .any(|s| s.status.contains("Launch failed"))
+            .any(|s| s.status.message.contains("Launch failed"))
     });
+    assert_eq!(
+        f.editor.lsp.servers.values().next().unwrap().status.phase,
+        Phase::Failed
+    );
+    assert!(f.editor.lsp_summary().contains(":LspInfo"));
     assert!(f.editor.execute_command("Hover").is_err());
 }
 

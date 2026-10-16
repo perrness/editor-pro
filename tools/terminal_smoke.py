@@ -374,6 +374,81 @@ def run_lsp_warmup_sessions(binary, directory, resize, capture_dir=None):
             (Path(capture_dir) / f"lsp-warmup-{name}.ansi").write_bytes(output)
 
 
+def run_lsp_startup_session(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "lsp-startup"
+    root.mkdir()
+    (root / "pom.xml").write_text("<project/>")
+    source = root / "Main.kt"
+    original = "bad value\r\n😀 é界\r\n".encode()
+    source.write_bytes(original)
+    log = root / "protocol.jsonl"
+    environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+        sys.executable, str(Path("tools/lsp/fake_server.py").absolute()),
+        "--log", str(log), "--scenario", "lifecycle-held",
+    ])}
+
+    def messages():
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def opened(count):
+        return lambda: sum(m.get("method") == "textDocument/didOpen" for m in messages()) >= count
+
+    def notifications(*frames):
+        def send(master, slave, pid):
+            with Path(str(log) + ".notifications").open("a") as output:
+                for frame in frames:
+                    output.write(json.dumps(frame) + "\n")
+        return send
+
+    def progress(token, kind, **fields):
+        return {"method": "$/progress", "params": {"token": token, "value": {"kind": kind, **fields}}}
+
+    def release(master, slave, pid):
+        Path(str(log) + ".initialize").write_text("ready")
+
+    columns = 100
+    def repaint(master, slave, pid):
+        nonlocal columns
+        columns = 101 if columns == 100 else 100
+        resize(24, columns)(master, slave, pid)
+
+    def doctor_ready(master, slave, pid):
+        os.write(master, b"G")
+        repaint(master, slave, pid)
+
+    output = run_session(binary, source, [
+        (lambda: any(m.get("method") == "initialize" for m in messages()), 10),
+        b":LspInfo\r", (b"Status: Starting", 10), b"\x1b",
+        b"iunsaved ", b"\x1b",
+        notifications(progress(1, "begin", title="Gradle import"),
+                      progress("1", "begin", title="Resolve dependencies"),
+                      progress(1, "end")),
+        b":LspInfo\r", (repaint, b"Status: Indexing", 10),
+        resize(3, 1), resize(24, 100), release, (opened(1), 10),
+        notifications({"method": "window/showMessage", "params": {
+            "type": 1, "message": "Gradle import failed: project JDK 21 missing"}}, progress("1", "end")),
+        (repaint, b"Status: Degraded", 10), b"\x1b",
+        b":LspLog\r", (repaint, b"Gradle import failed", 10), b"\x1b",
+        b":Doctor\r", (doctor_ready, b"Runtime supplied by explicit command override", 10), b"\x1b",
+        b":help Doctor\r", (b":LspInfo / :LspLog / :Doctor", 10), b"\x1b",
+        b":LspRestart\r", (opened(2), 10), b":LspInfo\r", (repaint, b"Status: Ready", 10),
+        b"\x1b", b"u", b":q\r",
+    ], original, environment)
+    assert sum(m.get("method") == "initialize" for m in messages()) == 2
+    assert all(m["params"]["textDocument"]["text"].startswith("unsaved ")
+               for m in messages() if m.get("method") == "textDocument/didOpen")
+    if capture_dir:
+        (Path(capture_dir) / "lsp-startup-recovery.ansi").write_bytes(output)
+
+    output = run_session(binary, source, [
+        b":LspInfo\r", (repaint, b"Status: Failed", 10), b"\x1b",
+        b":Doctor\r", (b":LspRestart", 10), b"\x1b",
+        b"istill editable", b"\x1b", b"u", b":q\r",
+    ], original, {"EDITOR_PRO_KOTLIN_LSP": '["/missing/editor-pro-lsp"]'})
+    if capture_dir:
+        (Path(capture_dir) / "lsp-startup-missing.ansi").write_bytes(output)
+
+
 def main():
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/editor-pro").absolute()
     if not binary.is_file():
@@ -839,10 +914,11 @@ def main():
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
+        run_lsp_startup_session(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 43 PTY sessions; contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 45 PTY sessions; JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

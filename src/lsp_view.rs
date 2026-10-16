@@ -41,11 +41,12 @@ pub struct LspState {
     serial: u64,
     pub pending: bool,
     started: Option<Instant>,
+    status_redraw: Option<Instant>,
 }
 #[derive(Default)]
 pub struct ServerInfo {
     pub epoch: u64,
-    pub status: String,
+    pub status: lsp::Status,
     pub capabilities: Value,
     pub logs: VecDeque<String>,
 }
@@ -371,17 +372,27 @@ impl Editor {
                 self.error(&e.to_string());
             }
         }
+        if self.lsp.servers.values().any(|s| s.status.phase.busy())
+            && self
+                .lsp
+                .status_redraw
+                .is_none_or(|last| last.elapsed().as_secs() >= 1)
+        {
+            self.lsp.status_redraw = Some(Instant::now());
+            redraw = true;
+        }
         if redraw
             && self.view == View::Lsp
             && self
                 .lsp
                 .panel
                 .as_ref()
-                .is_some_and(|panel| panel.title == "LspInfo")
+                .is_some_and(|panel| matches!(panel.title.as_str(), "LspInfo" | "LspLog"))
         {
             let panel = self.lsp.panel.as_ref().unwrap();
             let (selected, top, left) = (panel.selected, panel.top, panel.left);
-            self.lsp_information("LspInfo");
+            let title = panel.title.clone();
+            self.lsp_information(&title);
             if let Some(panel) = &mut self.lsp.panel {
                 panel.selected = selected.min(panel.rows.len().saturating_sub(1));
                 panel.top = top.min(panel.rows.len().saturating_sub(1));
@@ -433,7 +444,10 @@ impl Editor {
                         .servers
                         .entry(key.clone())
                         .or_insert_with(|| ServerInfo {
-                            status: format!("Preparing {}", key.language.id()),
+                            status: lsp::Status::new(
+                                lsp::Phase::Starting,
+                                format!("Preparing {}", key.language.id()),
+                            ),
                             ..ServerInfo::default()
                         });
                 }
@@ -466,7 +480,7 @@ impl Editor {
             Event::Status {
                 key,
                 epoch,
-                message,
+                state,
                 capabilities,
             } => {
                 if !self.lsp.sessions.contains(&key) {
@@ -483,7 +497,7 @@ impl Editor {
                         .retain(|path, _| self.lsp.routes.get(path) != Some(&key));
                 }
                 info.epoch = epoch;
-                info.status = message;
+                info.status = state;
                 if let Some(capabilities) = capabilities {
                     info.capabilities = capabilities;
                 }
@@ -506,7 +520,11 @@ impl Editor {
                 versioned,
                 items,
             } => {
-                if self.lsp.servers.get(&key).is_some_and(|s| s.epoch == epoch)
+                if self
+                    .lsp
+                    .servers
+                    .get(&key)
+                    .is_some_and(|s| s.epoch == epoch && s.capabilities.is_object())
                     && self.lsp.snapshots.iter().any(|s| {
                         s.path == document.snapshot.path && s.stamp == document.snapshot.stamp
                     })
@@ -701,19 +719,24 @@ impl Editor {
                     .path()
                     .ok_or_else(|| error("Name a source file first"))?
                     .to_path_buf();
+                self.lsp
+                    .worker
+                    .as_ref()
+                    .ok_or_else(|| error("No supported language server"))?
+                    .submit(Control::Restart(path.clone()))?;
                 self.close_lsp_panel();
                 self.lsp.diagnostics.clear();
                 if let Some(key) = self.lsp.routes.get(&path)
                     && let Some(info) = self.lsp.servers.get_mut(key)
                 {
                     info.capabilities = Value::Null;
-                    info.status = "Restarting".into();
+                    // Reject already queued results from the old process immediately.
+                    info.epoch = info.epoch.saturating_add(1);
+                    info.status = lsp::Status::new(
+                        lsp::Phase::Starting,
+                        "Restarting with current unsaved buffers",
+                    );
                 }
-                self.lsp
-                    .worker
-                    .as_ref()
-                    .ok_or_else(|| error("No supported language server"))?
-                    .submit(Control::Restart(path))?;
                 self.info("Restarting language server; current unsaved buffers will be reopened");
                 return Ok(());
             }
@@ -1629,7 +1652,7 @@ impl Editor {
         let key = path.and_then(|p| self.lsp.routes.get(p));
         let info = key.and_then(|k| self.lsp.servers.get(k));
         let mut text = format!(
-            "Source: {}\nLSP scope: Kotlin, Java, C#; UTF-16, 2 MiB/document\n",
+            ":LspInfo status/progress | :LspLog server messages\n:Doctor executable, SDK and root checks | :LspRestart retry\nSource: {}\nLSP scope: Kotlin, Java, C#; UTF-16, 2 MiB/document\n",
             self.document.display_name()
         );
         text += &format!(
@@ -1647,7 +1670,7 @@ impl Editor {
                 text += &format!(
                     "Prepared {}: {}\nRoot: {}\nSession: {}\n",
                     other.language.id(),
-                    server.status,
+                    format_args!("{} - {}", server.status.summary(), server.status.message),
                     other.root.display(),
                     server.epoch
                 );
@@ -1668,7 +1691,23 @@ impl Editor {
             );
         }
         if let Some(info) = info {
-            text += &format!("Status: {}\nSession: {}\n", info.status, info.epoch);
+            text += &format!(
+                "Status: {}\n{}\nSession: {}\n",
+                info.status.summary(),
+                info.status.message,
+                info.epoch
+            );
+            text += if info.capabilities.is_object() {
+                "Initialization: complete (does not prove indexing finished)\n"
+            } else {
+                "Initialization: unavailable; language requests wait for capabilities\n"
+            };
+            for task in &info.status.progress {
+                text += &format!("Active work: {task}\n");
+            }
+            if info.status.phase.busy() && info.status.since.elapsed().as_secs() >= 30 {
+                text += "Still waiting. Gradle/Maven imports may download dependencies or need a project JDK.\nCheck :LspLog and :Doctor; editing remains available. No indexing percentage is estimated.\n";
+            }
             if kind != "LspLog" {
                 for method in [
                     "textDocument/completion",
@@ -1716,6 +1755,7 @@ impl Editor {
             text += "Gradle settings / nearest Maven pom / containing solution or project choose roots.\n";
             text += "JDT LS uses private temporary workspace data. Wrapper argv can select a runtime/solution.\n";
             text += "Use :LspRestart after changing SDK/server setup. Build imports may download dependencies.\n";
+            text += "Check project Gradle/Maven output for missing toolchains, repositories, proxy/authentication or invalid build files.\n";
             text += "Versionless push diagnostics are labelled unverified; prefer versioned or pull diagnostics.\n";
         }
         self.close_lsp_panel();
@@ -1754,10 +1794,14 @@ impl Editor {
                 .lsp
                 .servers
                 .iter()
-                .find(|(_, info)| info.status != "Ready")
+                .find(|(_, info)| info.status.phase != lsp::Phase::Ready)
                 .or_else(|| self.lsp.servers.iter().next())
                 .map_or_else(String::new, |(key, info)| {
-                    format!("LSP {}: {}", key.language.id(), info.status)
+                    format!(
+                        "LSP {} :LspInfo ({})",
+                        info.status.summary(),
+                        key.language.id()
+                    )
                 });
         };
         if let Some(state) =
@@ -1780,26 +1824,36 @@ impl Editor {
         if self.document.buffer.text().len_bytes() > lsp::MAX_DOCUMENT_BYTES {
             return "LSP >2MiB".into();
         }
+        let server = self
+            .lsp
+            .routes
+            .get(path)
+            .and_then(|key| self.lsp.servers.get(key));
+        // Startup/failure remains visible even while requests or diagnostics exist.
+        if let Some(server) = server
+            && server.status.phase != lsp::Phase::Ready
+        {
+            return format!("LSP {} :LspInfo", server.status.summary());
+        }
         if self.lsp.pending {
-            return "LSP waiting".into();
+            return "LSP Ready (request pending)".into();
         }
         if let Some(d) = self.current_diagnostics()
             && !d.items.is_empty()
         {
             return format!(
-                "LSP {}diag{}",
+                "LSP Ready {}diag{}",
                 d.items.len(),
                 if d.versioned { "" } else { "?" }
             );
         }
         if self.lsp.unavailable.contains_key(path) {
-            return "LSP unavailable".into();
+            return "LSP Failed :LspInfo".into();
         }
-        self.lsp
-            .routes
-            .get(path)
-            .and_then(|k| self.lsp.servers.get(k))
-            .map_or_else(|| "LSP starting".into(), |s| format!("LSP {}", s.status))
+        server.map_or_else(
+            || "LSP Starting :LspInfo".into(),
+            |s| format!("LSP {} :LspInfo", s.status.summary()),
+        )
     }
     fn open_diagnostics(&mut self) {
         self.close_lsp_panel();

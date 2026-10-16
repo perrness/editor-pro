@@ -2,7 +2,7 @@
 
 `tests/lsp_real.rs` drives the ordinary `Editor`, its background manager, command
 views and edit approvals against installed servers. These tests are opt-in:
-`cargo test --locked --all-targets` compiles them and reports six ignored tests.
+`cargo test --locked --all-targets` compiles them and reports seven ignored tests.
 The default suite and `fake_server.py` require no real servers or downloads.
 
 ## Provisioning
@@ -102,7 +102,13 @@ response and records it separately. Advertised features must return useful fixtu
 results and navigate correctly; an empty result does not pass those checks.
 
 Reports include the fixture fingerprint, command, platform, negotiated
-capabilities, bounded server logs, phase, per-check results and timings. They are
+capabilities, bounded server logs, phase, per-check results and timings. The Kotlin Gradle fixture also requires
+observed Starting, Indexing and Ready states, verifies troubleshooting links, and
+records up to 512 status transitions plus maximum observed editor tick duration.
+`kotlin_gradle_import_failure_and_recovery` injects a `GradleException` into a
+fresh temporary project, requires visible Degraded state from the actual server,
+restores the build file, then verifies explicit restart with unsaved source and
+fresh diagnostics. Its separate report retains the failure message and timings. They are
 also written on assertion failure. Results are headless editor evidence, not
 physical-terminal inspection. Initialization/readiness waits cap at 180 seconds;
 feature requests retain the editor's normal 15-second deadline. A first import

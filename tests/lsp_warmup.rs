@@ -108,7 +108,7 @@ fn warm_session_has_no_document_and_reuses_initialization_with_latest_unsaved_te
         e.lsp
             .servers
             .values()
-            .any(|s| s.status.contains("fake import"))
+            .any(|s| s.status.message.contains("fake import"))
     });
     assert!(
         !p.log(Language::Kotlin)
@@ -253,7 +253,7 @@ fn missing_warm_server_remains_quiet_and_opening_it_does_not_retry_in_a_loop() {
         e.lsp
             .servers
             .values()
-            .any(|s| s.status.contains("Launch failed"))
+            .any(|s| s.status.message.contains("Launch failed"))
     });
     assert!(!p.editor.message_is_error);
     let epoch = p.editor.lsp.servers.values().next().unwrap().epoch;
@@ -266,7 +266,7 @@ fn missing_warm_server_remains_quiet_and_opening_it_does_not_retry_in_a_loop() {
         e.lsp
             .servers
             .values()
-            .any(|s| s.epoch != epoch && s.status.contains("Launch failed"))
+            .any(|s| s.epoch != epoch && s.status.message.contains("Launch failed"))
     });
 }
 

@@ -25,6 +25,8 @@ struct Project {
     other: PathBuf,
     originals: Vec<(PathBuf, Vec<u8>)>,
     report: Value,
+    started: Instant,
+    last_status: Value,
 }
 
 fn copy_fixture(source: &Path, target: &Path, originals: &mut Vec<(PathBuf, Vec<u8>)>) {
@@ -83,7 +85,7 @@ impl Project {
         let report = json!({
             "fixture":name, "fixture_sha256":format!("{:x}", digest.finalize()),
             "os":std::env::consts::OS, "arch":std::env::consts::ARCH,
-            "server_argv":argv, "checks":{}, "status":"running"
+            "server_argv":argv, "checks":{}, "status":"running", "status_trace":[], "max_tick_seconds":0.0
         });
         Self {
             editor,
@@ -93,6 +95,8 @@ impl Project {
             other,
             originals,
             report,
+            started: Instant::now(),
+            last_status: Value::Null,
         }
     }
 
@@ -101,7 +105,27 @@ impl Project {
         eprintln!("{}: waiting for {label}", self.name);
         self.report["phase"] = json!(label);
         loop {
+            let tick = Instant::now();
             self.editor.tick();
+            self.report["max_tick_seconds"] = json!(
+                self.report["max_tick_seconds"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .max(tick.elapsed().as_secs_f64())
+            );
+            let status = json!(self.editor.lsp.servers.values().map(|s| json!({
+                "epoch":s.epoch,"phase":s.status.phase.label(),"message":s.status.message,"progress":s.status.progress,
+                "initialized":s.capabilities.is_object()
+            })).collect::<Vec<_>>());
+            if status != self.last_status {
+                let trace = self.report["status_trace"].as_array_mut().unwrap();
+                if trace.len() < 512 {
+                    trace.push(
+                        json!({"seconds":self.started.elapsed().as_secs_f64(),"servers":status}),
+                    );
+                }
+                self.last_status = status;
+            }
             assert!(
                 self.editor
                     .lsp
@@ -134,7 +158,7 @@ impl Project {
                     .lsp
                     .servers
                     .values()
-                    .any(|s| s.status.contains(":LspRestart retries")),
+                    .any(|s| s.status.message.contains(":LspRestart retries")),
                 "{}: server stopped during {label}; {}",
                 self.name,
                 self.state()
@@ -147,7 +171,7 @@ impl Project {
         json!({"message":self.editor.message, "buffer_text":self.editor.document.buffer.text().to_string(),
             "installation": self.editor.lsp.installations.iter().map(|(language, state)| json!({"language":language.id(),"status":state.message,"busy":state.busy,"failed":state.failed})).collect::<Vec<_>>(),
             "servers":self.editor.lsp.servers.values().map(|s|
-                json!({"status":s.status,"capabilities":s.capabilities,"logs":s.logs})).collect::<Vec<_>>(),
+                json!({"status":s.status.message,"phase":s.status.phase.label(),"capabilities":s.capabilities,"logs":s.logs})).collect::<Vec<_>>(),
             "diagnostics":self.editor.lsp.diagnostics.values().map(|d| &d.items).collect::<Vec<_>>()})
     }
 
@@ -327,6 +351,29 @@ impl Project {
             self.directory.path().canonicalize().unwrap()
         );
         self.report["initialized"] = self.state();
+        if self.name == "kotlin-gradle" {
+            self.wait("reported_indexing_complete", |e| {
+                e.lsp
+                    .servers
+                    .values()
+                    .any(|s| s.status.phase == lsp::Phase::Ready)
+            });
+            let trace = self.report["status_trace"].as_array().unwrap();
+            for phase in ["Starting", "Indexing", "Ready"] {
+                assert!(
+                    trace.iter().any(|sample| sample["servers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|server| server["phase"] == phase)),
+                    "Missing {phase} in actual Kotlin Gradle startup: {trace:?}"
+                );
+            }
+            self.command("LspInfo");
+            assert!(self.panel_contains(":LspLog") && self.panel_contains(":Doctor"));
+            self.editor.handle_key(Key::Escape);
+            self.report["checks"]["startup_visibility"] = json!({"status":"passed"});
+        }
 
         self.cursor("DEFINITION", "greet", 1);
         self.command("Hover");
@@ -732,6 +779,64 @@ fn kotlin_gradle() {
         "library/src/main/kotlin/Greeter.kt",
     )
     .run();
+}
+
+#[test]
+#[ignore = "requires pinned official Kotlin LSP, Gradle and JDK 21; see tools/lsp/README.md"]
+fn kotlin_gradle_import_failure_and_recovery() {
+    let mut project = Project::new(
+        "kotlin-gradle",
+        "app/src/main/kotlin/Main.kt",
+        "library/src/main/kotlin/Greeter.kt",
+    );
+    project.name = "kotlin-gradle-import-failure";
+    project.report["fixture"] = json!(project.name);
+    project.report["injected_failure"] =
+        json!("GradleException in root build.gradle.kts; source fixture hash is unchanged");
+    let build = project.directory.path().join("build.gradle.kts");
+    let original = fs::read_to_string(&build).unwrap();
+    fs::write(
+        &build,
+        format!("{original}\nthrow GradleException(\"editor-pro fixture import failed\")\n"),
+    )
+    .unwrap();
+    project.wait("actual_import_failure_visible", |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.status.phase == lsp::Phase::Degraded)
+    });
+    project.report["import_failure"] = project.state();
+    assert!(
+        project.editor.lsp.servers.values().any(|s| s
+            .status
+            .message
+            .contains("Unable to import a Gradle project")),
+        "Unrelated warning must not pass the import failure check: {}",
+        project.state()
+    );
+    project.command("LspInfo");
+    assert!(project.panel_contains(":LspLog") && project.panel_contains(":Doctor"));
+    project.editor.handle_key(Key::Escape);
+    project.editor.handle_key(Key::Char('i'));
+    project.editor.paste("// unsaved during failed import\n");
+    project.editor.handle_key(Key::Escape);
+    let unsaved = project.editor.document.buffer.text().to_string();
+    fs::write(&build, original).unwrap();
+    project.command("LspRestart");
+    project.wait("import_recovered_with_unsaved_source", |e| {
+        Project::error_on_marker(e) == Some(true)
+            && e.lsp
+                .servers
+                .values()
+                .all(|s| s.status.phase == lsp::Phase::Ready)
+    });
+    assert_eq!(project.editor.document.buffer.text().to_string(), unsaved);
+    for (path, bytes) in &project.originals {
+        assert_eq!(fs::read(path).unwrap(), *bytes);
+    }
+    project.report["checks"]["disk_unchanged"] = json!({"status":"passed"});
+    project.report["status"] = json!("passed");
 }
 
 #[test]

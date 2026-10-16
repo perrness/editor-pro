@@ -602,7 +602,7 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     let width = usize::from(area.width);
     let lsp = editor.lsp_summary();
     let right = if area.width >= 70 && !lsp.is_empty() {
-        format!(" {} |{}", visible_text(&lsp, 0, 24), right)
+        format!(" {} |{}", visible_text(&lsp, 0, 30), right)
     } else {
         right
     };

@@ -1819,3 +1819,106 @@ workflows passed again locally, along with all six release/harness Python tests,
 all three CLI/version tests, the stable-tag check, offline Cargo check, formatting
 and whitespace checks. Their log is `/tmp/editor-pro-v0.2.13-terminal-focused.log`.
 The corrected release uses **v0.2.13**, preserving the existing v0.2.12 tag.
+
+
+## Issue 13 — JVM startup and indexing visibility
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. The existing session
+manager now reports Starting, Indexing, Ready, Degraded and Failed explicitly.
+Concurrent numeric/string work tokens retain independent progress; initialization
+and unrelated task completions cannot erase ongoing imports. Only server-provided
+percentages are displayed. Elapsed state time remains live during quiet startup.
+Typed server errors/warnings and JDT status failures remain actionable until an
+explicit restart. LspInfo, live LspLog, Doctor and searchable help expose the
+troubleshooting path. Crash retries remain capped; failed sessions do not restart
+on edits. Capabilities/diagnostics are invalidated before process teardown, and
+explicit restart rejects queued results from the old epoch.
+
+All **361 ordinary Rust tests** passed, including seven new lifecycle/UI tests.
+Coverage includes delayed initialization, overlapping tasks before/after initialize,
+unknown/partial-result progress, numeric versus string tokens, retained titles,
+server percentages, bounded oversized progress, elapsed redraws, typed import/SDK
+errors, Java status notifications, missing executables, repeated crashes, retry
+limits, explicit recovery, a full UI event queue, Unicode/CRLF unsaved text and
+undo, tiny layouts and control-safe rendering. Existing runtime checks cover old,
+failed and hanging SDK processes. All-target Clippy passed with warnings denied;
+the focused restart tests also passed after the final command-submission guard.
+All **14 Python tests** and **45 PTY sessions** passed. Commands:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo test --locked --test lsp restart
+cargo build --locked
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue13-terminal python3 tools/terminal_smoke.py
+```
+
+The two new terminal sessions exercise missing-server failure, Starting/Indexing,
+concurrent import tasks, Degraded errors, Doctor/help/log discovery, explicit
+restart, unsaved resynchronization, undo, tiny resizing and terminal restoration.
+The capture harness needed the existing alternating-width repaint technique to
+match messages split across incremental ANSI writes; the complete run then passed.
+
+- `/tmp/editor-pro-issue13-terminal/lsp-startup-recovery.ansi`
+- `/tmp/editor-pro-issue13-terminal/lsp-startup-missing.ansi`
+- `/tmp/editor-pro-issue13-rust-tests.log`
+- `/tmp/editor-pro-issue13-restart-tests.log`
+- `/tmp/editor-pro-issue13-terminal-tests.log`
+
+### Actual JVM server evidence
+
+Three opt-in tests passed against installed pinned servers, using fresh temporary
+two-module Gradle projects and cached SDK/distribution/dependency artifacts:
+
+| Test | Server/runtime | Observations |
+| --- | --- | --- |
+| `kotlin_gradle` | Kotlin 263.6379.0, bundled JBR 25; project JDK 21 | Passed in 98.52 s. Observed Starting, Indexing and Ready; first type diagnostic 78.89 s; unsaved restart/resync 6.34 s. |
+| `java_gradle` | JDT LS 1.60.0, OpenJDK 25; project JDK 21 | Passed in 33.46 s. Observed Starting, Indexing and Ready; first type diagnostic 13.89 s; unsaved restart/resync 11.48 s. |
+| `kotlin_gradle_import_failure_and_recovery` | Same Kotlin server and project toolchain | A deliberate GradleException in the temporary root build produced Degraded with “Unable to import a Gradle project” after 13.92 s. Restoring the build and restarting restored Ready and fresh diagnostics in 39.26 s while retaining unsaved source. Passed in 53.72 s. |
+
+The healthy tests retain completion, hover, navigation, symbols, formatting,
+rename, edit approvals/undo and unchanged-disk assertions. The failure test restores
+the build file and checks all original fixture bytes. Reports capture status
+transitions, progress, initialization/capability availability and failure messages:
+
+- `/tmp/editor-pro-issue13-real/kotlin-gradle.json`
+- `/tmp/editor-pro-issue13-real/java-gradle.json`
+- `/tmp/editor-pro-issue13-real/kotlin-gradle-import-failure.json`
+
+The final import-failure/recovery rerun, including the assertion that an unrelated
+warning cannot satisfy the failure check, passed in 43.48 s. Its report is
+`/tmp/editor-pro-issue13-real-final/kotlin-gradle-import-failure.json`.
+
+The Kotlin initialize response arrived at 7.94 s; reported import started at
+8.25 s, before later indexing tasks. Ready therefore means protocol readiness
+with no currently reported work, not complete project indexing. The observed
+maximum editor tick was 4.66 ms in the Kotlin run and 3.12 ms in Java. These are
+small fixture observations, partly concurrent with other checks, not latency or
+large-project guarantees. The two Kotlin tests can be reproduced with:
+
+```sh
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+EDITOR_PRO_LSP_INSTALL_DIR=/tmp/editor-pro-issue7-servers \
+EDITOR_PRO_LSP_REPORT_DIR=/tmp/editor-pro-issue13-real \
+cargo test --locked --test lsp_real kotlin_gradle -- --ignored --nocapture --test-threads=1
+```
+
+Use `java_gradle` and the installed JDK 25 runtime for the Java reproduction.
+The new failure test is opt-in; ordinary tests never require real servers or
+project dependency downloads. See tools/lsp/README.md for provisioning elsewhere.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process/socket access because the sandbox could not initialize its loopback
+interface. macOS, physical terminals, empty dependency caches, large production
+projects and real crash injection were not tested. Crash/retry limits and missing
+runtime behavior are covered with deterministic process doubles. Server messages
+and progress are bounded observations; unreported indexing cannot be inferred.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.14**. The
+stable-tag check, all three CLI/version tests, all three release-tool tests,
+offline Cargo check, formatting and whitespace checks passed. The tag-triggered
+release workflow gates publication and the Homebrew tap update on hosted checks.

@@ -120,7 +120,7 @@ fn measure(name: &str, main: &str, target: &str, warm: bool, browse: Duration) -
                     Event::Status {
                         key,
                         epoch,
-                        message,
+                        state,
                         capabilities,
                     } => {
                         if key.language != language {
@@ -134,7 +134,7 @@ fn measure(name: &str, main: &str, target: &str, warm: bool, browse: Duration) -
                             }
                         }
                         statuses.push(
-                            json!({"seconds": started.elapsed().as_secs_f64(), "message": message}),
+                            json!({"seconds": started.elapsed().as_secs_f64(), "message": state.message, "phase": state.phase.label(), "progress": state.progress}),
                         );
                     }
                     Event::Log { message, .. } => {
