@@ -54,6 +54,44 @@ impl Fixture {
     fn text(&self) -> String {
         self.editor.document.buffer.text().to_string()
     }
+    fn git(&self, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fn repository(&mut self, updated: &str) {
+        self.git(&["init", "-b", "main"]);
+        self.git(&["add", "."]);
+        self.git(&[
+            "-c",
+            "user.name=AI Fixture",
+            "-c",
+            "user.email=ai@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "base",
+        ]);
+        fs::write(&self.source, updated).unwrap();
+        self.editor.execute_command("e!").unwrap();
+    }
+    fn diff(&mut self, comparison: &str) {
+        self.editor
+            .execute_command(&format!("diff {comparison}"))
+            .unwrap();
+        wait(&mut self.editor, |e| {
+            e.git_current() && e.review.store.is_some()
+        });
+    }
 }
 fn wait(e: &mut Editor, done: impl Fn(&Editor) -> bool) {
     let start = Instant::now();
@@ -134,6 +172,297 @@ fn visual_character_and_line_context_preserve_graphemes_and_crlf() {
     f.editor.handle_key(Key::Ctrl('g'));
     assert_eq!(f.editor.ai.draft.context[0].text, "界👩‍💻e\u{301}\r\n");
     assert_eq!(f.editor.mode, Mode::Normal);
+}
+
+#[test]
+fn explain_selection_previews_default_question_provenance_and_safe_text_locally() {
+    let mut f = Fixture::new("first\r\n界👩‍💻e\u{301}\t\u{1b}[2J\r\nlast\r\n");
+    f.editor.document.buffer.insert("local ");
+    f.editor.document.buffer.commit();
+    f.editor.document.buffer.goto_line(1, false);
+    f.editor.viewport.top = 1;
+    f.editor.viewport.left = 3;
+    f.editor.handle_key(Key::Char('V'));
+    let cursor = f.editor.document.buffer.cursor();
+    let viewport = f.editor.viewport.clone();
+    let before = f.text();
+    f.editor.ai.config.executable = "/missing/codex".into();
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert_eq!(f.editor.view, View::Ai);
+    assert!(!f.editor.ai.pending);
+    assert_eq!(f.editor.ai.draft.question, ai::EXPLAIN_SOURCE);
+    assert_eq!(
+        f.editor.ai.draft.context[0].text,
+        "界👩‍💻e\u{301}\t\u{1b}[2J\r\n"
+    );
+    assert!(f.editor.ai.draft.context[0].label.contains(":2:1–3:1"));
+    assert!(
+        f.editor.ai.draft.context[0]
+            .label
+            .contains("unsaved buffer")
+    );
+    assert!(f.editor.ai.rows.iter().any(|r| {
+        r.text
+            .contains(&format!("Repository / project: {}", f.root.display()))
+    }));
+    assert!(
+        f.editor
+            .ai
+            .rows
+            .iter()
+            .any(|r| r.text.starts_with("Captured source SHA-256:"))
+    );
+    let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .all(|cell| !cell.symbol().chars().any(char::is_control))
+    );
+    for (width, height) in [(0, 0), (1, 1), (2, 2), (18, 5)] {
+        Terminal::new(TestBackend::new(width, height))
+            .unwrap()
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+    }
+    f.editor.handle_key(Key::Escape);
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.viewport, viewport);
+    assert_eq!(f.text(), before);
+    assert!(f.editor.ai.conversation.as_ref().unwrap().turns.is_empty());
+}
+
+#[test]
+fn selection_capture_cannot_reuse_an_old_anchor_or_send_after_edit_and_undo() {
+    let mut f = Fixture::new("old\r\nother\r\n");
+    f.editor.handle_key(Key::Char('V'));
+    f.editor.handle_key(Key::Ctrl('g'));
+    let captured = f.editor.ai.draft.context[0].text.clone();
+    assert!(f.editor.execute_command("ai context selection").is_err());
+    assert_eq!(f.editor.ai.draft.context[0].text, captured);
+    f.editor.handle_key(Key::Escape);
+    f.editor.document.buffer.insert("changed");
+    f.editor.document.buffer.commit();
+    f.editor.document.buffer.undo();
+    f.editor.execute_command("ai preview").unwrap();
+    assert!(f.editor.execute_command("ai send").is_err());
+    assert!(!f.editor.ai.pending);
+    assert_eq!(f.text(), "old\r\nother\r\n");
+    assert!(f.editor.ai.conversation.as_ref().unwrap().turns.is_empty());
+}
+
+#[test]
+fn hunk_shortcut_pins_only_selected_hunk_and_restores_diff_origin_and_links() {
+    let base = format!("first\n{}last\n", "same\n".repeat(12));
+    let updated = base
+        .replace("first", "changed first")
+        .replace("last", "changed last");
+    let mut f = Fixture::new(&base);
+    f.repository(&updated);
+    let origin = f.root.join("origin.txt");
+    fs::write(&origin, "origin\nreturn here\n").unwrap();
+    f.editor.open_buffer(&origin).unwrap();
+    f.editor.document.buffer.goto_line(1, false);
+    f.editor.viewport.top = 1;
+    let cursor = f.editor.document.buffer.cursor();
+    let viewport = f.editor.viewport.clone();
+    f.editor
+        .open_diff(f.source.clone(), editor_pro::git::Comparison::Head);
+    wait(&mut f.editor, |e| {
+        e.git_current() && e.review.store.is_some()
+    });
+    let selected = f.editor.git.diff().unwrap().hunks[1];
+    let view = f.editor.git.diff_view.as_mut().unwrap();
+    view.selected = selected;
+    view.top = selected;
+    view.left = 2;
+    view.paired = true;
+    let identity = f.editor.git.diff().unwrap().identity.clone().unwrap();
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert_eq!(f.editor.ai.draft.question, ai::EXPLAIN_HUNK);
+    let hunk = &f.editor.ai.draft.context[0];
+    assert!(hunk.text.contains("-last\n+changed last"));
+    assert!(!hunk.text.contains("changed first"));
+    assert!(hunk.text.contains(identity.resolved_base.as_ref().unwrap()));
+    assert!(hunk.text.contains(&identity.old.sha256));
+    assert!(hunk.text.contains(&identity.new.sha256));
+    let source = &f.editor.ai.draft.context[1];
+    assert_eq!(source.source.as_ref().unwrap().path, f.source);
+    assert!(!source.text.contains("changed first"));
+    assert!(source.text.ends_with("changed last\n"));
+    assert!(!f.editor.ai.pending);
+    f.editor.handle_key(Key::Escape);
+    assert_eq!(f.editor.view, View::Diff);
+    let view = f.editor.git.diff_view.as_ref().unwrap();
+    assert_eq!(
+        (view.selected, view.top, view.left, view.paired),
+        (selected, selected, 2, true)
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.viewport, viewport);
+    f.editor.execute_command("ai preview").unwrap();
+    f.editor.ai.selected = f
+        .editor
+        .ai
+        .rows
+        .iter()
+        .position(|r| r.text == "   4 changed last")
+        .unwrap();
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(f.editor.document.path(), Some(f.source.as_path()));
+    assert_eq!(f.editor.document.buffer.position().0, 13);
+    f.editor.execute_command("back").unwrap();
+    assert_eq!(f.editor.document.path(), Some(origin.as_path()));
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.viewport, viewport);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read_to_string(&f.source).unwrap(), updated);
+}
+
+#[test]
+fn diff_send_rejects_changed_comparison_and_repository_without_replacing_draft() {
+    let mut f = Fixture::new("base\n");
+    f.repository("old\n");
+    f.diff("head");
+    f.editor.handle_key(Key::Ctrl('g'));
+    let captured = f.editor.ai.draft.context[0].text.clone();
+    f.editor.git.comparison = editor_pro::git::Comparison::Index;
+    assert!(f.editor.execute_command("ai send").is_err());
+    assert!(!f.editor.ai.pending);
+    f.editor.handle_key(Key::Escape);
+    f.diff("head");
+    fs::write(&f.source, "new revision\n").unwrap();
+    f.git(&["add", "."]);
+    f.git(&[
+        "-c",
+        "user.name=AI Fixture",
+        "-c",
+        "user.email=ai@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "new base",
+    ]);
+    f.editor.refresh_git();
+    wait(&mut f.editor, |e| e.git_current());
+    f.editor.execute_command("ai preview").unwrap();
+    assert!(f.editor.execute_command("ai send").is_err());
+    assert_eq!(f.editor.ai.draft.context[0].text, captured);
+    f.editor.handle_key(Key::Escape);
+    f.editor.ai.conversation.as_mut().unwrap().root = f.dir.path().join("another-project");
+    assert!(f.editor.execute_command("ai explain").is_err());
+    assert_eq!(f.editor.view, View::Diff);
+    assert_eq!(f.editor.ai.draft.context[0].text, captured);
+}
+
+#[test]
+fn staged_hunk_keeps_index_revision_separate_from_unsaved_working_source() {
+    let mut f = Fixture::new("base\n");
+    f.repository("staged\n");
+    f.git(&["add", "."]);
+    f.editor.document.buffer.insert("unsaved ");
+    f.editor.document.buffer.commit();
+    f.diff("staged");
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert_eq!(f.editor.ai.draft.context.len(), 1);
+    assert!(f.editor.ai.draft.context[0].text.contains("+staged"));
+    assert!(!f.editor.ai.draft.context[0].text.contains("unsaved staged"));
+    f.editor.ai.config.model = Some("normal".into());
+    f.editor
+        .execute_command("ai ask What behavior changed?")
+        .unwrap();
+    f.editor.execute_command("ai send").unwrap();
+    f.finish();
+    assert_eq!(answer(&f.editor).summary, "Captured text received");
+    f.editor.ai.config.model = Some("followup".into());
+    f.editor
+        .execute_command("ai ask What remains uncertain about the author's intent?")
+        .unwrap();
+    f.editor.execute_command("ai send").unwrap();
+    f.finish();
+    assert_eq!(f.editor.ai.conversation.as_ref().unwrap().turns.len(), 2);
+    assert_eq!(f.text(), "unsaved staged\n");
+    assert_eq!(fs::read_to_string(&f.source).unwrap(), "staged\n");
+}
+
+#[test]
+fn nested_project_and_deleted_hunk_keep_repository_scope_without_inventing_source() {
+    let mut f = Fixture::new("base\n");
+    f.repository("old\n");
+    let nested = f.root.join("nested");
+    fs::create_dir(&nested).unwrap();
+    fs::write(nested.join("Cargo.toml"), "[package]\n").unwrap();
+    let path = nested.join("source.txt");
+    fs::write(&path, "nested\n").unwrap();
+    f.editor.open_buffer(&path).unwrap();
+    f.editor.handle_key(Key::Char('V'));
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert_eq!(f.editor.ai.conversation.as_ref().unwrap().root, f.root);
+    f.editor.handle_key(Key::Escape);
+    fs::remove_file(&f.source).unwrap();
+    f.editor
+        .open_diff(f.source.clone(), editor_pro::git::Comparison::Head);
+    wait(&mut f.editor, |e| {
+        e.git_current() && e.review.store.is_some()
+    });
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert_eq!(f.editor.view, View::Ai, "{}", f.editor.message);
+    assert_eq!(f.editor.ai.draft.context.len(), 1);
+    assert!(f.editor.ai.draft.context[0].text.contains("-base"));
+    assert!(f.editor.ai.draft.context[0].source.is_none());
+    assert!(!f.source.exists());
+    assert_eq!(f.editor.document.path(), Some(path.as_path()));
+    f.editor.handle_key(Key::Escape);
+    f.editor.handle_key(Key::Escape);
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.path(), Some(path.as_path()));
+}
+
+#[test]
+fn shortcut_provider_failure_and_cancellation_preserve_source_and_undo() {
+    for model in ["error", "hang"] {
+        let mut f = Fixture::new("old\r\nsecond\r\n");
+        f.editor.ai.config.model = Some(model.into());
+        f.editor.document.buffer.insert("local ");
+        f.editor.document.buffer.commit();
+        f.editor.document.buffer.goto_line(1, false);
+        f.editor.viewport.top = 1;
+        let cursor = f.editor.document.buffer.cursor();
+        let viewport = f.editor.viewport.clone();
+        f.editor.handle_key(Key::Char('V'));
+        f.editor.handle_key(Key::Ctrl('g'));
+        f.editor.execute_command("ai send").unwrap();
+        if model == "hang" {
+            f.editor.handle_key(Key::Ctrl('c'));
+        }
+        f.finish();
+        let turn = &f.editor.ai.conversation.as_ref().unwrap().turns[0];
+        assert_eq!(
+            turn.status,
+            if model == "error" {
+                Status::Failed
+            } else {
+                Status::Cancelled
+            }
+        );
+        assert!(turn.answer.is_none());
+        f.editor.handle_key(Key::Escape);
+        assert_eq!(f.editor.view, View::Editing);
+        assert_eq!(f.editor.document.buffer.cursor(), cursor);
+        assert_eq!(f.editor.viewport, viewport);
+        assert_eq!(f.text(), "local old\r\nsecond\r\n");
+        f.editor.handle_key(Key::Char('u'));
+        assert_eq!(f.text(), "old\r\nsecond\r\n");
+        assert_eq!(fs::read_to_string(&f.source).unwrap(), f.text());
+    }
 }
 
 #[test]

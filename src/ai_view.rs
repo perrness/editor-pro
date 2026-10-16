@@ -7,7 +7,7 @@ use crate::{
     input::Key,
     lsp::{self, Stamp},
     lsp_edit::{EditPlan, PlannedFile},
-    review::fingerprint,
+    review::{Identity, fingerprint},
 };
 use ropey::Rope;
 use std::{
@@ -55,6 +55,9 @@ pub struct AiState {
     saved: Option<(PathBuf, String)>,
     partial: Option<Answer>,
     plan: Option<EditPlan>,
+    // The primary diff attachment is pinned to this exact comparison. It is
+    // rechecked before sending, independently of subsequent row selection.
+    diff_capture: Option<Identity>,
 }
 impl AiState {
     fn idle(&self) -> io::Result<()> {
@@ -127,6 +130,13 @@ impl AiState {
                     "Captured text is local evidence. Model observations and inferred intent remain separate.",
                 );
                 if let Some(c) = &self.conversation {
+                    plain(
+                        &mut rows,
+                        &format!(
+                            "Repository / project: {}",
+                            crate::git::display_path(&c.root)
+                        ),
+                    );
                     plain(
                         &mut rows,
                         &format!(
@@ -211,6 +221,12 @@ fn draft_rows(rows: &mut Vec<Row>, draft: &Draft) {
     for (i, context) in draft.context.iter().enumerate() {
         let context = Arc::new(context.clone());
         plain(rows, &format!("Context {} · {}", i + 1, context.label));
+        if let Some(source) = &context.source {
+            plain(
+                rows,
+                &format!("Captured source SHA-256: {}", source.fingerprint),
+            );
+        }
         for (line, text) in context.text.split('\n').enumerate() {
             rows.push(Row {
                 text: format!("{:>4} {text}", line + 1),
@@ -268,14 +284,22 @@ impl Editor {
             return Ok(c.root.clone());
         }
         let parent = self
-            .document
-            .path()
+            .git
+            .diff_view
+            .as_ref()
+            .filter(|_| {
+                self.view == View::Diff
+                    || (self.view == View::Ai && self.ai.return_view == View::Diff)
+            })
+            .map(|view| view.path.as_path())
+            .or(self.document.path())
             .and_then(Path::parent)
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?);
         let root = parent
             .ancestors()
-            .find(|p| p.join(".git").exists() || p.join("Cargo.toml").is_file())
+            .find(|p| p.join(".git").exists())
+            .or_else(|| parent.ancestors().find(|p| p.join("Cargo.toml").is_file()))
             .unwrap_or(&parent)
             .canonicalize()?;
         self.ai.conversation = Some(Conversation::new(root.clone()));
@@ -293,6 +317,7 @@ impl Editor {
         }
         self.document.buffer.commit();
         self.mode = Mode::Normal;
+        self.selection_anchor = None;
         self.ai.panel = panel;
         self.ai.selected = 0;
         self.ai.top = 0;
@@ -345,10 +370,13 @@ impl Editor {
             ));
         }
         let first_line = text.char_to_line(range.start) + 1;
+        let end_line = text.char_to_line(range.end) + 1;
+        let first_column = range.start - text.line_to_char(first_line - 1) + 1;
+        let end_column = range.end - text.line_to_char(end_line - 1) + 1;
         let unsaved = document.buffer.is_modified();
         Ok(Context {
             label: format!(
-                "{label} · {}:{first_line} · {}",
+                "{label} · {}:{first_line}:{first_column}–{end_line}:{end_column} (end exclusive, scalar columns) · {}",
                 crate::git::display_path(&path),
                 if unsaved {
                     "unsaved buffer"
@@ -430,6 +458,106 @@ impl Editor {
         Ok((text.clone(), loaded))
     }
 
+    /// One contextual shortcut prepares a question locally. Sending remains a
+    /// separate action in the existing preview/conversation workflow.
+    pub(crate) fn ai_explain(&mut self, question: &str) -> io::Result<()> {
+        self.ai.idle()?;
+        if self.note_edit.is_some() {
+            return Err(error("Finish the review note before using AI"));
+        }
+        let kind = match self.view {
+            View::Editing if matches!(self.mode, Mode::Visual | Mode::VisualLine) => "selection",
+            View::Editing if self.mode == Mode::Normal => {
+                return self.ai_request_symbol(question);
+            }
+            View::Lsp => "symbol",
+            View::Diff => "hunk",
+            _ => {
+                return Err(error(
+                    "Select code, a symbol in :Outline, or a Git hunk before explaining",
+                ));
+            }
+        };
+        let question = if question.is_empty() {
+            if kind == "hunk" {
+                ai::EXPLAIN_HUNK
+            } else {
+                ai::EXPLAIN_SOURCE
+            }
+        } else {
+            question
+        };
+        self.ai_context(kind, Some(question))
+    }
+
+    fn ai_context(&mut self, kind: &str, question: Option<&str>) -> io::Result<()> {
+        self.ai.idle()?;
+        let mut draft = Draft {
+            question: question.unwrap_or(&self.ai.draft.question).into(),
+            ..Default::default()
+        };
+        draft.validate()?;
+        let root = self.ai_root()?;
+        let mut diff_capture = None;
+        let context = match kind {
+            "file" | "selection" => {
+                let range = if kind == "selection" {
+                    if self.view != View::Editing
+                        || !matches!(self.mode, Mode::Visual | Mode::VisualLine)
+                    {
+                        return Err(error(
+                            "Select code with v/V then Ctrl-g to preview AI context",
+                        ));
+                    }
+                    Some(
+                        self.selection()
+                            .ok_or_else(|| error("No code selected"))?
+                            .chars,
+                    )
+                } else {
+                    None
+                };
+                let path = self
+                    .document
+                    .path()
+                    .ok_or_else(|| error("Name the source file before adding AI context"))?;
+                self.ai_capture(&root, path, range, kind)?
+            }
+            "symbol" => {
+                let (path, range) = self.ai_lsp_symbol()?;
+                let context = self.ai_capture(&root, &path, Some(0..0), "symbol")?;
+                let (text, _) = self.ai_source(&context, true)?;
+                self.ai_capture(
+                    &root,
+                    &path,
+                    Some(lsp::scalar_range(&text, range)?),
+                    "symbol",
+                )?
+            }
+            "hunk" | "diff" => {
+                let (context, identity) = self.ai_diff_context(&root, kind == "hunk")?;
+                diff_capture = Some(identity);
+                context
+            }
+            _ => return Err(error("Use :ai context file|selection|symbol|hunk|diff")),
+        };
+        draft.add(context)?;
+        if question.is_some()
+            && let Some(identity) = &diff_capture
+            && let Some(source) = self.ai_hunk_source(&root, identity)?
+        {
+            draft.add(source)?;
+        }
+        self.ai.draft = draft;
+        self.ai.diff_capture = diff_capture;
+        self.ai.plan = None;
+        self.ai_show(Panel::Preview);
+        self.info(
+            "Context captured locally; :ai ask QUESTION customizes it, :ai send transmits it",
+        );
+        Ok(())
+    }
+
     pub fn ai_command(&mut self, argument: &str) -> io::Result<()> {
         if self.note_edit.is_some() {
             return Err(error("Finish the review note before using AI"));
@@ -442,45 +570,8 @@ impl Editor {
                 self.ai_show(Panel::Conversation);
             }
             "help" => self.open_help("Codex"),
-            "context" => {
-                self.ai.idle()?;
-                let root = self.ai_root()?;
-                let context = match arg {
-                    "file" | "selection" => {
-                        let range = if arg == "selection" {
-                            Some(self.selection().ok_or_else(|| error("Select code with v/V then Ctrl-g to preview AI context"))?.chars)
-                        } else {
-                            None
-                        };
-                        let path = self.document.path().ok_or_else(|| {
-                            error("Name the source file before adding AI context")
-                        })?;
-                        self.ai_capture(&root, path, range, arg)?
-                    }
-                    "symbol" => {
-                        let (path, range) = self.ai_lsp_symbol()?;
-                        let context = self.ai_capture(&root, &path, Some(0..0), "symbol")?;
-                        let (text, _) = self.ai_source(&context, true)?;
-                        self.ai_capture(
-                            &root,
-                            &path,
-                            Some(lsp::scalar_range(&text, range)?),
-                            "symbol",
-                        )?
-                    }
-                    "hunk" | "diff" => self.ai_diff_context(arg == "hunk")?,
-                    _ => return Err(error("Use :ai context file|selection|symbol|hunk|diff")),
-                };
-                let mut draft = Draft {
-                    question: self.ai.draft.question.clone(),
-                    ..Default::default()
-                };
-                draft.add(context)?;
-                self.ai.draft = draft;
-                self.ai.plan = None;
-                self.ai_show(Panel::Preview);
-                self.info("Context captured locally; :ai ask QUESTION, then :ai send");
-            }
+            "explain" => self.ai_explain(arg)?,
+            "context" => self.ai_context(arg, None)?,
             "add" => {
                 self.ai.idle()?;
                 let root = self.ai_root()?;
@@ -672,6 +763,7 @@ impl Editor {
                 }
                 self.ai.conversation = None;
                 self.ai.draft = Draft::default();
+                self.ai.diff_capture = None;
                 self.ai.saved = None;
                 self.ai.plan = None;
                 self.ai.dirty = false;
@@ -684,7 +776,7 @@ impl Editor {
         Ok(())
     }
 
-    fn ai_diff_context(&self, hunk: bool) -> io::Result<Context> {
+    fn ai_diff_range(&self, hunk: bool) -> io::Result<Range<usize>> {
         if !self.git_current() {
             return Err(error(
                 "Request a current :diff before adding AI diff context",
@@ -696,7 +788,7 @@ impl Editor {
             .diff_view
             .as_ref()
             .ok_or_else(|| error("Open :diff first"))?;
-        let range = if hunk {
+        Ok(if hunk {
             let start = diff
                 .hunks
                 .iter()
@@ -713,12 +805,39 @@ impl Editor {
             start..end
         } else {
             0..diff.rows.len()
-        };
+        })
+    }
+
+    fn ai_diff_context(&self, root: &Path, hunk: bool) -> io::Result<(Context, Identity)> {
+        let range = self.ai_diff_range(hunk)?;
+        let diff = self.git.diff().unwrap();
+        let view = self.git.diff_view.as_ref().unwrap();
+        let identity = diff
+            .identity
+            .as_ref()
+            .ok_or_else(|| error("Git comparison has no revision identity"))?;
+        if identity.repository.root != root || !view.path.starts_with(root) {
+            return Err(error(
+                "Git context is outside this conversation's repository; start :ai new first",
+            ));
+        }
         let mut text = format!(
-            "{}\n{} -> {}\n",
+            "{}\n{} -> {}\nRepository: {}\nGit directory: {}\nComparison: {}\nBase commit: {}\nOld path: {} · blob {} · SHA-256 {} · present {}\nNew path: {} · blob {} · SHA-256 {} · present {}\nCaptured revision; subsequent source changes require recapturing context.\n",
             crate::git::display_path(&view.path),
             diff.left_label,
-            diff.right_label
+            diff.right_label,
+            crate::git::display_path(&identity.repository.root),
+            crate::git::display_path(&identity.repository.git_dir),
+            identity.comparison.description(),
+            identity.resolved_base.as_deref().unwrap_or("none"),
+            crate::git::display_path(&identity.old_path),
+            identity.old_blob.as_deref().unwrap_or("none"),
+            identity.old.sha256,
+            identity.old.present,
+            crate::git::display_path(&identity.new_path),
+            identity.new_blob.as_deref().unwrap_or("none"),
+            identity.new.sha256,
+            identity.new.present,
         );
         for row in &diff.rows[range] {
             let prefix = match row.kind {
@@ -737,16 +856,54 @@ impl Editor {
                 return Err(error("AI diff exceeds 64 KiB; select a hunk"));
             }
         }
-        Ok(Context {
-            label: if hunk {
-                "Captured hunk"
-            } else {
-                "Captured diff"
-            }
-            .into(),
-            text,
-            source: None,
-        })
+        Ok((
+            Context {
+                label: if hunk {
+                    "Captured hunk"
+                } else {
+                    "Captured diff"
+                }
+                .into(),
+                text,
+                source: None,
+            },
+            identity.clone(),
+        ))
+    }
+
+    fn ai_hunk_source(&self, root: &Path, identity: &Identity) -> io::Result<Option<Context>> {
+        let diff = self.git.diff().unwrap();
+        if !diff.source_available || !identity.new.present {
+            return Ok(None);
+        }
+        let path = &self.git.diff_view.as_ref().unwrap().path;
+        let empty = self.ai_capture(root, path, Some(0..0), "Hunk source")?;
+        // An index or historical new side must never be presented as working
+        // source when its bytes differ. The diff itself remains inspectable.
+        if empty.source.as_ref().unwrap().fingerprint != identity.new.sha256 {
+            return Ok(None);
+        }
+        let (text, _) = self.ai_source(&empty, true)?;
+        let rows = &diff.rows[self.ai_diff_range(true)?];
+        let first = rows
+            .iter()
+            .filter_map(|r| r.new)
+            .min()
+            .unwrap_or(rows[0].anchor)
+            .min(text.len_lines() - 1);
+        let last = rows.iter().filter_map(|r| r.new).max().unwrap_or(first);
+        let end = if last + 1 < text.len_lines() {
+            text.line_to_char(last + 1)
+        } else {
+            text.len_chars()
+        };
+        self.ai_capture(
+            root,
+            path,
+            Some(text.line_to_char(first)..end),
+            "Hunk source (matches captured new side)",
+        )
+        .map(Some)
     }
 
     fn ai_send(&mut self) -> io::Result<()> {
@@ -760,6 +917,14 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| error("Add AI context first"))?;
         let prompt = conversation.prompt(&self.ai.draft)?;
+        if let Some(identity) = &self.ai.diff_capture
+            && (!self.git_current()
+                || self.git.diff().and_then(|d| d.identity.as_ref()) != Some(identity))
+        {
+            return Err(error(
+                "AI Git context is stale or its revision changed; refresh the diff and recapture context",
+            ));
+        }
         for c in &self.ai.draft.context {
             if c.source.is_some() {
                 self.ai_source(c, true)?;
@@ -829,6 +994,7 @@ impl Editor {
                     self.ai.saved = Some((path, hash));
                     self.ai.dirty = false;
                     self.ai.draft = Draft::default();
+                    self.ai.diff_capture = None;
                     self.ai.plan = None;
                     self.ai.status =
                         "Conversation restored; capture fresh context for follow-up edits".into();

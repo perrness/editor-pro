@@ -154,6 +154,49 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_ai_explain_sessions(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "explain project"
+    root.mkdir()
+    source = root / "source.txt"
+    original = "first\r\nold 界👩‍💻\r\nlast\r\n".encode()
+    source.write_bytes(original)
+    (root / "Cargo.toml").write_text("[package]\n")
+    environment = {"EDITOR_PRO_CODEX": str(Path("tools/ai/fake_codex.py").resolve()),
+                   "EDITOR_PRO_AI_MODEL": "normal"}
+    output = run_session(binary, source, [
+        b"jV\x07", resize(28, 160), (b"Question: Explain what this code does", 10),
+        (b"Repository / project:", 10), (b":2:1", 10),
+        resize(2, 1), resize(28, 160), b"\x1b",
+        # Insertion at the retained cursor proves that dismissing the preview
+        # did not move the source. Undo must leave the exact CRLF/Unicode bytes.
+        b"ihere ", b"\x1b", resize(28, 161), (b"here old", 10), b"u",
+        b"V\x07", b":ai ask What is known about this code?\r", b":ai send\r",
+        (b"Completed", 10), resize(28, 162), (b"Inferred intent / uncertainty:", 10),
+        b"\x1b", b":q!\r",
+    ], original, environment)
+    if capture_dir:
+        (Path(capture_dir) / "ai-explain-selection.ansi").write_bytes(output)
+
+    for args in (["init", "-b", "main"], ["add", "."],
+                 ["-c", "user.name=AI Fixture", "-c", "user.email=ai@example.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "-m", "base"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    updated = original.replace(b"old", b"changed")
+    source.write_bytes(updated)
+    index = (root / ".git/index").read_bytes()
+    output = run_session(binary, source, [
+        b"j", b":diff\r", resize(32, 160), (resize(32, 161), b"@@", 10),
+        b"\x07", resize(32, 160), (b"Question: Explain the behavior changed", 10),
+        (b"Base commit:", 10), (b"Hunk source (matches captured new side)", 10),
+        b":ai send\r", (b"Completed", 10),
+        b"\x1b", resize(32, 161), (b"@@", 10), b"\x1b",
+        b"ihere ", b"\x1b", resize(32, 162), (b"here changed", 10), b"u", b":q!\r",
+    ], updated, environment)
+    assert (root / ".git/index").read_bytes() == index
+    if capture_dir:
+        (Path(capture_dir) / "ai-explain-hunk.ansi").write_bytes(output)
+
+
 def run_disk_refresh_sessions(binary, directory, resize, capture_dir=None):
     source = Path(directory) / "disk-refresh.txt"
     original = "old 界\r\n".encode()
@@ -795,7 +838,8 @@ def main():
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 41 PTY sessions; disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        run_ai_explain_sessions(binary, directory, resize, capture_dir)
+    print("PASS: 43 PTY sessions; contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

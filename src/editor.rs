@@ -180,12 +180,13 @@ impl Editor {
             self.ai_key(key);
             return;
         }
-        if self.view == View::Editing
+        if key == Key::Ctrl('g')
             && self.note_edit.is_none()
-            && matches!(self.mode, Mode::Visual | Mode::VisualLine)
-            && key == Key::Ctrl('g')
+            && matches!(self.mode, Mode::Normal | Mode::Visual | Mode::VisualLine)
+            && self.pending_label().is_empty()
+            && matches!(self.view, View::Editing | View::Lsp | View::Diff)
         {
-            if let Err(e) = self.ai_command("context selection") {
+            if let Err(e) = self.ai_explain("") {
                 self.error(&e.to_string());
             }
             return;

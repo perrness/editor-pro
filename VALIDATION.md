@@ -1738,3 +1738,73 @@ Release preparation bumps the Cargo package and lockfile to **v0.2.11**. The
 stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
+
+## Issue 11 — Contextual Codex explanation shortcuts
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. `Ctrl-g` prepares an
+explanation preview from a Visual selection, selected Outline symbol, or active
+Git hunk. In Normal mode it requests the smallest containing symbol through the
+existing LSP worker. `:ai explain [QUESTION]` provides command access, and
+`:ai ask QUESTION` customizes the draft or asks a follow-up. Only `:ai send`
+starts Codex. The existing read-only provider invocation and separate
+`:ai edits`/`:ai apply` approval remain unchanged.
+
+Previews show the repository/project, exact source range, content fingerprint,
+and Git comparison provenance. Captured hunks include full base/blob/content
+identities and retain a runtime identity check before sending. Matching new-side
+source excerpts support ordinary source links; differing staged/historical
+content and deleted files stay diff-only evidence. Default questions distinguish
+supported behavior from speculation about an author or agent's intent.
+
+All **354 Rust tests** passed (eleven opt-in tests ignored), including seven new
+AI regressions and three LSP regressions. Coverage includes exact unsaved
+Unicode/CRLF selections, control-character-safe previews, zero/one-cell layouts,
+stale selection anchors and edit/undo generations, containing versus selected
+symbols, cancelled or obsolete symbol replies, exact hunk scope and revision
+changes, nested-project repository roots, deleted files, staged/unsaved separation,
+custom follow-ups, provider failure/cancellation, source links/history, and
+cursor/viewport/diff-row restoration. Existing edit-approval and undo tests pass.
+
+Formatting, Clippy with warnings denied, whitespace checks, the debug build,
+and all **14 Python tests** passed:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+```
+
+All **43 PTY sessions** passed, including the two new workflows with the Codex
+protocol double. Reproduction:
+
+```sh
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue11-terminal python3 tools/terminal_smoke.py
+```
+
+The new workflows exercise
+selection and hunk shortcuts, provenance previews, custom questions, answers,
+narrow resizing, source/diff restoration, undo, unchanged CRLF/Unicode source and
+Git index bytes, and terminal restoration. Captures and logs:
+
+- `/tmp/editor-pro-issue11-terminal/ai-explain-selection.ansi`
+- `/tmp/editor-pro-issue11-terminal/ai-explain-hunk.ansi`
+- `/tmp/editor-pro-issue11-rust-tests.log`
+- `/tmp/editor-pro-issue11-terminal-focused.log`
+- `/tmp/editor-pro-issue11-terminal-tests.log`
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process/socket access because the sandbox could not initialize its loopback
+interface. macOS, physical terminals, real language servers and the actual Codex
+provider were not retested. Current-symbol lookup requires a ready supported
+language server; selection and hunk capture do not. Git checks use the existing
+bounded sampled comparisons and cannot exclude an external write after a sample;
+captured evidence retains its exact revision identity.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.12**. The
+stable-tag check, all three CLI/version tests, all three release-tool tests,
+offline Cargo check, formatting and whitespace checks passed. The tag-triggered
+release workflow gates publication and the Homebrew tap update on hosted checks.

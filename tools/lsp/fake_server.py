@@ -315,8 +315,10 @@ while True:
         else:
             send({"id": ident, "result": result})
     elif method == "textDocument/documentSymbol":
-        send({"id": ident, "result": [{"name": "outer", "kind": 5, "range": span(), "selectionRange": span(0, 1),
-              "children": [{"name": "inner", "kind": 6, "range": span(), "selectionRange": span(1, 2)}]}]})
+        outer = span(0, 9) if args.scenario == "ai-symbols" else span()
+        inner = span(4, 9) if args.scenario == "ai-symbols" else span()
+        comprehension_reply(ident, [{"name": "outer", "kind": 5, "range": outer, "selectionRange": span(0, 1),
+              "children": [{"name": "inner", "kind": 6, "range": inner, "selectionRange": span(1, 2)}]}])
     elif method == "workspace/symbol":
         if p["query"] == "empty":
             comprehension_reply(ident, None)

@@ -729,6 +729,27 @@ attachments, provenance and number of prior turns that will be sent; the
 conversation view exposes every prior turn's context. Only `:ai send` launches
 inference. Unsaved text comes from open buffers, never substituted disk reads.
 
+`Ctrl-g` and `:ai explain` prepare a default or custom explanation question using
+the same draft and preview. Visual capture uses the exact live selection and
+clears its anchor when entering AI, so a later command cannot reuse an abandoned
+selection. Outline capture uses the selected result; Normal mode requests document
+symbols through the existing LSP worker and picks the smallest validated range
+containing the original cursor. LSP serial, document, cursor and mode guards discard
+late replies after movement, edits, buffer switches or cancellation. No Codex
+request starts during lookup or preview. Unsupported/missing symbols ask the user
+to select code explicitly.
+
+Previews identify the repository/project, half-open line/scalar-column range and
+source hash. Git capture includes the exact repository/worktree, paths, comparison,
+resolved base commit, blob IDs and full content hashes. A runtime comparison
+identity is retained with the draft and rechecked against current Git state before
+sending; adding context or changing the question does not discard that guard.
+The hunk shortcut additionally captures the matching new-side source range when
+its complete working content matches the comparison. This permits ordinary source
+citations without mislabelling a differing index/historical side as working text.
+Deleted files and differing sides retain diff-only evidence. Repository roots
+take precedence over nested Cargo manifests when starting a conversation.
+
 Source attachments retain the path, full-content hash, scalar slice origin,
 source line and runtime buffer instance/generation. Persistence retains content
 and provenance but drops live edit authority. Each response citation/replacement

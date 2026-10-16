@@ -207,6 +207,97 @@ fn ai_context_uses_selected_symbol_ranges_references_and_labelled_diagnostics() 
 }
 
 #[test]
+fn explain_shortcut_selects_containing_symbol_and_outline_selection_without_sending() {
+    let mut f = Fixture::new("ai-symbols");
+    f.ready();
+    f.editor.document.buffer.insert("local ");
+    f.editor.document.buffer.commit();
+    f.editor.document.buffer.undo();
+    f.editor.document.buffer.set_cursor(5, false);
+    f.editor.viewport.left = 2;
+    let before = f.editor.document.buffer.text().to_string();
+    let cursor = f.editor.document.buffer.cursor();
+    let viewport = f.editor.viewport.clone();
+    f.editor.ai.config.executable = "/missing/codex".into();
+    f.editor.handle_key(Key::Ctrl('g'));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert_eq!(f.editor.view, View::Ai, "{}", f.editor.message);
+    assert_eq!(f.editor.ai.draft.context[0].text, "value");
+    assert_eq!(
+        f.editor.ai.draft.context[0].source.as_ref().unwrap().start,
+        4
+    );
+    assert_eq!(f.editor.ai.draft.question, editor_pro::ai::EXPLAIN_SOURCE);
+    assert!(!f.editor.ai.pending);
+    escape(&mut f.editor);
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.viewport, viewport);
+    f.command("Outline");
+    f.editor.lsp.panel.as_mut().unwrap().selected = 0;
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert_eq!(f.editor.ai.draft.context[0].text, "bad value");
+    assert_eq!(f.editor.document.buffer.text().to_string(), before);
+    escape(&mut f.editor);
+    f.editor
+        .execute_command("ai explain What does this symbol return?")
+        .unwrap();
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert_eq!(f.editor.ai.draft.question, "What does this symbol return?");
+    assert_eq!(f.editor.ai.draft.context[0].text, "value");
+    assert!(!f.editor.ai.pending);
+}
+
+#[test]
+fn explain_symbol_drops_late_results_after_cancel_move_edit_or_buffer_switch() {
+    for change in ["cancel", "move", "edit", "switch"] {
+        let mut f = Fixture::new("comprehension-slow");
+        f.ready();
+        f.editor.handle_key(Key::Ctrl('g'));
+        assert!(f.editor.lsp.pending);
+        match change {
+            "cancel" => f.editor.handle_key(Key::Escape),
+            "move" => f.editor.handle_key(Key::Char('l')),
+            "edit" => f.editor.document.buffer.insert("changed"),
+            "switch" => f
+                .editor
+                .open_buffer(&f.directory.path().join("Other.kt"))
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        let text = f.editor.document.buffer.text().to_string();
+        let cursor = f.editor.document.buffer.cursor();
+        settle(&mut f.editor);
+        assert_eq!(f.editor.view, View::Editing, "{change}");
+        assert!(!f.editor.lsp.pending);
+        assert!(!f.editor.ai.pending);
+        assert!(f.editor.ai.draft.context.is_empty());
+        assert_eq!(f.editor.document.buffer.text().to_string(), text);
+        assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    }
+}
+
+#[test]
+fn explain_symbol_refuses_unrelated_cursor_and_stale_outline() {
+    let mut f = Fixture::new("ai-symbols");
+    f.ready();
+    f.editor.document.buffer.goto_line(1, false);
+    let cursor = f.editor.document.buffer.cursor();
+    f.editor.handle_key(Key::Ctrl('g'));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(f.editor.message.contains("No symbol contains the cursor"));
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    f.command("Outline");
+    f.editor.document.buffer.insert("changed");
+    f.editor.handle_key(Key::Ctrl('g'));
+    assert!(f.editor.message.contains("stale"));
+    assert_eq!(f.editor.view, View::Lsp);
+    assert!(!f.editor.ai.pending);
+    assert!(f.editor.ai.draft.context.is_empty());
+}
+
+#[test]
 fn utf16_roundtrip_and_incremental_changes_preserve_exact_unicode_and_endings() {
     for text in ["a😀e\u{301}界\r\nnext\n", "a\rb\n", "", "😀", "\r\n"] {
         let rope = Rope::from_str(text);

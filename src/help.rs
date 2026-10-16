@@ -595,9 +595,15 @@ const SHORTCUTS: &[Shortcut] = &[
     ),
     entry(
         "AI / Codex",
-        "Visual / VisualLine",
+        "Normal / Visual / VisualLine / Outline / Diff",
         "Ctrl-g",
-        "Capture and preview the exact selected code for an agent question.",
+        "Explain code or Git changes: preview a default Codex question for the selection, containing LSP symbol, selected Outline symbol or active hunk. :ai ask QUESTION customizes it; :ai send explicitly sends it.",
+    ),
+    entry(
+        "AI / Codex",
+        "Command",
+        ":ai explain [QUESTION]",
+        "Prepare a contextual explanation preview, optionally with a custom question. Normal-mode symbol capture requires a ready language server.",
     ),
     entry(
         "AI / Codex",

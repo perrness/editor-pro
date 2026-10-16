@@ -755,8 +755,14 @@ Set `EDITOR_PRO_CODEX` to an executable path if it is not named `codex` on PATH;
 editor does not install providers or read credentials. Ordinary editing, Git,
 review and language features work without Codex.
 
-Start with `:ai context file`, then `:ai ask Explain this code`, inspect the
-preview, and run `:ai send`. Sending transmits the captured text, question and
+Select code with `v`/`V` and press `Ctrl-g` to preview an explanation question.
+The same shortcut explains the active Git hunk in a diff or the selected symbol
+in `:Outline`. In Normal mode, it requests the smallest symbol containing the
+cursor from the current language server (Kotlin, Java or C#); if unavailable,
+select the code explicitly. Inspect the repository, file, range and captured
+revision, optionally use `:ai ask QUESTION`, then run `:ai send`.
+For a whole file, start with `:ai context file` and `:ai ask Explain this code`.
+Sending transmits the captured text, question and
 prior conversation turns to the configured Codex account. No provider starts
 until you send. Context includes unsaved text when the source is open; it never
 silently substitutes disk contents for a dirty buffer. File/test paths use the
@@ -765,7 +771,9 @@ editor's usual current-directory rules and accept spaces without shell quoting.
 | Command / key | Behavior |
 | --- | --- |
 | `:ai context file` | Replace the next turn's context with the active loaded file |
-| Visual `Ctrl-g` | Preview the exact character/line selection, including Unicode and CRLF |
+| Visual `Ctrl-g` | Preview a default explanation question for the exact character/line selection, including Unicode and CRLF |
+| Normal / Outline / Diff `Ctrl-g` | Preview a default explanation question for the containing LSP symbol, selected Outline symbol, or active Git hunk |
+| `:ai explain [QUESTION]` | Prepare the same contextual preview, optionally with a custom question; use Visual `Ctrl-g` to retain a selection |
 | `:ai context symbol` | Capture the selected `:Outline` symbol's full range; requires a current LSP result |
 | `:ai context hunk`, `:ai context diff` | Capture the selected hunk or current file's diff, with comparison labels |
 | `:ai add file PATH`, `:ai add tests PATH` | Add an explicitly selected source/test file; tests are attached as text, not executed |
@@ -795,8 +803,20 @@ This CLI interface does not guarantee token-by-token text streaming. Answers
 separate model observations and cited text from inferred intent; the editor
 validates source identities and coordinates, not the truth of model reasoning.
 Diff/diagnostic/feedback citations identify attachment lines and have no direct
-source jump. Add a source attachment when navigable citations or revisions are
-needed. Old-side historical code is not opened as a writable document.
+source jump. The hunk shortcut also attaches navigable source lines when the
+working file exactly matches the captured new side. A staged or historical new
+side that differs from working source remains diff-only evidence. Add a source
+attachment explicitly when more context is needed. Old-side historical code is
+not opened as a writable document. Hunk questions ask for supported behavior
+separately from speculation about an author's or agent's intent.
+
+Captures stay fixed while you review the preview. Source stamps and complete
+content hashes are checked before sending; Git captures also require a current
+comparison with the same repository, paths, base commit, blobs and content hashes.
+Changed sources or comparisons require recapturing context. Escape restores the
+source cursor/viewport or selected diff row; a second Escape closes the diff.
+Escape also cancels a pending containing-symbol lookup. It does not cancel an
+already sent Codex request; use Ctrl-c or `:ai cancel` for that.
 
 Suggestions can replace unique, nonempty text in supplied source contexts only.
 They cannot name other files, execute commands, or create/rename/delete files.

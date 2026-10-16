@@ -68,6 +68,7 @@ struct Context {
     apply_resolved: bool,
     inline_completion: bool,
     jump_to_single_location: bool,
+    ai_question: Option<String>,
     call_item: Option<Value>,
 }
 pub struct Panel {
@@ -161,6 +162,23 @@ impl LspState {
 }
 
 impl Editor {
+    pub(crate) fn ai_request_symbol(&mut self, question: &str) -> io::Result<()> {
+        let question = if question.is_empty() {
+            crate::ai::EXPLAIN_SOURCE
+        } else {
+            question
+        };
+        crate::ai::Draft {
+            question: question.into(),
+            ..Default::default()
+        }
+        .validate()?;
+        self.lsp_command("Outline", "")?;
+        self.lsp.context.as_mut().unwrap().ai_question = Some(question.into());
+        self.info("Finding the containing symbol for a local AI preview; Escape cancels");
+        Ok(())
+    }
+
     /// Queue directory discovery on the existing manager. No filesystem or
     /// server work occurs on the editor thread. None cancels unused preparation.
     pub fn prepare_lsp(&mut self, directory: Option<PathBuf>) -> io::Result<()> {
@@ -873,6 +891,7 @@ impl Editor {
             apply_resolved: false,
             inline_completion: false,
             jump_to_single_location: false,
+            ai_question: None,
             call_item: None,
         })
     }
@@ -988,8 +1007,38 @@ impl Editor {
             }
             "textDocument/documentSymbol" => {
                 panel.title = "Symbol outline".into();
-                if symbols(&result, &context.path, &mut panel.rows, 0)? {
+                let truncated = symbols(&result, &context.path, &mut panel.rows, 0)?;
+                if truncated {
                     panel.title.push_str(" (outline truncated)");
+                }
+                if context.ai_question.is_some() {
+                    if truncated {
+                        return Err(error(
+                            "Symbol outline is truncated; select code with v/V and Ctrl-g",
+                        ));
+                    }
+                    let mut containing = Vec::new();
+                    for (index, row) in panel.rows.iter().enumerate() {
+                        if let Item::Jump {
+                            path,
+                            symbol_range: Some(range),
+                            ..
+                        } = &row.action
+                            && path == &context.path
+                        {
+                            let range = lsp::scalar_range(self.document.buffer.text(), *range)?;
+                            if range.contains(&context.cursor) {
+                                containing.push((range.len(), index));
+                            }
+                        }
+                    }
+                    panel.selected = containing
+                        .into_iter()
+                        .min()
+                        .map(|(_, index)| index)
+                        .ok_or_else(|| {
+                            error("No symbol contains the cursor; select code with v/V and Ctrl-g")
+                        })?;
                 }
             }
             "workspace/symbol" => {
@@ -1112,12 +1161,16 @@ impl Editor {
             self.info("No language-server results");
             return Ok(());
         }
+        let ai_question = context.ai_question.clone();
         panel.return_mode = context.mode;
         panel.context = Some(context);
         panel.versions = versions;
         self.lsp.panel = Some(panel);
         self.view = View::Lsp;
         self.mode = Mode::Normal;
+        if let Some(question) = ai_question {
+            self.ai_explain(&question)?;
+        }
         Ok(())
     }
     fn completion_edit(

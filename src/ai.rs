@@ -13,6 +13,9 @@ pub const MAX_STORE: usize = 4 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 16;
 pub const MAX_TURNS: usize = 32;
 
+pub const EXPLAIN_SOURCE: &str = "Explain what this code does using the captured evidence. Cite the relevant lines, distinguish supported behavior from uncertainty, and do not suggest edits.";
+pub const EXPLAIN_HUNK: &str = "Explain the behavior changed by this Git hunk using the captured before/after evidence. Cite relevant lines. Treat any explanation of why an author or agent made the change as speculation unless the supplied evidence establishes it. Do not suggest edits.";
+
 #[derive(Clone)]
 pub struct Config {
     pub executable: PathBuf,
