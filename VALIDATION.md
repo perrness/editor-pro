@@ -1989,3 +1989,48 @@ Release preparation bumps the Cargo package and lockfile to **v0.2.14**. The
 stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
+
+## Issue 15 — ASCII startup splash
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. Launching without paths
+shows a centered, themed ASCII wordmark, package version and working shortcut
+hints. Small terminals use compact text. The first decoded key or paste dismisses
+the splash and follows the existing editor behavior; file/directory arguments
+open directly. Background preparation, status messages and terminal restoration
+retain their existing paths. The artwork never becomes document text.
+
+All **372 ordinary Rust tests** passed (13 opt-in tests ignored), including three
+new rendering regressions for all palettes, full/compact/zero-cell resizing,
+an untouched empty buffer and control-safe background errors. All **14 Python
+tests**, formatting, Clippy with warnings denied and the debug build passed.
+All **55 PTY sessions** passed. The nine new sessions cover immediate Insert,
+Unicode paste, undo/redo, exact saved bytes, focus/resize, hidden splash cursor,
+F1 help, Ctrl-p, Normal-mode paste rejection, immediate `:q`, no reappearance
+after `:enew`, and direct existing-file/new-path/directory/`-- FILE` startup.
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue15-terminal python3 tools/terminal_smoke.py
+```
+
+Terminal captures are `/tmp/editor-pro-issue15-terminal/splash-{editing-resize,help,picker,paste,quit}.ansi`.
+The reconstructed initial frame is also saved as `splash.txt` and `splash.svg` in
+that directory. Full logs are `/tmp/editor-pro-issue15-rust-tests.log` and
+`/tmp/editor-pro-issue15-terminal-tests.log`.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands needed normal
+process access because the sandbox failed to initialize its loopback interface.
+macOS and physical-terminal appearance were not tested; real language servers
+and AI providers were not retested for this startup presentation change.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.16**. The
+stable-tag check, all three CLI tests, all eleven rendering tests, all three
+release-tool tests, offline Cargo check, formatting and whitespace checks passed
+again. The tag-triggered workflow gates publication and the Homebrew tap update
+on hosted checks.

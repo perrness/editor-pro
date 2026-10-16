@@ -52,8 +52,14 @@ cargo build --locked --release
 cargo run --locked -- src/main.rs
 ```
 
-Omit paths to start an unnamed buffer. A nonexistent file in an existing
-directory opens empty. Multiple paths open separate buffers; the first is active.
+Omit paths to see the themed ASCII-art welcome screen over an empty unnamed
+buffer. Start immediately with `i` to edit, `Ctrl-p` to find a file, `F1` for
+keyboard help, or `:q` to quit; the first key takes effect as usual. Escape
+dismisses the splash, and small terminals show a compact version. File and
+directory arguments open directly without the splash.
+
+A nonexistent file in an existing directory opens empty. Multiple paths open
+separate buffers; the first is active.
 Pass one directory (`ep .` or `ep path/to/project`) to open its file picker and
 use it as the session's working directory. Directories cannot be mixed with file
 arguments. `--help`, `--version`, and `--config-path` work without a TTY.

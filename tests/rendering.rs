@@ -1,6 +1,108 @@
 use editor_pro::{buffer::Buffer, editor::Editor, file::Document, theme::Theme, ui};
 use ratatui::{Terminal, backend::TestBackend};
 
+fn screen(terminal: &Terminal<TestBackend>) -> String {
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(usize::from(terminal.backend().buffer().area.width).max(1))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn splash_shows_ascii_wordmark_version_and_shortcuts_in_each_theme() {
+    let editor = Editor::new(Document::default());
+    for theme in [Theme::night(), Theme::catppuccin(), Theme::gruvbox()] {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| ui::render_splash(frame, &editor, &theme))
+            .unwrap();
+        let output = screen(&terminal);
+        for expected in [
+            r" / _ \/ __  / / __/ __ \/ ___/_____/ __ \/ ___/ __ \",
+            "editor-pro",
+            env!("CARGO_PKG_VERSION"),
+            "i   start editing",
+            "Ctrl-p   find a file",
+            "F1   keyboard help",
+            ":q   quit",
+            "Start with a shortcut, or press Esc.",
+            "NORMAL",
+        ] {
+            assert!(output.contains(expected), "Missing {expected}:\n{output}");
+        }
+        assert!(output.is_ascii());
+        let cells = &terminal.backend().buffer().content;
+        for color in [theme.type_name, theme.normal, theme.command] {
+            assert!(
+                cells
+                    .iter()
+                    .any(|cell| cell.symbol() == "_" && cell.fg == color)
+            );
+        }
+        assert_eq!(cells[0].bg, theme.background);
+    }
+    assert_eq!(editor.document.buffer.text().len_chars(), 0);
+    assert!(!editor.document.buffer.is_modified());
+    assert_eq!(editor.buffer_count(), 1);
+}
+
+#[test]
+fn splash_resizes_between_artwork_compact_and_zero_cell_layouts() {
+    let editor = Editor::new(Document::default());
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    for (width, height) in [
+        (80, 24),
+        (40, 12),
+        (24, 10),
+        (20, 5),
+        (10, 1),
+        (1, 1),
+        (1, 3),
+        (0, 0),
+        (0, 3),
+        (3, 0),
+        (80, 24),
+    ] {
+        terminal.backend_mut().resize(width, height);
+        terminal
+            .draw(|frame| ui::render_splash(frame, &editor, &Theme::night()))
+            .unwrap();
+        let output = screen(&terminal);
+        if width >= 10 && height > 0 {
+            assert!(output.contains("editor-pro"), "{width}x{height}: {output}");
+        }
+        if width == 80 {
+            assert!(output.contains("Your terminal. Your flow."));
+        } else {
+            assert!(!output.contains("Your terminal. Your flow."));
+        }
+        if width >= 24 && height >= 10 {
+            assert!(output.contains("Ctrl-p"));
+            assert!(output.contains(":q"));
+        }
+    }
+}
+
+#[test]
+fn splash_keeps_background_errors_visible_and_control_safe() {
+    let mut editor = Editor::new(Document::default());
+    editor.message = "Startup failed: \x1b[2J".into();
+    editor.message_is_error = true;
+    let theme = Theme::night();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::render_splash(frame, &editor, &theme))
+        .unwrap();
+    let output = screen(&terminal);
+    assert!(output.contains("Startup failed:"));
+    assert!(!output.contains('\x1b'));
+    assert_eq!(terminal.backend().buffer()[(0, 23)].fg, theme.error);
+}
+
 #[test]
 fn render_shows_text_mode_filename_and_dirty_marker() {
     let mut document = Document::default();

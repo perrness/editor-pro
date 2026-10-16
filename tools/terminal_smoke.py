@@ -154,6 +154,61 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_splash_sessions(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "splash-project"
+    root.mkdir()
+    source = root / "existing.txt"
+    original = "existing 界\r\n".encode()
+    source.write_bytes(original)
+    banner = b"Your terminal. Your flow."
+
+    def capture(name, output):
+        assert banner in output, "Pathless startup did not show the splash"
+        if capture_dir:
+            (Path(capture_dir) / f"splash-{name}.ansi").write_bytes(output)
+
+    destination = root / "new.txt"
+    output = run_session(binary, destination, [
+        resize(10, 24), (b"Esc to begin", 10), resize(1, 1),
+        b"\x1b[I", resize(24, 80), (banner, 10),
+        # The very first key enters Insert; the artwork never enters the buffer.
+        b"ifirst ", b"\x1b", b"u", b"\x12", b"A",
+        "\x1b[200~界é\r\nnext\x1b[201~".encode(), b"\x1b", b":wq new.txt\r",
+    ], "first 界é\nnext".encode(), arguments=[], cwd=root)
+    assert b"\x1b[?25l" in output.split(b"first", 1)[0], "Splash cursor was not hidden"
+    capture("editing-resize", output)
+
+    output = run_session(binary, source, [
+        b"\x1bOP", (b"Help | All", 10), b"\x1b",
+        b":enew\r", resize(24, 81), b":q\r",
+    ], original, arguments=[], cwd=root)
+    assert output.count(banner) == 1, "Splash reappeared after help or :enew"
+    capture("help", output)
+
+    output = run_session(binary, source, [
+        b"\x10", b"existing", (b"\r", b"existing", 10), b":q\r",
+    ], original, arguments=[], cwd=root)
+    capture("picker", output)
+
+    # A paste in Normal is rejected as usual, including command-looking text.
+    output = run_session(binary, source, [
+        b"\x1b[200~:q!\r\x1b[201~", resize(24, 81),
+        (b"Enter Insert mode before pasting", 10),
+        b":q\r",
+    ], original, arguments=[], cwd=root)
+    capture("paste", output)
+
+    output = run_session(binary, source, [b":q\r"], original, arguments=[], cwd=root)
+    capture("quit", output)
+
+    # Existing files, new paths and directories should still open immediately.
+    for arguments in [[source], [root / "not-created.txt"], [root], ["--", source]]:
+        output = run_session(binary, source, [b"\x1b", b":q\r"], original,
+                             arguments=arguments, cwd=root)
+        assert banner not in output, f"Unexpected splash for {arguments!r}"
+    assert not (root / "not-created.txt").exists()
+
+
 def run_ai_explain_sessions(binary, directory, resize, capture_dir=None):
     root = Path(directory) / "explain project"
     root.mkdir()
@@ -930,13 +985,14 @@ def main():
         output = run_session(binary, history_path, history_commands, history_states[-1].encode())
         if capture_dir:
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
+        run_splash_sessions(binary, directory, resize, capture_dir)
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
         run_lsp_startup_session(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 46 PTY sessions; JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 55 PTY sessions; ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

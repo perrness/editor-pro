@@ -48,6 +48,7 @@ ai_store.rs    private transcript loading, atomic persistence and conflict check
 ai_view.rs     context collection, conversations, citations and revision previews
 text.rs      shared grapheme/cell rules
 ui.rs        projects editor state into Ratatui; maintains derived state/viewport
+splash.rs    responsive ASCII startup artwork, separate from document contents
 theme.rs     semantic colors and three selectable palettes
 ```
 
@@ -520,6 +521,14 @@ Terminal setup has a scope guard created before raw mode starts. Both screen
 state and raw mode restoration are attempted on errors. A panic hook restores
 before printing the panic. Cursor shape and bracketed-paste/focus reporting are
 restored too. Signals/job control require a separate future hardening change.
+
+Pathless startup shows themed ASCII artwork over the empty unnamed buffer.
+The event loop owns this one-shot presentation flag; the first decoded key or
+paste clears it and follows normal input handling. Resize, focus and worker
+events keep it visible while the existing status/message rows remain live.
+Rendering does not create text, undo history or a new editor mode/view. Named
+files and directory pickers bypass the splash, and small terminals use compact
+text. There is no timer or extra keypress before editing.
 
 ## Language-server integration
 

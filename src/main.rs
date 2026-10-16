@@ -31,6 +31,7 @@ const HELP: &str = "editor-pro [FILE ...] | editor-pro DIRECTORY
 A terminal-native, Vim-inspired UTF-8 editor. Files may be new paths.
 The ep symlink accepts the same arguments. A directory opens its file picker
 and becomes the working directory for this session (for example, ep .).
+With no paths, a welcome screen shows shortcuts; the first key acts immediately.
 
 Options: -h/--help, -V/--version, --config-path
 Settings: optional config.json in the user configuration directory; --config-path
@@ -156,7 +157,7 @@ fn run() -> io::Result<()> {
     } else {
         None
     };
-    let result = event_loop(&mut terminal, &mut editor, preparation);
+    let result = event_loop(&mut terminal, &mut editor, preparation, path.is_none());
     drop(terminal);
     let restored = restore_terminal();
     // Drop is a fallback for early returns; restoration is deliberately idempotent.
@@ -168,6 +169,7 @@ fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     editor: &mut Editor,
     mut preparation: Option<PathBuf>,
+    mut splash: bool,
 ) -> io::Result<()> {
     let mut previous_mode = None;
     let mut redraw = true;
@@ -185,7 +187,13 @@ fn event_loop(
                 previous_mode = Some(editor.mode);
             }
             let theme = editor.theme.palette();
-            terminal.draw(|frame| ui::render(frame, editor, &theme))?;
+            terminal.draw(|frame| {
+                if splash {
+                    ui::render_splash(frame, editor, &theme);
+                } else {
+                    ui::render(frame, editor, &theme);
+                }
+            })?;
             redraw = false;
             // Directory inspection starts only after the first frame is visible.
             if let Some(directory) = preparation.take() {
@@ -216,11 +224,13 @@ fn event_loop(
             match event::read()? {
                 Event::Key(key) => {
                     if let Some(key) = input::decode(key) {
+                        splash = false;
                         editor.handle_key(key);
                         redraw = true;
                     }
                 }
                 Event::Paste(text) => {
+                    splash = false;
                     editor.paste(&text);
                     redraw = true;
                 }

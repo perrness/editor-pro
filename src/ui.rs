@@ -16,6 +16,34 @@ use crate::{
     theme::Theme,
 };
 
+/// Startup artwork is a read-only projection, never text in the unnamed buffer.
+pub fn render_splash(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme) {
+    let area = frame.area();
+    let base = Style::default().fg(theme.foreground).bg(theme.background);
+    frame.render_widget(Block::default().style(base), area);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if area.height <= 2 {
+        crate::splash::render(frame, area, theme);
+        return;
+    }
+    let height = area.height - 2;
+    crate::splash::render(frame, Rect::new(area.x, area.y, area.width, height), theme);
+    render_status(
+        frame,
+        editor,
+        theme,
+        Rect::new(area.x, area.y + height, area.width, 1),
+    );
+    render_message(
+        frame,
+        editor,
+        theme,
+        Rect::new(area.x, area.y + height + 1, area.width, 1),
+    );
+}
+
 pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
@@ -222,24 +250,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
             frame.set_cursor_position((area.x + (cells - offset) as u16, command_area.y));
         } else {
-            let color = if editor.message_is_error || editor.git.problem().is_some() {
-                theme.error
-            } else {
-                theme.muted
-            };
-            frame.render_widget(
-                Paragraph::new(visible_text(
-                    if editor.message_is_error {
-                        &editor.message
-                    } else {
-                        editor.git.problem().unwrap_or(&editor.message)
-                    },
-                    0,
-                    usize::from(area.width),
-                ))
-                .style(base.fg(color)),
-                command_area,
-            );
+            render_message(frame, editor, theme, command_area);
         }
     }
     if editor.note_edit.is_some() && area.height > 1 {
@@ -316,6 +327,24 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
     }
+}
+
+fn render_message(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Rect) {
+    let color = if editor.message_is_error || editor.git.problem().is_some() {
+        theme.error
+    } else {
+        theme.muted
+    };
+    let message = if editor.message_is_error {
+        &editor.message
+    } else {
+        editor.git.problem().unwrap_or(&editor.message)
+    };
+    frame.render_widget(
+        Paragraph::new(visible_text(message, 0, usize::from(area.width)))
+            .style(Style::default().fg(color).bg(theme.background)),
+        area,
+    );
 }
 
 fn render_picker(

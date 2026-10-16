@@ -29,6 +29,7 @@ pub mod review_snapshot;
 pub mod review_store;
 pub mod review_view;
 pub mod search;
+mod splash;
 pub mod syntax;
 pub mod text;
 pub mod theme;
