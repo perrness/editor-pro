@@ -422,17 +422,31 @@ bounded schema in `review_snapshot.rs`. No new worker, runtime, dependency or
 editing engine is introduced. `:review snapshot` sends an immutable Git request
 and open-buffer Ropes to the existing review I/O worker. It captures a full Git
 baseline once and appends current trees. `:review full` uses that fixed baseline;
-`:review since [ID]` pins one checkpoint. Trees contain exact UTF-8 bytes, raw paths,
+`:review since [ID]` pins one checkpoint. Trees contain exact file bytes, raw paths,
 SHA-256, presence by membership, executable modes and unsaved provenance. Baseline
 Git object IDs are explanatory; stored bytes remain usable if Git prunes objects.
+Text retains the existing version-2 representation. Binary/non-UTF-8 files use an
+optional hex-encoded byte payload with empty text; validation checks its content
+hash, exclusive representation and the same decoded byte limits. Text-only stores
+remain compatible; older readers reject the new binary field. Binary files take
+part in delta/rename detection, but a selected binary comparison reports the
+ordinary unsupported-text-diff error without blocking other paths.
 
 Discovery includes tracked/non-ignored untracked paths, all retained paths and
 named dirty buffers. Dirty text comes from request-time Ropes; clean/unopened text
 comes from disk. Source documents, disk baselines, histories and viewports never
 change. Two content samples must agree before capture; the initial Git baseline
-is checked twice too. Bounds are 512 union paths, 2 MiB per file, 8 MiB per tree,
+is checked twice too. Baseline collection parses modes and object IDs from one
+NUL-delimited tree/index listing, checks all blob sizes with `cat-file --batch-check`,
+then reads them with `cat-file --batch`. The batch protocol contains only validated
+object IDs; filenames and binary payload delimiters cannot become commands.
+Sizes and aggregate limits are checked before reading content. Private temporary
+stdin/stdout files share the existing runner's deadlines, cancellation and output
+bounds. Git process count stays constant as baseline file count grows.
+Bounds are 512 union paths, 2 MiB per file, 8 MiB per tree,
 32 checkpoints, 24 MiB retained source bytes and 32 MiB serialized metadata.
-Unsupported content or exceeded limits refuses the whole capture. This is sampled
+Binary bytes count toward those limits; symlinks, submodules, conflicts and
+exceeded limits refuse the whole capture. This is sampled
 consistency, not a filesystem transaction. Capture has a cooperative 30-second
 Git deadline; filesystem stalls and serialization/fsync are not hard-time bounded.
 

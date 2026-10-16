@@ -471,14 +471,14 @@ fn capture_limits_and_unsupported_files_fail_without_partial_history() {
     r.write("a", "base\n");
     r.commit();
     let e = r.editor();
-    fs::write(r.path("binary"), b"\0binary").unwrap();
+    fs::write(r.path("large"), vec![0; git::CONTENT_LIMIT + 1]).unwrap();
     assert!(
         git::capture_review(&request(&e, &r.path("a")), &Config::default())
             .err()
             .unwrap()
-            .contains("binary")
+            .contains("2 MiB")
     );
-    fs::remove_file(r.path("binary")).unwrap();
+    fs::remove_file(r.path("large")).unwrap();
     for n in 0..review_snapshot::MAX_FILES {
         r.write(&format!("file{n}"), "");
     }
@@ -491,6 +491,385 @@ fn capture_limits_and_unsupported_files_fail_without_partial_history() {
     assert!(!r.path(".git/editor-pro-review.json").exists());
     assert_eq!(text(&e), "base\n");
     assert_eq!(e.view, View::Editing);
+}
+
+#[test]
+fn binary_and_non_utf8_snapshots_roundtrip_without_blocking_text_review() {
+    let r = Repo::new();
+    r.write("a", "base\r\n界👩‍💻\r\n");
+    let logo = "src/main/resources/pdf/assets/bankID_logo.png";
+    fs::create_dir_all(r.path(logo).parent().unwrap()).unwrap();
+    let original = b"\x89PNG\r\n\x1a\n\0original";
+    let revised = b"\x89PNG\r\n\x1a\n\0revision";
+    fs::write(r.path(logo), original).unwrap();
+    fs::write(r.path("encoded"), b"\xff\xfe\x80").unwrap();
+    r.commit();
+    r.write("a", "next\r\n界👩‍💻\r\n");
+    fs::write(r.path(logo), revised).unwrap();
+    fs::write(r.path("untracked"), b"new\0asset").unwrap();
+    let mut e = r.editor();
+    let index = fs::read(r.path(".git/index")).unwrap();
+    let head = r.git(&["rev-parse", "HEAD"]);
+    let status_args = ["--no-optional-locks", "status", "--porcelain=v2", "-z"];
+    let status = r.git(&status_args);
+    act(&mut e, "review snapshot");
+    let repo = e.review.store.as_ref().unwrap().repository.clone();
+    let history = review_store::load(&repo).unwrap().history.unwrap();
+    history.validate().unwrap();
+    for (files, name, expected) in [
+        (&history.baseline.files, logo, original.as_slice()),
+        (&history.checkpoints[0].files, logo, revised.as_slice()),
+        (
+            &history.baseline.files,
+            "encoded",
+            b"\xff\xfe\x80".as_slice(),
+        ),
+        (
+            &history.checkpoints[0].files,
+            "untracked",
+            b"new\0asset".as_slice(),
+        ),
+    ] {
+        let file = files.iter().find(|f| f.path == Path::new(name)).unwrap();
+        assert_eq!(file.bytes(), expected);
+        assert!(file.binary.is_some());
+        assert!(file.text.is_empty());
+    }
+    let stored = fs::read(review_store::store_path(&repo)).unwrap();
+    let encoded: serde_json::Value = serde_json::from_slice(&stored).unwrap();
+    assert!(
+        encoded["history"]["baseline"]["files"][0]
+            .get("binary")
+            .is_none()
+    );
+    act(&mut e, "review full");
+    assert!(hunk_text(&e).contains("base\r"));
+    assert!(hunk_text(&e).contains("next\r"));
+    assert!(e.changed_files().iter().any(|f| f.path == r.path(logo)));
+    e.open_diff(r.path(logo), Comparison::ReviewFull);
+    settle(&mut e);
+    assert!(
+        e.git
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .diff
+            .as_ref()
+            .unwrap_err()
+            .contains("binary")
+    );
+    assert!(e.execute_command("review file reviewed").is_err());
+    assert_eq!(text(&e), "next\r\n界👩‍💻\r\n");
+    drop(e);
+
+    let mut resumed = r.editor();
+    act(&mut resumed, "review since");
+    assert!(resumed.changed_files().is_empty());
+    assert_eq!(
+        resumed
+            .review
+            .store
+            .as_ref()
+            .unwrap()
+            .history
+            .as_ref()
+            .unwrap(),
+        &history
+    );
+    fs::write(r.path(logo), b"\x89PNG\r\n\x1a\n\0external").unwrap();
+    act(&mut resumed, "gitrefresh");
+    assert!(
+        resumed
+            .changed_files()
+            .iter()
+            .any(|f| f.path == r.path(logo))
+    );
+    assert!(resumed.git.diff().unwrap().rows.is_empty());
+    act(&mut resumed, "review snapshot");
+    let later = resumed
+        .review
+        .store
+        .as_ref()
+        .unwrap()
+        .history
+        .as_ref()
+        .unwrap();
+    assert_eq!(later.baseline, history.baseline);
+    assert_eq!(later.checkpoints[0], history.checkpoints[0]);
+    assert_eq!(fs::read(r.path(".git/index")).unwrap(), index);
+    assert_eq!(r.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(r.git(&status_args), status);
+    assert_eq!(fs::read(r.path("encoded")).unwrap(), b"\xff\xfe\x80");
+}
+
+#[test]
+fn binary_changes_and_text_transitions_keep_presence_and_content_identity() {
+    let r = Repo::new();
+    r.write("a", "base\n");
+    r.write("to-binary", "text\n");
+    for name in ["to-text", "deleted", "renamed"] {
+        fs::write(r.path(name), format!("{name}\0asset")).unwrap();
+    }
+    r.commit();
+    let mut e = r.editor();
+    act(&mut e, "review snapshot");
+    fs::write(r.path("to-binary"), b"text\0").unwrap();
+    r.write("to-text", "now text\n");
+    fs::remove_file(r.path("deleted")).unwrap();
+    fs::rename(r.path("renamed"), r.path("moved")).unwrap();
+    fs::write(r.path("added"), b"\xffnew asset").unwrap();
+    r.commit();
+    for command in ["review full", "review since"] {
+        act(&mut e, command);
+        let snapshot = e.git.snapshot.as_ref().unwrap();
+        for (path, status) in [
+            ("to-binary", 'M'),
+            ("to-text", 'M'),
+            ("deleted", 'D'),
+            ("moved", 'R'),
+            ("added", 'A'),
+        ] {
+            assert!(
+                snapshot
+                    .review_changes
+                    .iter()
+                    .any(|entry| entry.path == Path::new(path) && entry.worktree == status),
+                "{command}: {path}"
+            );
+        }
+        assert_eq!(snapshot.review_changes.len(), 5);
+        assert_eq!(
+            snapshot.review_renames[Path::new("moved")],
+            Path::new("renamed")
+        );
+        for path in ["to-binary", "to-text", "deleted", "moved", "added"] {
+            e.open_diff(r.path(path), e.git.comparison.clone());
+            settle(&mut e);
+            assert!(
+                e.git
+                    .snapshot
+                    .as_ref()
+                    .unwrap()
+                    .diff
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("binary")
+            );
+            assert!(e.jump_diff_source().is_err());
+        }
+        e.open_diff(r.path("a"), e.git.comparison.clone());
+        settle(&mut e);
+    }
+    act(&mut e, "review snapshot");
+    act(&mut e, "review since");
+    assert!(e.changed_files().is_empty());
+    r.write("to-text", "later text\n");
+    e.open_diff(r.path("to-text"), e.git.comparison.clone());
+    settle(&mut e);
+    assert!(hunk_text(&e).contains("now text"));
+    assert!(hunk_text(&e).contains("later text"));
+}
+
+#[test]
+fn binary_snapshot_hashes_encoding_and_byte_limits_are_validated() {
+    let r = Repo::new();
+    r.write("a", "base\n");
+    fs::write(r.path("binary"), b"\0\xffpayload").unwrap();
+    r.commit();
+    let e = r.editor();
+    let (repo, capture) = capture(&e, &r.path("a"));
+    let (store, _) = review_store::save_snapshot(&repo, capture).unwrap();
+    let before = fs::read(review_store::store_path(&repo)).unwrap();
+    let history = store.history.as_ref().unwrap();
+    let mut corrupt = history.clone();
+    corrupt.checkpoints[0].files[1].binary.as_mut().unwrap()[0] = 1;
+    assert!(
+        corrupt
+            .validate()
+            .unwrap_err()
+            .contains("Invalid review snapshot")
+    );
+    let mut corrupt = history.clone();
+    corrupt.checkpoints[0].files[1].text = "conflicting text".into();
+    assert!(corrupt.validate().is_err());
+    for invalid in ["0", "gg", "é", &"00".repeat(git::CONTENT_LIMIT + 1)] {
+        let mut value = serde_json::to_value(&store).unwrap();
+        value["history"]["checkpoints"][0]["files"][1]["binary"] = invalid.into();
+        assert!(serde_json::from_value::<editor_pro::review::Store>(value).is_err());
+    }
+    let mut oversized = history.checkpoints[0].files[1].clone();
+    oversized.binary = Some(vec![0; git::CONTENT_LIMIT + 1]);
+    oversized.sha256 = editor_pro::review::fingerprint(oversized.bytes());
+    assert!(review_snapshot::validate_files(&[oversized]).is_err());
+    assert_eq!(fs::read(review_store::store_path(&repo)).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn full_baselines_batch_blob_reads_within_the_git_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.write("a", "base\n");
+    for n in 1..review_snapshot::MAX_FILES {
+        r.write(
+            &format!("file{n:03}\t\n界.txt"),
+            &format!("content {n}\r\n"),
+        );
+    }
+    r.commit();
+    let e = r.editor();
+    let wrapper = tempdir().unwrap();
+    let script = wrapper.path().join("git-wrapper");
+    let log = wrapper.path().join("calls.jsonl");
+    fs::write(&script, format!(
+        "#!/usr/bin/env python3\nimport json, os, sys, time\nwith open({}, 'a') as log:\n    log.write(json.dumps(sys.argv[1:]) + '\\n')\ntime.sleep(0.02)\nos.execvp('git', ['git', *sys.argv[1:]])\n",
+        serde_json::to_string(&log).unwrap()
+    )).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let config = Config {
+        executable: script,
+        ..Default::default()
+    };
+    let index = fs::read(r.path(".git/index")).unwrap();
+    for comparison in [
+        Comparison::Head,
+        Comparison::Index,
+        Comparison::Revision("HEAD".into()),
+    ] {
+        fs::write(&log, "").unwrap();
+        let mut req = request(&e, &r.path("a"));
+        req.comparison = comparison;
+        let (_, captured) = git::capture_review(&req, &config).unwrap();
+        assert_eq!(captured.baseline.files.len(), review_snapshot::MAX_FILES);
+        assert_eq!(captured.files.len(), review_snapshot::MAX_FILES);
+        for (base, live) in captured.baseline.files.iter().zip(&captured.files) {
+            assert_eq!(base.path, live.path);
+            assert_eq!(base.bytes(), live.bytes());
+        }
+        let calls: Vec<Vec<String>> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            calls.len() <= 20,
+            "Expected bounded Git process count, got {}",
+            calls.len()
+        );
+        for option in ["--batch-check", "--batch"] {
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|args| args.iter().any(|arg| arg == option))
+                    .count(),
+                2
+            );
+        }
+    }
+    assert_eq!(fs::read(r.path(".git/index")).unwrap(), index);
+}
+
+#[cfg(unix)]
+#[test]
+fn baseline_batch_limits_are_checked_before_reading_blob_contents() {
+    use std::os::unix::fs::PermissionsExt;
+    for (count, size, error) in [
+        (1, git::CONTENT_LIMIT + 1, "2 MiB"),
+        (4, git::CONTENT_LIMIT, "8 MiB"),
+    ] {
+        let r = Repo::new();
+        r.write("a", "base\n");
+        for n in 0..count {
+            // Repeated object IDs still count once per path toward tree limits.
+            fs::write(r.path(&format!("binary{n}")), vec![0; size]).unwrap();
+        }
+        r.commit();
+        let e = r.editor();
+        let wrapper = tempdir().unwrap();
+        let script = wrapper.path().join("git-wrapper");
+        let marker = wrapper.path().join("contents-requested");
+        fs::write(&script, format!(
+            "#!/usr/bin/env python3\nimport os, sys\nif '--batch' in sys.argv:\n    open({}, 'w').close()\nos.execvp('git', ['git', *sys.argv[1:]])\n",
+            serde_json::to_string(&marker).unwrap()
+        )).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Config {
+            executable: script,
+            ..Default::default()
+        };
+        assert!(
+            git::capture_review(&request(&e, &r.path("a")), &config)
+                .err()
+                .unwrap()
+                .contains(error)
+        );
+        assert!(!marker.exists(), "Oversized content must not be requested");
+        let repo = &e.review.store.as_ref().unwrap().repository;
+        assert!(!review_store::store_path(repo).exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_or_timed_out_batch_reads_preserve_the_store_and_allow_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.write("a", "base\n");
+    r.commit();
+    r.write("a", "next\n");
+    let mut e = r.editor();
+    act(&mut e, "review file reviewed");
+    let repo = e.review.store.as_ref().unwrap().repository.clone();
+    let before = fs::read(review_store::store_path(&repo)).unwrap();
+    let wrapper = tempdir().unwrap();
+    let script = wrapper.path().join("git-wrapper");
+    let marker = wrapper.path().join("pid");
+    for (behavior, expected) in [
+        ("missing", "missing Git blob"),
+        ("truncated", "Incomplete"),
+        ("extra", "Unexpected"),
+        ("slow", "timed out"),
+    ] {
+        fs::write(&script, format!(
+            "#!/usr/bin/env python3\nimport os, subprocess, sys, time\nif '--batch' not in sys.argv:\n    os.execvp('git', ['git', *sys.argv[1:]])\nbehavior = {behavior:?}\nif behavior == 'slow':\n    with open({}, 'w') as marker:\n        marker.write(str(os.getpid()))\n    time.sleep(60)\ndata = sys.stdin.buffer.read()\nif behavior == 'missing':\n    sys.stdout.buffer.write(data.splitlines()[0] + b' missing\\n')\nelif behavior == 'truncated':\n    sys.stdout.buffer.write(data.splitlines()[0] + b' blob 5\\nba')\nelse:\n    result = subprocess.run(['git', *sys.argv[1:]], input=data, capture_output=True, check=True)\n    sys.stdout.buffer.write(result.stdout + b'extra')\n",
+            serde_json::to_string(&marker).unwrap()
+        )).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Config {
+            executable: script.clone(),
+            timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let error = git::capture_review(&request(&e, &r.path("a")), &config)
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{behavior}: {error}");
+        assert_eq!(fs::read(review_store::store_path(&repo)).unwrap(), before);
+        if behavior == "slow" {
+            let pid = fs::read_to_string(&marker).unwrap();
+            assert!(
+                !Command::new("/bin/kill")
+                    .args(["-0", &pid])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+    }
+    act(&mut e, "review snapshot");
+    assert_eq!(records(&e).len(), 1);
+    assert_eq!(
+        e.review
+            .store
+            .as_ref()
+            .unwrap()
+            .history
+            .as_ref()
+            .unwrap()
+            .latest(),
+        1
+    );
 }
 
 #[test]
