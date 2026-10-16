@@ -663,8 +663,8 @@ requests fresh reports after indexing refreshes. Servers declaring inter-file
 dependencies also trigger repulls after other synchronized documents change;
 those reports retain the captured session document stamps through UI acceptance
 and display invalidation.
-No dynamic capability registration, watched-file registration,
-semantic tokens or virtual/decompiled documents are advertised.
+No dynamic capability registration, watched-file registration or semantic tokens
+are advertised. C# enables its metadata-URI extension and configuration setting.
 
 Language results use one contextual list with source-preserving scroll/selection.
 Insert-mode completion additionally uses a cursor-adjacent popup. Its full area is
@@ -696,11 +696,33 @@ and run only after approval. Their subsequent server edits require another
 guarded preview, reusing the code-action continuation path. Hover/signatures, definitions/references,
 document symbols and diagnostic navigation operate on the ordinary documents.
 Normal-mode `gd`/`gr` reuse the definition/reference requests, marking their
-request context to jump directly when exactly one local location is returned.
+request context to jump directly when exactly one supported location is returned.
 Multiple results use the contextual chooser; explicit `:Definition` and
 `:References` retain their lists. Both paths use the same guarded location jump
 and session navigation history. The request marker is subject to the existing
 serial, session, cursor and document guards, so obsolete replies cannot navigate.
+C# definition/reference targets using `csharp:/` are fetched with `csharp/metadata`
+on the same worker, with the existing serial, epoch, document, cursor, cancellation
+and deadline guards. A null/invalid/oversized response or invalid UTF-16 position
+leaves the source/history untouched. `Document` stores the original virtual URI,
+no disk path or baseline, and a read-only Buffer. Mutation entry points and saving
+refuse changes; ordinary movement, search, copy, syntax, buffer switching and
+back/forward history remain available. No temporary source files are created.
+
+The LSP view binds each virtual buffer instance to its owning server and epoch.
+Snapshots use an opaque relative routing token distinct from absolute file paths;
+`Snapshot::uri()` supplies the original URI. Manager routing bypasses filesystem
+root discovery for these snapshots. The worker tracks them for request freshness
+and session lifetime without sending didOpen/didChange/didSave, pull diagnostics
+or edits to the server-owned source. Definition/reference requests from them use
+the original URI. Ordinary disk, Git, edit guards and recent-file discovery see
+no path. At most 32 virtual buffers retain 2 MiB each. Repeated jumps fetch again
+and reuse the same session/URI buffer slot, replacing changed generated text.
+Old-epoch buffers remain readable after restart but cannot issue navigation
+requests; a fresh jump from source obtains a new snapshot. Closed virtual buffers
+cannot be reopened through file history. Other virtual URI schemes, workspace
+symbols and call-hierarchy virtual targets remain explicitly unsupported.
+
 M6 reuses that list for the nested symbol outline, workspace symbols and call
 hierarchy. Workspace symbols use the active project/language session and negotiate
 lazy `location.range` resolution. Call items preserve the server's opaque data

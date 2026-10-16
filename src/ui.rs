@@ -517,7 +517,9 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     } else {
         String::new()
     };
-    let modified = if editor.document.buffer.is_modified() {
+    let modified = if editor.document.buffer.is_read_only() {
+        " [RO]"
+    } else if editor.document.buffer.is_modified() {
         " [+]"
     } else {
         ""

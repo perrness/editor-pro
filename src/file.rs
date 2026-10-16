@@ -24,6 +24,7 @@ pub(crate) struct DiskObservation {
 pub struct Document {
     pub buffer: Buffer,
     path: Option<PathBuf>,
+    virtual_uri: Option<String>,
     baseline: Option<Arc<[u8]>>,
     pub(crate) baseline_generation: u64,
     pub(crate) disk_observation: Option<DiskObservation>,
@@ -37,6 +38,7 @@ impl Default for Document {
         Self {
             buffer: Buffer::new(""),
             path: None,
+            virtual_uri: None,
             baseline: None,
             baseline_generation: 0,
             disk_observation: None,
@@ -66,6 +68,7 @@ impl Document {
             buffer: Buffer::new(text),
             syntax: Syntax::for_path(Some(&path)),
             path: Some(path),
+            virtual_uri: None,
             baseline,
             baseline_generation: 0,
             disk_observation: None,
@@ -76,6 +79,25 @@ impl Document {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Server-owned source has no disk path or save baseline.
+    pub(crate) fn virtual_source(uri: String, text: &str, syntax_path: &Path) -> io::Result<Self> {
+        if text.contains('\0') {
+            return Err(io::Error::other("Virtual source contains NUL bytes"));
+        }
+        let mut buffer = Buffer::new(text);
+        buffer.make_read_only();
+        Ok(Self {
+            buffer,
+            virtual_uri: Some(uri),
+            syntax: Syntax::for_path(Some(syntax_path)),
+            ..Self::default()
+        })
+    }
+
+    pub fn virtual_uri(&self) -> Option<&str> {
+        self.virtual_uri.as_deref()
     }
 
     pub(crate) fn baseline(&self) -> Option<Arc<[u8]>> {
@@ -92,6 +114,9 @@ impl Document {
     }
 
     pub fn display_name(&self) -> String {
+        if let Some(uri) = &self.virtual_uri {
+            return format!("[Read only] {uri}");
+        }
         self.path
             .as_ref()
             .map_or_else(|| "[No Name]".into(), |p| p.display().to_string())
@@ -109,6 +134,9 @@ impl Document {
     /// Save-as adopts a new, previously nonexistent path. Existing destinations
     /// are only replaceable when this document has an exact disk baseline.
     pub fn save(&mut self, destination: Option<&Path>) -> io::Result<()> {
+        if self.buffer.is_read_only() {
+            return Err(io::Error::other("Generated/decompiled source is read only"));
+        }
         self.buffer.commit();
         let path = match destination {
             Some(path) => absolute_path(path)?,

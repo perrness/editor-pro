@@ -2,8 +2,20 @@
 
 `tests/lsp_real.rs` drives the ordinary `Editor`, its background manager, command
 views and edit approvals against installed servers. These tests are opt-in:
-`cargo test --locked --all-targets` compiles them and reports seven ignored tests.
+`cargo test --locked --all-targets` compiles them and reports eight ignored tests in this suite.
 The default suite and `fake_server.py` require no real servers or downloads.
+
+`csharp_generated_and_decompiled_navigation` additionally exercises actual
+`StringBuilder` class/member definitions, navigation from decompiled source to
+`ISerializable`, and a custom source generator's class and method. Its
+`csharp-metadata` fixture references Roslyn from the installed .NET SDK and builds
+the generator in the temporary fixture before server import, without third-party
+NuGet packages. It checks returned declaration lines, read-only buffers, jump-back
+history and unchanged fixture bytes. Run it with the same C# setup below:
+
+```sh
+cargo test --locked --test lsp_real csharp_generated_and_decompiled_navigation -- --ignored --nocapture
+```
 
 ## Provisioning
 

@@ -771,6 +771,99 @@ fn csharp_project() {
 }
 
 #[test]
+#[ignore = "requires pinned csharp-ls and .NET SDK; see tools/lsp/README.md"]
+fn csharp_generated_and_decompiled_navigation() {
+    let mut p = Project::new("csharp-metadata", "Main.cs", "Generator/WidgetGenerator.cs");
+    // Project-reference analyzers need their assembly built before server import.
+    // SDK Roslyn references keep this fixture independent of NuGet packages.
+    let build = std::process::Command::new("dotnet")
+        .args(["build", "Generator/Generator.csproj", "--nologo"])
+        .current_dir(p.directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    p.wait("initial_type_diagnostic", |e| {
+        Project::error_on_marker(e) == Some(true)
+    });
+    p.report["initialized"] = p.state();
+    for (marker, token, kind) in [
+        ("LIBRARY_CLASS", "StringBuilder", "/decompiled/"),
+        ("LIBRARY_METHOD", "Append", "/decompiled/"),
+        ("GENERATED_CLASS", "GeneratedWidget", "/generated/"),
+        ("GENERATED_METHOD", "Message", "/generated/"),
+    ] {
+        p.cursor(marker, token, 1);
+        let origin_cursor = p.editor.document.buffer.cursor();
+        p.editor.handle_key(Key::Char('g'));
+        p.editor.handle_key(Key::Char('d'));
+        p.wait(marker, |e| !e.lsp.pending);
+        if p.editor.view == View::Lsp {
+            // Some overloads have several definitions. Choose a virtual target.
+            let panel = p.editor.lsp.panel.as_mut().unwrap();
+            panel.selected = panel
+                .rows
+                .iter()
+                .position(|r| r.label.contains(kind))
+                .unwrap();
+            p.editor.handle_key(Key::Enter);
+            p.wait("metadata_content", |e| !e.lsp.pending);
+        }
+        assert!(!p.editor.message_is_error, "{}", p.state());
+        let uri = p
+            .editor
+            .document
+            .virtual_uri()
+            .unwrap_or_else(|| panic!("No virtual definition for {marker}: {}", p.state()))
+            .to_owned();
+        assert!(uri.contains(kind), "{uri}");
+        let (row, _) = p.editor.document.buffer.position();
+        let target_line = p.editor.document.buffer.line(row);
+        assert!(
+            target_line.contains(token),
+            "{marker}: wrong target line {target_line}"
+        );
+        assert!(p.editor.document.buffer.is_read_only());
+        assert!(p.editor.execute_command("w").is_err());
+        p.report["checks"][marker] = json!({"status":"passed","uri":uri,"line":target_line});
+        if marker == "LIBRARY_CLASS" {
+            p.cursor("public sealed class StringBuilder", "ISerializable", 1);
+            p.editor.handle_key(Key::Char('g'));
+            p.editor.handle_key(Key::Char('d'));
+            p.wait("navigation_from_decompiled_source", |e| !e.lsp.pending);
+            assert!(
+                p.editor.document.virtual_uri().is_some_and(
+                    |uri| uri.ends_with("/System.Runtime.Serialization.ISerializable.cs")
+                ),
+                "{}",
+                p.state()
+            );
+            assert!(
+                p.editor
+                    .document
+                    .buffer
+                    .line(p.editor.document.buffer.position().0)
+                    .contains("interface ISerializable")
+            );
+            p.editor.handle_key(Key::Ctrl('o'));
+            assert_eq!(p.editor.document.virtual_uri(), Some(uri.as_str()));
+        }
+        p.editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(p.editor.document.path(), Some(p.main.as_path()));
+        assert_eq!(p.editor.document.buffer.cursor(), origin_cursor);
+    }
+    for (path, bytes) in &p.originals {
+        assert_eq!(&fs::read(path).unwrap(), bytes);
+    }
+    p.report["checks"]["disk_unchanged"] = json!({"status":"passed"});
+    p.report["status"] = json!("passed");
+}
+
+#[test]
 #[ignore = "requires pinned official Kotlin LSP, Gradle and JDK 21; see tools/lsp/README.md"]
 fn kotlin_gradle() {
     Project::new(

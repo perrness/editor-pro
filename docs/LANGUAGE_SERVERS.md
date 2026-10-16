@@ -64,9 +64,16 @@ decompiled/generated definitions. Do not equate an advertised category with
 every required method working on every project. In particular, record signature
 help, references, workspace symbols and hierarchy behavior explicitly at M5.
 
-For C# we can initially leave custom metadata URIs disabled. Supporting them later
-requires `csharp/metadata` and a read-only virtual document, rather than treating
-the URI as a local file. No assumption is made that Microsoft's VS Code extension
+For C#, the client now enables `experimental.csharp.metadataUris` and
+`csharp.useMetadataUris`. Definitions/references with `csharp:/` URIs load through
+`csharp/metadata` into read-only virtual buffers, including decompiled assembly
+members and source-generator output. Further navigation uses the original URI
+and the same project/server session. In pinned csharp-ls 0.28.0, metadata
+definitions are empty when this option is disabled. The server sometimes falls
+back to the start of a decompiled file, particularly for constructors; the client
+preserves the returned position. Generated project-reference analyzers must be
+built before their output is available to the server.
+No assumption is made that Microsoft's VS Code extension
 or C# Dev Kit binaries are an interchangeable generic LSP distribution.
 [csharp-ls metadata extension](https://github.com/razzmatazz/csharp-language-server/blob/master/docs/features.md).
 
@@ -179,6 +186,6 @@ they do not replace these real workload checks.
 macOS and physical-terminal appearance remain unobserved. Android, KMP, Razor,
 older .NET targets and multiple-solution selection are not established by these
 fixtures. JDT indexes remain temporary per session. The client still excludes
-snippets, virtual documents, watched-file registration and file resource operations.
+snippets, Kotlin/Java virtual documents, watched-file registration and file resource operations.
 Use the manual workflow in README on your projects before relying on those
 environments; record unsupported and failed behavior separately from passes.

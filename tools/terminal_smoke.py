@@ -807,6 +807,24 @@ def main():
                 assert all(m["params"]["position"] == {"line": 0, "character": 4} for m in requests)
             if capture_dir:
                 (Path(capture_dir) / f"navigation-{scenario}.ansi").write_bytes(output)
+        # C# generated/decompiled navigation uses read-only virtual buffers.
+        metadata_source = lsp_root / "Main.cs"
+        metadata_source.write_text("class Main { Library value; }\n")
+        (lsp_root / "Probe.csproj").write_text("<Project/>")
+        log = lsp_root / "csharp-metadata.jsonl"
+        environment = {"EDITOR_PRO_CSHARP_LSP": json.dumps([
+            sys.executable, str(fake.resolve()), "--log", str(log),
+            "--scenario", "metadata-normal",
+        ])}
+        output = run_session(binary, metadata_source, [
+            (server_ready, 10), b"gd", resize(24, 100), (b"Read-only generated/decompiled", 10),
+            resize(24, 101), (b"[RO]", 10), b"i", resize(24, 100), (b"source is read only", 10),
+            b"gd", resize(24, 101), (b"GeneratedThing", 10),
+            b"\x0f", resize(24, 100), (b"Library", 10),
+            b"\x0f", resize(24, 101), (b"Earlier location", 10), b":q\r",
+        ], b"class Main { Library value; }\n", environment)
+        if capture_dir:
+            (Path(capture_dir) / "csharp-metadata.ansi").write_bytes(output)
         # M7: immutable checkpoints, live external revisions, and retained source.
         repo = Path(directory) / "snapshot project"
         repo.mkdir()
@@ -918,7 +936,7 @@ def main():
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 45 PTY sessions; JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 46 PTY sessions; JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

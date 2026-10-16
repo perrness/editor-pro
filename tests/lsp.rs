@@ -143,9 +143,345 @@ fn current_versions(editor: &Editor) -> Vec<Versioned> {
             text: editor.document.buffer.text().clone(),
             saved: editor.document.save_generation(),
             language: Language::for_path(&path).unwrap(),
+            virtual_source: None,
         },
         version: 1,
     }]
+}
+
+fn csharp_metadata_fixture(scenario: &str) -> Fixture {
+    let mut f = Fixture::new(scenario);
+    let command = f
+        .editor
+        .lsp
+        .config
+        .commands
+        .remove(&Language::Kotlin)
+        .unwrap();
+    let path = f.directory.path().join("Main.cs");
+    fs::write(&path, "class Main { Library value; }\r\n").unwrap();
+    fs::write(f.directory.path().join("Probe.csproj"), "<Project/>").unwrap();
+    let config = f.editor.lsp.config.clone();
+    f.editor = Editor::new(Document::open(&path).unwrap());
+    f.editor.lsp.config = config;
+    f.editor
+        .lsp
+        .config
+        .commands
+        .insert(Language::CSharp, command);
+    if scenario == "metadata-large" {
+        f.editor.lsp.config.request_timeout = Duration::from_secs(5);
+    }
+    f.ready();
+    f
+}
+
+fn gd(editor: &mut Editor) {
+    editor.handle_key(Key::Char('g'));
+    editor.handle_key(Key::Char('d'));
+    until(editor, |e| !e.lsp.pending);
+}
+
+#[test]
+fn csharp_generated_and_decompiled_definitions_are_read_only_and_keep_history() {
+    for scenario in ["metadata-normal", "metadata-generated", "metadata-link"] {
+        let mut f = csharp_metadata_fixture(scenario);
+        let main = f.editor.document.path().unwrap().to_path_buf();
+        f.editor.document.buffer.insert("// unsaved\r\n");
+        f.editor.document.buffer.commit();
+        let original = f.editor.document.buffer.text().to_string();
+        let cursor = f.editor.document.buffer.cursor();
+        gd(&mut f.editor);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert!(f.editor.document.path().is_none());
+        let uri = f.editor.document.virtual_uri().unwrap().to_owned();
+        assert!(uri.starts_with("csharp:"));
+        assert_eq!(f.editor.document.buffer.position(), (0, 12));
+        assert_eq!(f.editor.document.buffer.newline(), "\r\n");
+        let source = f.editor.document.buffer.text().to_string();
+        assert!(f.editor.document.buffer.is_read_only());
+        assert!(f.editor.document.display_name().contains("Read only"));
+        for key in ['i', 'a', 'o', 'x', 'd', 'c', 'p', 'u'] {
+            f.editor.handle_key(Key::Char(key));
+            assert!(f.editor.message.contains("read only"));
+            assert_eq!(f.editor.mode, Mode::Normal);
+        }
+        // Core mutation entry points cannot bypass the document's protection.
+        f.editor.document.buffer.insert("bad");
+        f.editor.document.buffer.replace_range(0..1, "bad");
+        f.editor.document.buffer.delete(true);
+        f.editor.document.buffer.backspace();
+        f.editor.document.buffer.open_line(false);
+        assert!(!f.editor.document.buffer.undo());
+        assert!(!f.editor.document.buffer.redo());
+        assert_eq!(f.editor.document.buffer.text().to_string(), source);
+        assert!(!f.editor.document.buffer.is_modified());
+        for command in ["w", "Format", "Rename renamed", "CodeAction", "Complete"] {
+            assert!(
+                f.editor
+                    .execute_command(command)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("read only")
+            );
+        }
+        let destination = f.directory.path().join("must-not-save.cs");
+        assert!(f.editor.document.save(Some(&destination)).is_err());
+        assert!(!destination.exists());
+        assert_eq!(f.editor.navigation.recent, vec![main.clone()]);
+        f.editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(f.editor.document.path(), Some(main.as_path()));
+        assert_eq!(f.editor.document.buffer.text().to_string(), original);
+        assert_eq!(f.editor.document.buffer.cursor(), cursor);
+        f.editor.handle_key(Key::Ctrl('i'));
+        assert_eq!(f.editor.document.virtual_uri(), Some(uri.as_str()));
+        f.editor.handle_key(Key::Ctrl('o'));
+        gd(&mut f.editor);
+        assert_eq!(f.editor.buffer_count(), 2);
+        assert_eq!(f.editor.document.virtual_uri(), Some(uri.as_str()));
+        assert_eq!(
+            fs::read_to_string(&main).unwrap(),
+            "class Main { Library value; }\r\n"
+        );
+        settle(&mut f.editor);
+        assert!(
+            f.log()
+                .iter()
+                .filter(|m| matches!(
+                    m["method"].as_str(),
+                    Some(
+                        "textDocument/didOpen"
+                            | "textDocument/didChange"
+                            | "textDocument/didSave"
+                            | "textDocument/didClose"
+                    )
+                ))
+                .all(|m| m["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("file:"))
+        );
+    }
+}
+
+#[test]
+fn csharp_navigation_from_virtual_source_uses_original_uri_and_survives_source_close() {
+    let mut f = csharp_metadata_fixture("metadata-normal");
+    gd(&mut f.editor);
+    let decompiled = f.editor.document.virtual_uri().unwrap().to_owned();
+    gd(&mut f.editor);
+    assert!(
+        f.editor
+            .document
+            .virtual_uri()
+            .unwrap()
+            .contains("/generated/Generated%20Thing.g.cs")
+    );
+    let generated = f.editor.document.virtual_uri().unwrap().to_owned();
+    gd(&mut f.editor);
+    assert_eq!(
+        f.editor.document.path().unwrap().file_name().unwrap(),
+        "Main.cs"
+    );
+    f.editor.close_buffer(false).unwrap();
+    f.editor.tick();
+    assert!(f.editor.document.virtual_uri().is_some());
+    gd(&mut f.editor);
+    assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    let uris: Vec<_> = f
+        .log()
+        .into_iter()
+        .filter(|m| m["method"] == "textDocument/definition")
+        .map(|m| {
+            m["params"]["textDocument"]["uri"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(uris[1], decompiled);
+    assert_eq!(uris[2], generated);
+}
+
+#[test]
+fn csharp_virtual_results_work_in_explicit_and_multiple_location_lists() {
+    for (scenario, command) in [
+        ("metadata-normal", "Definition"),
+        ("metadata-generated", "References"),
+        ("metadata-multiple", "Definition"),
+    ] {
+        let mut f = csharp_metadata_fixture(scenario);
+        f.command(command);
+        assert_eq!(f.editor.view, View::Lsp);
+        let panel = f.editor.lsp.panel.as_mut().unwrap();
+        panel.selected = panel.rows.len() - 1;
+        f.editor.handle_key(Key::Enter);
+        until(&mut f.editor, |e| !e.lsp.pending);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert!(f.editor.document.virtual_uri().is_some());
+        assert_eq!(f.editor.view, View::Editing);
+    }
+}
+
+#[test]
+fn csharp_metadata_failures_preserve_source_and_navigation() {
+    for (scenario, message) in [
+        ("metadata-null", "no source text"),
+        ("metadata-nul", "NUL"),
+        ("metadata-large", "2 MiB"),
+        ("metadata-position", "outside"),
+        ("metadata-error", "Cannot decompile"),
+        ("metadata-timeout", "timed out"),
+    ] {
+        let mut f = csharp_metadata_fixture(scenario);
+        let main = f.editor.document.path().unwrap().to_path_buf();
+        let original = f.editor.document.buffer.text().to_string();
+        gd(&mut f.editor);
+        assert!(
+            f.editor.message_is_error,
+            "{scenario}: {}",
+            f.editor.message
+        );
+        assert!(
+            f.editor.message.contains(message),
+            "{scenario}: {}",
+            f.editor.message
+        );
+        assert_eq!(f.editor.document.path(), Some(main.as_path()));
+        assert_eq!(f.editor.document.buffer.text().to_string(), original);
+        assert_eq!(f.editor.buffer_count(), 1);
+        assert!(f.editor.navigate_history(true).is_err());
+    }
+}
+
+#[test]
+fn late_csharp_metadata_cannot_navigate_after_context_changes() {
+    for action in ["cancel", "move", "edit", "switch", "restart"] {
+        let mut f = csharp_metadata_fixture("metadata-slow");
+        f.editor.handle_key(Key::Char('g'));
+        f.editor.handle_key(Key::Char('d'));
+        f.wait_log("csharp/metadata", 1);
+        match action {
+            "cancel" => f.editor.handle_key(Key::Escape),
+            "move" => f.editor.handle_key(Key::Char('l')),
+            "edit" => f.editor.document.buffer.insert("edit"),
+            "switch" => f.editor.new_buffer(),
+            "restart" => f.editor.execute_command("LspRestart").unwrap(),
+            _ => unreachable!(),
+        }
+        settle(&mut f.editor);
+        assert!(f.editor.document.virtual_uri().is_none(), "{action}");
+        assert!(
+            f.editor
+                .buffer_infos()
+                .iter()
+                .all(|b| !b.name.contains("csharp:"))
+        );
+    }
+}
+
+#[test]
+fn csharp_virtual_source_refreshes_in_place_and_rejects_old_server_sessions() {
+    let mut f = csharp_metadata_fixture("metadata-generated");
+    gd(&mut f.editor);
+    let id = f.editor.active_buffer_id;
+    let old_instance = f.editor.document.buffer.instance();
+    f.editor.handle_key(Key::Ctrl('o'));
+    fs::write(
+        f.directory.path().join("protocol.jsonl.source"),
+        "/*😀*/ class Updated {}\r\n",
+    )
+    .unwrap();
+    gd(&mut f.editor);
+    assert_eq!(f.editor.active_buffer_id, id);
+    assert_eq!(f.editor.buffer_count(), 2);
+    assert_ne!(f.editor.document.buffer.instance(), old_instance);
+    assert!(
+        f.editor
+            .document
+            .buffer
+            .text()
+            .to_string()
+            .contains("class Updated")
+    );
+    let epoch = f.editor.lsp.servers.values().next().unwrap().epoch;
+    f.editor.execute_command("LspRestart").unwrap();
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.epoch != epoch && s.capabilities.is_object())
+    });
+    gd(&mut f.editor);
+    assert!(
+        f.editor.message.contains("previous server session"),
+        "{}",
+        f.editor.message
+    );
+    assert_eq!(f.editor.active_buffer_id, id);
+    f.editor.handle_key(Key::Ctrl('o'));
+    gd(&mut f.editor);
+    assert!(f.editor.document.virtual_uri().is_some());
+    assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    assert_ne!(f.editor.active_buffer_id, id);
+}
+
+#[test]
+fn help_defers_csharp_metadata_and_virtual_source_displays_read_only_status() {
+    let mut f = csharp_metadata_fixture("metadata-slow");
+    f.editor.handle_key(Key::Char('g'));
+    f.editor.handle_key(Key::Char('d'));
+    f.wait_log("csharp/metadata", 1);
+    f.editor.handle_key(Key::F1);
+    settle(&mut f.editor);
+    assert!(f.editor.document.virtual_uri().is_none());
+    assert!(f.editor.lsp.pending);
+    f.editor.handle_key(Key::Escape);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(f.editor.document.virtual_uri().is_some());
+    let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("[RO]"), "{screen}");
+    for (w, h) in [(1, 1), (2, 2), (10, 3)] {
+        terminal.backend_mut().resize(w, h);
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+    }
+}
+
+#[test]
+fn csharp_virtual_buffers_do_not_block_source_diagnostics_after_restart() {
+    let mut f = csharp_metadata_fixture("metadata-pull");
+    f.editor.document.buffer.insert("bad ");
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+    });
+    gd(&mut f.editor);
+    assert!(f.editor.document.virtual_uri().is_some());
+    f.editor.handle_key(Key::Ctrl('o'));
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+    });
+    let epoch = f.editor.lsp.servers.values().next().unwrap().epoch;
+    f.editor.execute_command("LspRestart").unwrap();
+    until(&mut f.editor, |e| {
+        e.lsp
+            .servers
+            .values()
+            .any(|s| s.epoch != epoch && s.capabilities.is_object())
+            && e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+    });
+    assert_eq!(f.editor.buffer_count(), 2);
 }
 
 #[test]
@@ -2848,6 +3184,7 @@ fn versioned_utf16_edits_handle_emoji_crlf_and_reject_surrogate_splits() {
             text: editor.document.buffer.text().clone(),
             saved: 0,
             language: Language::Kotlin,
+            virtual_source: None,
         },
         version: 7,
     }];

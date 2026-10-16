@@ -34,6 +34,7 @@ fn settings(language: Language) -> Value {
     match language {
         // JDT LS advertises signature help even when its preference is off.
         Language::Java => json!({"java":{"signatureHelp":{"enabled":true}}}),
+        Language::CSharp => json!({"csharp":{"useMetadataUris":true}}),
         _ => Value::Null,
     }
 }
@@ -263,6 +264,9 @@ async fn manager(
         let mut groups: BTreeMap<ServerKey, Vec<Snapshot>> = BTreeMap::new();
         for doc in docs {
             let route = routes.entry(doc.path.clone()).or_insert_with(|| {
+                if let Some(source) = &doc.virtual_source {
+                    return Ok(source.key.clone());
+                }
                 project_root(&config, &doc.path, doc.language)
                     .map(|root| ServerKey {
                         root,
@@ -1049,6 +1053,9 @@ async fn run(
         "rootUri":root,"workspaceFolders":[{"uri":root,"name":key.root.file_name().unwrap_or_default().to_string_lossy()}],
         "initializationOptions":{"settings":settings(key.language)},
         "capabilities":{
+            "experimental": if key.language == Language::CSharp {
+                json!({"csharp":{"metadataUris":true}})
+            } else { json!({}) },
             "general":{"positionEncodings":["utf-16"]},
             "window":{"workDoneProgress":true},
             "workspace":{"applyEdit":true,"workspaceFolders":true,"configuration":true,
@@ -1131,7 +1138,15 @@ async fn run(
     loop {
         let snapshots = source.borrow_and_update().clone();
         let sync_started = Instant::now();
-        if synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?
+        if synchronize(
+            wire,
+            &capabilities,
+            &mut open,
+            snapshots,
+            &mut version,
+            epoch,
+        )
+        .await?
             && capabilities["diagnosticProvider"]["interFileDependencies"] == true
         {
             pulled.clear();
@@ -1170,6 +1185,7 @@ async fn run(
         if supports(&capabilities, "textDocument/diagnostic") {
             for document in open
                 .values()
+                .filter(|d| d.snapshot.virtual_source.is_none())
                 .filter(|d| pulled.get(&d.snapshot.path) != Some(&d.version))
                 .cloned()
                 .collect::<Vec<_>>()
@@ -1206,11 +1222,11 @@ async fn run(
                         awaiting_edit = None;
                         // The watch channel may have changed since the top of the loop.
                         let snapshots = source.borrow_and_update().clone();
-                        if synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?
+                        if synchronize(wire, &capabilities, &mut open, snapshots, &mut version, epoch).await?
                             && capabilities["diagnosticProvider"]["interFileDependencies"] == true {
                             pulled.clear();
                         }
-                        let error = if !supports(&capabilities, &request.method) {
+                        let error = if !supports_request(&capabilities, key.language, &request.method, &request.params) {
                             Some(format!("Server does not support {}", request.method))
                         } else if !open.values().any(|d| d.snapshot.stamp == request.stamp && d.snapshot.path == request.path) {
                             Some("Request became stale before synchronization".into())
@@ -1282,7 +1298,8 @@ async fn run(
                             && value["kind"] == "full" {
                             let items = diagnostics(&value["items"])?;
                             let dependencies = (capabilities["diagnosticProvider"]["interFileDependencies"] == true)
-                                .then(|| p.documents.iter().map(|d| (d.snapshot.path.clone(), d.snapshot.stamp.clone())).collect());
+                                .then(|| p.documents.iter().filter(|d| d.snapshot.virtual_source.is_none())
+                                    .map(|d| (d.snapshot.path.clone(), d.snapshot.stamp.clone())).collect());
                             emit(events, Event::Diagnostics { key:key.clone(),epoch,document:document.clone(),dependencies,versioned:true,items }).await?;
                         }
                     } else {
@@ -1316,7 +1333,12 @@ async fn synchronize(
     open: &mut BTreeMap<PathBuf, Versioned>,
     snapshots: Vec<Snapshot>,
     version: &mut i32,
+    epoch: u64,
 ) -> io::Result<bool> {
+    let snapshots: Vec<_> = snapshots
+        .into_iter()
+        .filter(|s| s.virtual_source.as_ref().is_none_or(|v| v.epoch == epoch))
+        .collect();
     let changed = snapshots.len() != open.len()
         || snapshots.iter().any(|snapshot| {
             open.get(&snapshot.path)
@@ -1337,7 +1359,7 @@ async fn synchronize(
         .cloned()
         .collect();
     for path in closed {
-        if open_close {
+        if open_close && open[&path].snapshot.virtual_source.is_none() {
             wire.notify(
                 "textDocument/didClose",
                 json!({"textDocument":{"uri":file_uri(&path)?}}),
@@ -1347,6 +1369,19 @@ async fn synchronize(
         open.remove(&path);
     }
     for snapshot in snapshots {
+        // Metadata/generated documents belong to the server's workspace. Track
+        // their lifetime for routing/staleness without opening editable copies
+        // or sending didChange/didSave back to the server.
+        if snapshot.virtual_source.is_some() {
+            open.insert(
+                snapshot.path.clone(),
+                Versioned {
+                    snapshot,
+                    version: 0,
+                },
+            );
+            continue;
+        }
         let previous = open.get(&snapshot.path);
         let saved_changed = previous.is_some_and(|p| p.snapshot.saved != snapshot.saved);
         let replacement = previous.is_some_and(|p| {

@@ -152,6 +152,8 @@ while True:
     ident = message.get("id")
     if method == "initialize":
         root = p["rootUri"]
+        if args.scenario.startswith("metadata-"):
+            assert p["capabilities"]["experimental"]["csharp"]["metadataUris"] is True
         if args.scenario.startswith("completion-command"):
             assert "command" in p["capabilities"]["textDocument"]["completion"]["completionItem"]["resolveSupport"]["properties"]
         if args.scenario == "java-settings":
@@ -184,6 +186,8 @@ while True:
                 caps["completionProvider"]["resolveProvider"] = False
         if args.scenario.startswith("pull"):
             caps["diagnosticProvider"] = {"interFileDependencies": args.scenario == "pull-dependencies", "workspaceDiagnostics": False}
+        if args.scenario == "metadata-pull":
+            caps["diagnosticProvider"] = {"interFileDependencies": True, "workspaceDiagnostics": False}
         if args.scenario == "encoding":
             caps["positionEncoding"] = "utf-8"
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "fake"}]}})
@@ -196,7 +200,7 @@ while True:
     elif method == "textDocument/didOpen":
         doc = p["textDocument"]
         documents[doc["uri"]] = {"text": doc["text"], "version": doc["version"]}
-        if not args.scenario.startswith("pull"):
+        if not args.scenario.startswith("pull") and args.scenario != "metadata-pull":
             diagnostics(doc["uri"], doc["version"])
         if not args.scenario.startswith("lifecycle"):
             send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "end"}}})
@@ -217,7 +221,7 @@ while True:
                 old["text"] = change["text"]
         old["version"] = doc["version"]
         record({"event": "content", "uri": doc["uri"], **old})
-        if not args.scenario.startswith("pull"):
+        if not args.scenario.startswith("pull") and args.scenario != "metadata-pull":
             diagnostics(doc["uri"], doc["version"])
     elif method == "textDocument/didClose":
         documents.pop(p["textDocument"]["uri"], None)
@@ -316,6 +320,24 @@ while True:
         send({"id": ident, "result": {"activeSignature": 0, "activeParameter": 1,
               "signatures": [{"label": "greet(name, count)", "documentation": "Signature documentation"}]}})
     elif method in ("textDocument/definition", "textDocument/references"):
+        if args.scenario.startswith("metadata-"):
+            origin = p["textDocument"]["uri"]
+            uri = "csharp:" + urlparse(root).path + "/Probe.csproj/decompiled/Library.cs"
+            if args.scenario == "metadata-generated" or "/decompiled/" in origin:
+                uri = "csharp:" + urlparse(root).path + "/Probe.csproj/generated/Generated%20Thing.g.cs"
+            if "/generated/" in origin:
+                uri = root + "/Main.cs"
+            start = 0 if uri.startswith("file:") else 13
+            if args.scenario == "metadata-position":
+                start = 999
+            location = {"uri": uri, "range": span(start, start + 1)}
+            result = [location]
+            if args.scenario == "metadata-multiple":
+                result.insert(0, {"uri": root + "/Main.cs", "range": span(0, 1)})
+            if args.scenario == "metadata-link":
+                result = [{"targetUri": uri, "targetSelectionRange": location["range"], "targetRange": span(0, 30)}]
+            send({"id": ident, "result": result})
+            continue
         uri = root + "/Other.kt"
         start = 5 if args.scenario == "navigation-unicode" else 0
         if args.scenario == "navigation-virtual":
@@ -334,6 +356,29 @@ while True:
         elif args.scenario == "navigation-empty":
             result = None if method == "textDocument/definition" else []
         if args.scenario == "navigation-slow":
+            later({"id": ident, "result": result})
+        else:
+            send({"id": ident, "result": result})
+    elif method == "csharp/metadata":
+        assert p["textDocument"]["uri"].startswith("csharp:")
+        source = "/*😀*/ class Library {\r\n    public void Method() {}\r\n}\r\n"
+        if "/generated/" in p["textDocument"]["uri"]:
+            source = source.replace("Library", "GeneratedThing")
+        replacement_source = Path(args.log + ".source")
+        if replacement_source.exists():
+            source = replacement_source.read_text()
+        if args.scenario == "metadata-nul":
+            source += "\0"
+        elif args.scenario == "metadata-large":
+            source = "a" * (2 * 1024 * 1024 + 1)
+        result = {"source": source, "assemblyName": "Test", "symbolName": "Library", "projectName": "Probe"}
+        if args.scenario == "metadata-null":
+            result = None
+        if args.scenario == "metadata-error":
+            send({"id": ident, "error": {"code": -32603, "message": "Cannot decompile"}})
+        elif args.scenario == "metadata-timeout":
+            continue
+        elif args.scenario == "metadata-slow":
             later({"id": ident, "result": result})
         else:
             send({"id": ident, "result": result})

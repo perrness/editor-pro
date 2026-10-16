@@ -42,6 +42,7 @@ pub struct Buffer {
     newline: &'static str,
     edits: Vec<TextEdit>,
     generation: u64,
+    read_only: bool,
 }
 
 impl Buffer {
@@ -71,11 +72,20 @@ impl Buffer {
             newline,
             edits: Vec::new(),
             generation: 0,
+            read_only: false,
         }
     }
 
     pub fn text(&self) -> &Rope {
         &self.text
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub(crate) fn make_read_only(&mut self) {
+        self.read_only = true;
     }
 
     pub fn cursor(&self) -> usize {
@@ -129,7 +139,7 @@ impl Buffer {
     /// Replace a range produced by a motion/selection. Callers use grapheme
     /// boundaries; the cursor is snapped again because deletion can join clusters.
     pub fn replace_range(&mut self, range: Range<usize>, text: &str) {
-        if range.is_empty() && text.is_empty() {
+        if self.read_only || (range.is_empty() && text.is_empty()) {
             return;
         }
         self.begin();
@@ -232,7 +242,7 @@ impl Buffer {
 
     /// Insert one typed character or one bracketed paste. The caller groups undo.
     pub fn insert(&mut self, text: &str) {
-        if text.is_empty() {
+        if self.read_only || text.is_empty() {
             return;
         }
         self.begin();
@@ -248,6 +258,9 @@ impl Buffer {
     }
 
     pub fn backspace(&mut self) {
+        if self.read_only {
+            return;
+        }
         let (line_index, column) = self.position();
         if self.cursor == 0 {
             return;
@@ -266,6 +279,9 @@ impl Buffer {
 
     /// Delete at the cursor; Insert Delete may join lines, Normal x never does.
     pub fn delete(&mut self, join_lines: bool) {
+        if self.read_only {
+            return;
+        }
         let (line_index, column) = self.position();
         let line = self.line(line_index);
         let length = line.chars().count();
@@ -366,6 +382,9 @@ impl Buffer {
 
     /// Open a line above/below in the same undo transaction as subsequent typing.
     pub fn open_line(&mut self, above: bool) {
+        if self.read_only {
+            return;
+        }
         self.begin();
         if above {
             self.line_start();
@@ -430,6 +449,9 @@ impl Buffer {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         self.commit();
         if let Some(before) = self.undo.pop_back() {
             self.redo.push(self.snapshot());
@@ -441,6 +463,9 @@ impl Buffer {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         self.commit();
         if let Some(after) = self.redo.pop() {
             self.undo.push_back(self.snapshot());

@@ -88,6 +88,7 @@ fn measure(name: &str, main: &str, target: &str, warm: bool, browse: Duration) -
         text: text.clone(),
         saved: 0,
         language,
+        virtual_source: None,
     };
     let started = Instant::now();
     let mut worker = warm.then(|| Worker::new(config.clone()).unwrap());

@@ -80,14 +80,28 @@ pub struct Stamp {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub stamp: Stamp,
+    /// Absolute disk path, or an opaque relative routing identity for virtual source.
+    /// Only `uri()` may convert this identity to a protocol URI.
     pub path: PathBuf,
     pub text: Rope,
     pub saved: u64,
     pub language: Language,
+    pub virtual_source: Option<VirtualSource>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VirtualSource {
+    pub uri: String,
+    pub key: ServerKey,
+    pub epoch: u64,
+}
+
 impl Snapshot {
     pub fn uri(&self) -> io::Result<Url> {
-        file_uri(&self.path)
+        match &self.virtual_source {
+            Some(source) => Url::parse(&source.uri).map_err(io::Error::other),
+            None => file_uri(&self.path),
+        }
     }
     pub fn same_document(&self, other: &Self) -> bool {
         self.stamp == other.stamp && self.path == other.path && self.saved == other.saved
@@ -432,4 +446,28 @@ pub fn supports(capabilities: &Value, method: &str) -> bool {
         _ => return false,
     };
     capabilities[key] == true || capabilities[key].is_object()
+}
+
+pub fn is_csharp_metadata_uri(uri: &str) -> bool {
+    uri.len() <= 8192
+        && !uri.chars().any(char::is_control)
+        && Url::parse(uri).is_ok_and(|uri| uri.scheme() == "csharp")
+}
+
+/// csharp-ls negotiates metadata URIs through a client extension, rather than a
+/// standard server capability. Keep that exception scoped to C# and its URIs.
+pub fn supports_request(
+    capabilities: &Value,
+    language: Language,
+    method: &str,
+    params: &Value,
+) -> bool {
+    if method == "csharp/metadata" {
+        language == Language::CSharp
+            && params["textDocument"]["uri"]
+                .as_str()
+                .is_some_and(is_csharp_metadata_uri)
+    } else {
+        supports(capabilities, method)
+    }
 }

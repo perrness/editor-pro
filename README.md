@@ -622,7 +622,7 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 | `:Hover` | Read documentation at the cursor |
 | `:Signature` | Show signatures and the active parameter |
 | Normal `gd`, `gr` | Request definitions or references at the cursor; jump directly to a single location, or choose from multiple results |
-| `:Definition`, `:References` | List locations; Enter opens an ordinary source buffer |
+| `:Definition`, `:References` | List locations; Enter opens source, including read-only C# generated/decompiled documents |
 | `:Diagnostics` | List current diagnostics across open sources; Enter jumps |
 | `:Dnext`, `:Dprev` | Navigate diagnostics in the current buffer, wrapping |
 | `:Rename NEW_NAME` | Propose a symbol rename, including edits to other files |
@@ -642,6 +642,18 @@ locations; `Ctrl-o` returns after a jump, and `Ctrl-i`/Tab goes forward again.
 These shortcuts require a ready language server for the current source file.
 Escape cancels a pending request; moving, editing or switching buffers discards
 obsolete results. No matches or unavailable targets leave the source in place.
+C# enables `csharp-ls` metadata URIs, so `gd` can open classes and members in
+compiled assemblies and source-generator output. These buffers show `[RO]`,
+support searching, copying, further `gd`/`gr` navigation and history, and cannot
+be edited or saved. The editor fetches source from the owning server, preserving
+its URI and UTF-16 location; it does not create a temporary project file.
+Repeated jumps refresh generated output in the same buffer. After a server
+restart, return to project source and jump again to obtain a current snapshot.
+Virtual source is limited to 2 MiB per document and 32 open buffers.
+The server still needs a successfully imported project and resolved references;
+project-reference source generators may need to be built first. Empty definitions
+include a hint to check `:LspInfo` and `:LspLog`. Exact overload/constructor
+locations depend on the server; some decompiled targets point to the file start.
 Documentation is displayed as plain text, including Markdown source.
 In Insert mode, typing an identifier or a server-advertised trigger such as `.`
 requests suggestions after a 120 ms pause. The popup keeps the source and cursor
@@ -691,8 +703,10 @@ requiring `:LspRestart`. Logs are bounded and session-local. JDT workspace index
 are discarded on shutdown, so warm indexes do not survive editor restarts.
 
 File create/rename/delete operations, annotated edits, duplicate edit entries for
-one URI, edits outside the root, virtual/decompiled sources, dynamic capability
-registration and watched-file registration are unsupported. Unopened,
+one URI, edits outside the root, edits to virtual sources, dynamic capability
+registration and watched-file registration are unsupported. Virtual navigation
+currently supports C# `csharp:/` definition/reference results; Kotlin/Java custom
+source schemes and virtual workspace-symbol/call-hierarchy targets remain unsupported. Unopened,
 unversioned edit targets are read when a proposal arrives; external changes
 before that point cannot be proven absent. Subsequent disk/buffer changes reject
 the entire proposal. Server-specific import extensions and framework support

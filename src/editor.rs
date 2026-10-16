@@ -469,6 +469,31 @@ impl Editor {
             self.pending.find = Some((ch.is_uppercase(), matches!(ch, 't' | 'T')));
             return;
         }
+        if self.document.buffer.is_read_only()
+            && (matches!(
+                key,
+                Key::Char(
+                    'd' | 'c'
+                        | 'D'
+                        | 'C'
+                        | 'x'
+                        | 's'
+                        | 'p'
+                        | 'P'
+                        | 'i'
+                        | 'a'
+                        | 'I'
+                        | 'A'
+                        | 'O'
+                        | 'u'
+                ) | Key::Delete
+                    | Key::Ctrl('r')
+            ) || (key == Key::Char('o') && self.selection_anchor.is_none()))
+        {
+            self.pending = Pending::default();
+            self.error("Generated/decompiled source is read only");
+            return;
+        }
         let motion = match key {
             Key::Char('h') | Key::Left => Some(Motion::Left),
             Key::Char('l') | Key::Right => Some(Motion::Right),

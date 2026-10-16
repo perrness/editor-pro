@@ -1608,6 +1608,73 @@ stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
 
+## C# generated and decompiled definition navigation
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. The client enables
+csharp-ls metadata URIs and fetches `csharp:/` definition/reference targets using
+`csharp/metadata`. These open as read-only, syntax-highlighted buffers with
+original URI/session routing, UTF-16 positions and ordinary navigation history.
+They have no disk path, cannot be edited/saved, and never become editable server
+documents. Repeated jumps refresh generated output in its existing buffer slot.
+
+Eight new deterministic regressions cover generated/decompiled Location and
+LocationLink targets, Unicode/CRLF, explicit and multiple-result lists, further
+navigation with original encoded URIs, source-buffer closure, dirty-source
+preservation, read-only keys/core mutations/save rejection, buffer reuse/refresh,
+restart epochs, Help deferral, rendering, empty/error/oversized/NUL/invalid-position
+responses, timeouts and late replies after cancellation/movement/edits/switches.
+Retained virtual buffers cannot prevent fresh source diagnostics after restart.
+Existing unsupported schemes still fail explicitly.
+
+| Command/check | Result |
+| --- | --- |
+| `cargo fmt --check`, `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed after final changes. |
+| `cargo test --locked --all-targets` | **369 passed**, zero failed, 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed; rebuilt debug executable. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | **8 passed**. |
+| `python3 tools/terminal_smoke.py` | All **46 PTY sessions** passed, including the added C# session. The old printed count was corrected afterward. |
+| Final focused C# PTY rerun | Passed with the rebuilt executable: virtual jumps, `[RO]`, edit refusal, back navigation, unchanged disk bytes and terminal restoration. |
+| `cargo test --locked --test lsp_real csharp_ -- --ignored --nocapture --test-threads=1` | All **3 real C# fixtures passed** in 36.05 seconds. |
+
+Actual csharp-ls **0.28.0** with .NET SDK **10.0.402** resolved `StringBuilder`,
+its `Append` members, a custom generator's `GeneratedWidget` class and `Message`
+method, and a further jump from decompiled `StringBuilder` to `ISerializable`.
+The new temporary fixture builds its analyzer from SDK Roslyn references, with
+no third-party NuGet dependencies. Returned declaration lines, read-only state,
+jump-back cursor restoration and unchanged original fixture bytes are asserted.
+The existing project and multi-project solution fixtures also passed their
+editing/completion/diagnostics/rename/restart workflows with metadata enabled.
+
+The first constructor probe returned the server's documented file-start fallback.
+Explicit type references resolved to declarations. The `Append` call returned
+multiple overload locations, so acceptance exercises the chooser; exact overload
+and constructor precision remains a server limitation, not proof of universal
+symbol resolution. Project import, dependency resolution and source-generator
+builds still determine which symbols the server can provide. Kotlin/Java virtual
+sources and virtual workspace-symbol/call-hierarchy navigation remain unsupported.
+macOS, physical terminals, other C# server implementations and the user's project
+were not tested.
+
+Reports and captures:
+
+- `/tmp/editor-pro-csharp-metadata-reports/csharp-metadata.json`
+- `/tmp/editor-pro-csharp-metadata-reports/csharp-project.json`
+- `/tmp/editor-pro-csharp-metadata-reports/csharp-solution.json`
+- `/tmp/editor-pro-csharp-terminal/csharp-metadata-final.ansi`
+- `/tmp/editor-pro-csharp-final-tests.log`
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Actual servers used the
+existing `/tmp/editor-pro-issue7-servers` installation and SDK under
+`/tmp/editor-pro-issue7-dotnet`, with a temporary CLI home. Normal process/socket
+access was required because the filesystem sandbox could not initialize loopback.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.15**. The
+stable-tag check, all three CLI/version tests, all three release-tool tests,
+offline Cargo check, formatting and whitespace checks passed. The tag-triggered
+release workflow gates publication and the Homebrew tap update on hosted checks.
+
 ## Issue 9 — Searchable keyboard help
 
 Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. F1 opens a read-only

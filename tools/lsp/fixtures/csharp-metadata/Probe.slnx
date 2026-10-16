@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Probe.csproj" />
+  <Project Path="Generator/Generator.csproj" />
+</Solution>

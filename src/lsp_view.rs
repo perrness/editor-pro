@@ -26,6 +26,7 @@ pub struct LspState {
     pub installations: BTreeMap<Language, crate::lsp_install::State>,
     worker: Option<Worker>,
     snapshots: Vec<Snapshot>,
+    virtual_sources: BTreeMap<u64, lsp::VirtualSource>,
     sessions: BTreeSet<ServerKey>,
     warm_sessions: BTreeSet<ServerKey>,
     pub discovering: bool,
@@ -71,6 +72,7 @@ struct Context {
     jump_to_single_location: bool,
     ai_question: Option<String>,
     call_item: Option<Value>,
+    virtual_target: Option<(String, Position)>,
 }
 pub struct Panel {
     pub title: String,
@@ -92,6 +94,10 @@ pub struct Row {
 }
 enum Item {
     Text,
+    VirtualJump {
+        uri: String,
+        position: Position,
+    },
     Jump {
         path: PathBuf,
         position: Position,
@@ -263,8 +269,16 @@ impl Editor {
         std::iter::once((self.active_buffer_id, active))
             .chain(self.buffers.iter().map(|(id, slot)| (*id, &slot.document)))
             .filter_map(|(id, doc)| {
-                let path = doc.path()?;
-                let language = Language::for_path(path)?;
+                let virtual_source = self
+                    .lsp
+                    .virtual_sources
+                    .get(&doc.buffer.instance())
+                    .cloned();
+                let path = lsp_identity(doc)?;
+                let language = virtual_source
+                    .as_ref()
+                    .map(|v| v.key.language)
+                    .or_else(|| Language::for_path(&path))?;
                 if doc.buffer.text().len_bytes() > lsp::MAX_DOCUMENT_BYTES {
                     return None;
                 }
@@ -274,10 +288,11 @@ impl Editor {
                         instance: doc.buffer.instance(),
                         generation: doc.buffer.generation(),
                     },
-                    path: path.into(),
+                    path,
                     text: doc.buffer.text().clone(),
                     saved: doc.save_generation(),
                     language,
+                    virtual_source,
                 })
             })
             .collect()
@@ -287,7 +302,7 @@ impl Editor {
             && self.active_buffer_id == context.stamp.buffer_id
             && self.document.buffer.instance() == context.stamp.instance
             && self.document.buffer.generation() == context.stamp.generation
-            && self.document.path() == Some(context.path.as_path())
+            && lsp_identity(&self.document).as_ref() == Some(&context.path)
             && self.document.buffer.cursor() == context.cursor
             && self.lsp_edit_guards() == context.guards
             && self
@@ -300,6 +315,18 @@ impl Editor {
                 || (self.view == View::Editing && self.mode == Mode::Insert))
     }
     pub(crate) fn tick_lsp(&mut self) -> bool {
+        if !self.lsp.virtual_sources.is_empty() {
+            let active = self
+                .note_edit
+                .as_ref()
+                .map_or(&self.document, |note| &note.source);
+            let instances: BTreeSet<_> = std::iter::once(active.buffer.instance())
+                .chain(self.buffers.values().map(|s| s.document.buffer.instance()))
+                .collect();
+            self.lsp
+                .virtual_sources
+                .retain(|instance, _| instances.contains(instance));
+        }
         let snapshots = self.lsp_snapshots();
         if self.lsp.worker.is_none() && !snapshots.is_empty() {
             match Worker::new(self.lsp.config.clone()) {
@@ -714,11 +741,8 @@ impl Editor {
                 return Ok(());
             }
             "LspRestart" => {
-                let path = self
-                    .document
-                    .path()
-                    .ok_or_else(|| error("Name a source file first"))?
-                    .to_path_buf();
+                let path = lsp_identity(&self.document)
+                    .ok_or_else(|| error("Name a source file first"))?;
                 self.lsp
                     .worker
                     .as_ref()
@@ -772,11 +796,21 @@ impl Editor {
         if self.document.buffer.text().len_bytes() > lsp::MAX_DOCUMENT_BYTES {
             return Err(error("LSP documents are limited to 2 MiB"));
         }
-        let uri = lsp::file_uri(
-            self.document
-                .path()
-                .ok_or_else(|| error("Name a source file first"))?,
-        )?;
+        if self.document.buffer.is_read_only()
+            && matches!(name, "Complete" | "Rename" | "CodeAction" | "Format")
+        {
+            return Err(error("Generated/decompiled source is read only"));
+        }
+        let uri = if let Some(uri) = self.document.virtual_uri() {
+            uri.to_owned()
+        } else {
+            lsp::file_uri(
+                self.document
+                    .path()
+                    .ok_or_else(|| error("Name a source file first"))?,
+            )?
+            .to_string()
+        };
         let position = lsp::position(self.document.buffer.text(), self.document.buffer.cursor())?;
         let mut params = json!({"textDocument":{"uri":uri},"position":position});
         match name {
@@ -847,7 +881,7 @@ impl Editor {
             ));
         }
         let info = &self.lsp.servers[&context.key];
-        if !lsp::supports(&info.capabilities, method) {
+        if !lsp::supports_request(&info.capabilities, context.key.language, method, &params) {
             return Err(error(&format!("Server does not support {method}")));
         }
         self.lsp.serial += 1;
@@ -874,15 +908,11 @@ impl Editor {
     }
 
     fn lsp_request_context(&self) -> io::Result<Context> {
-        let path = self
-            .document
-            .path()
-            .ok_or_else(|| error("Name a source file first"))?
-            .to_path_buf();
+        let path = lsp_identity(&self.document).ok_or_else(|| error("Name a source file first"))?;
         if let Some(message) = self.lsp.unavailable.get(&path) {
             return Err(error(message));
         }
-        if Language::for_path(&path).is_none() {
+        if self.document.virtual_uri().is_none() && Language::for_path(&path).is_none() {
             return Err(error(
                 "No language server for this file type; supported languages: Kotlin, Java, C#",
             ));
@@ -898,6 +928,16 @@ impl Editor {
             .servers
             .get(&key)
             .ok_or_else(|| error("LSP is starting; :LspInfo"))?;
+        if self
+            .lsp
+            .virtual_sources
+            .get(&self.document.buffer.instance())
+            .is_some_and(|source| source.epoch != info.epoch)
+        {
+            return Err(error(
+                "This virtual source belongs to a previous server session; return to source and use gd again",
+            ));
+        }
         Ok(Context {
             serial: 0,
             stamp: Stamp {
@@ -916,6 +956,7 @@ impl Editor {
             jump_to_single_location: false,
             ai_question: None,
             call_item: None,
+            virtual_target: None,
         })
     }
 
@@ -928,6 +969,9 @@ impl Editor {
     ) -> io::Result<()> {
         let mut panel = Panel::text(method.trim_start_matches("textDocument/"), "");
         match method {
+            "csharp/metadata" => {
+                return self.open_virtual_result(result, context);
+            }
             "textDocument/hover" => {
                 panel = Panel::text("Documentation", &markup(&result["contents"]))
             }
@@ -1007,14 +1051,9 @@ impl Editor {
                         .clone();
                     let position: Position =
                         serde_json::from_value(position).map_err(io::Error::other)?;
-                    match lsp::uri_path(uri) {
-                        Ok(path) => panel.rows.push(location_row(path, position, "", None)),
-                        Err(_) => panel.rows.push(Row {
-                            label: format!("Unsupported location: {uri}"),
-                            detail: "Virtual/decompiled documents are not supported".into(),
-                            action: Item::Text,
-                        }),
-                    }
+                    panel
+                        .rows
+                        .push(uri_location_row(uri, position, "", context.key.language));
                 }
                 if context.jump_to_single_location
                     && panel.rows.len() == 1
@@ -1026,6 +1065,12 @@ impl Editor {
                     } = &panel.rows[0].action
                 {
                     return self.jump_lsp_location(path, *position, stamp.as_ref());
+                }
+                if context.jump_to_single_location
+                    && panel.rows.len() == 1
+                    && let Item::VirtualJump { uri, position } = &panel.rows[0].action
+                {
+                    return self.request_virtual_location(uri.clone(), *position, context);
                 }
             }
             "textDocument/documentSymbol" => {
@@ -1181,7 +1226,11 @@ impl Editor {
             _ => return Err(error("Unsupported LSP response")),
         }
         if panel.rows.is_empty() {
-            self.info("No language-server results");
+            self.info(if method == "textDocument/definition" {
+                "No language-server results; check indexing and project errors in :LspInfo / :LspLog"
+            } else {
+                "No language-server results"
+            });
             return Ok(());
         }
         let ai_question = context.ai_question.clone();
@@ -1494,6 +1543,18 @@ impl Editor {
         let context = panel.context.clone();
         let versions = panel.versions.clone();
         match action {
+            Item::VirtualJump { uri, position } => {
+                row.action = Item::VirtualJump {
+                    uri: uri.clone(),
+                    position,
+                };
+                self.lsp.panel = Some(panel);
+                self.request_virtual_location(
+                    uri,
+                    position,
+                    context.ok_or_else(|| error("Missing navigation context"))?,
+                )?;
+            }
             Item::Jump {
                 path,
                 position,
@@ -1560,6 +1621,18 @@ impl Editor {
         position: Position,
         stamp: Option<&Stamp>,
     ) -> io::Result<()> {
+        // Outline rows for the active virtual document use its opaque identity.
+        if self.document.virtual_uri().is_some()
+            && lsp_identity(&self.document).as_deref() == Some(path)
+        {
+            let scalar = lsp::scalar(self.document.buffer.text(), position)?;
+            let origin = self.source_location();
+            self.reset_context();
+            self.document.buffer.set_cursor(scalar, false);
+            self.record_navigation(origin);
+            self.info("Language-server location; Ctrl-o returns");
+            return Ok(());
+        }
         let path = if self.has_open_path(path) {
             path.to_path_buf()
         } else {
@@ -1592,6 +1665,90 @@ impl Editor {
         self.document.buffer.set_cursor(scalar, false);
         self.record_navigation(origin);
         self.info("Language-server location; Ctrl-o returns");
+        Ok(())
+    }
+
+    fn request_virtual_location(
+        &mut self,
+        uri: String,
+        position: Position,
+        mut context: Context,
+    ) -> io::Result<()> {
+        if context.key.language != Language::CSharp || !lsp::is_csharp_metadata_uri(&uri) {
+            return Err(error("Unsupported virtual source URI"));
+        }
+        if self.lsp.virtual_sources.len() >= 32
+            && self
+                .virtual_buffer(&uri, &context.key, context.epoch)
+                .is_none()
+        {
+            return Err(error(
+                "Virtual source limit (32); close a generated/decompiled buffer and retry",
+            ));
+        }
+        context.virtual_target = Some((uri.clone(), position));
+        self.send_lsp(
+            "csharp/metadata",
+            json!({"textDocument":{"uri":uri}}),
+            Some(context),
+        )
+    }
+
+    fn virtual_buffer(&self, uri: &str, key: &ServerKey, epoch: u64) -> Option<usize> {
+        std::iter::once((self.active_buffer_id, &self.document))
+            .chain(self.buffers.iter().map(|(id, slot)| (*id, &slot.document)))
+            .find(|(_, doc)| {
+                self.lsp
+                    .virtual_sources
+                    .get(&doc.buffer.instance())
+                    .is_some_and(|source| {
+                        source.uri == uri && &source.key == key && source.epoch == epoch
+                    })
+            })
+            .map(|(id, _)| id)
+    }
+
+    fn open_virtual_result(&mut self, result: Value, context: Context) -> io::Result<()> {
+        let (uri, position) = context
+            .virtual_target
+            .ok_or_else(|| error("Missing virtual source target"))?;
+        let text = result["source"].as_str().filter(|s| !s.is_empty())
+            .ok_or_else(|| error("Language server returned no source text for this generated/decompiled location"))?;
+        if text.len() > lsp::MAX_DOCUMENT_BYTES {
+            return Err(error("Virtual source exceeds 2 MiB"));
+        }
+        let document =
+            crate::file::Document::virtual_source(uri.clone(), text, Path::new("source.cs"))?;
+        // Validate before changing the active buffer or its navigation history.
+        let scalar = lsp::scalar(document.buffer.text(), position)?;
+        let source = lsp::VirtualSource {
+            uri,
+            key: context.key,
+            epoch: context.epoch,
+        };
+        let existing = self.virtual_buffer(&source.uri, &source.key, source.epoch);
+        let origin = self.source_location();
+        if let Some(id) = existing {
+            self.switch_buffer_unrecorded(id)?;
+            // Ask the server on each jump: source generators can change their
+            // output within one session. Reuse the slot, refreshing its snapshot.
+            if self.document.buffer.text() != document.buffer.text() {
+                self.lsp
+                    .virtual_sources
+                    .remove(&self.document.buffer.instance());
+                self.replace_reloaded_document(document);
+            }
+        } else {
+            self.open_prepared_buffer(document);
+        }
+        self.lsp
+            .virtual_sources
+            .insert(self.document.buffer.instance(), source.clone());
+        let identity = lsp_identity(&self.document).unwrap();
+        self.lsp.routes.insert(identity, source.key);
+        self.document.buffer.set_cursor(scalar, false);
+        self.record_navigation(origin);
+        self.info("Read-only generated/decompiled source; Ctrl-o returns");
         Ok(())
     }
     fn expand_calls(&mut self, incoming: bool) -> io::Result<()> {
@@ -1648,8 +1805,8 @@ impl Editor {
         Ok(())
     }
     fn lsp_information(&mut self, kind: &str) {
-        let path = self.document.path();
-        let key = path.and_then(|p| self.lsp.routes.get(p));
+        let path = lsp_identity(&self.document);
+        let key = path.as_ref().and_then(|p| self.lsp.routes.get(p));
         let info = key.and_then(|k| self.lsp.servers.get(k));
         let mut text = format!(
             ":LspInfo status/progress | :LspLog server messages\n:Doctor executable, SDK and root checks | :LspRestart retry\nSource: {}\nLSP scope: Kotlin, Java, C#; UTF-16, 2 MiB/document\n",
@@ -1743,7 +1900,7 @@ impl Editor {
         } else {
             text += "Discovery pending or unsupported file type. Language servers are optional.\n";
         }
-        if let Some(message) = path.and_then(|p| self.lsp.unavailable.get(p)) {
+        if let Some(message) = path.as_ref().and_then(|p| self.lsp.unavailable.get(p)) {
             text += message;
             text.push('\n');
         }
@@ -1925,6 +2082,7 @@ fn diagnostic_dependencies_current(
     };
     let mut current = snapshots
         .iter()
+        .filter(|s| s.virtual_source.is_none())
         .filter(|s| routes.get(&s.path) == Some(key));
     current.clone().count() == dependencies.len()
         && current.all(|s| dependencies.get(&s.path) == Some(&s.stamp))
@@ -1986,6 +2144,41 @@ fn location_row(path: PathBuf, position: Position, label: &str, stamp: Option<St
             stamp,
             symbol_range: None,
         },
+    }
+}
+
+/// Virtual identities are relative tokens, never filesystem paths. Local source
+/// identities are absolute paths; virtual sources cannot collide with them.
+fn lsp_identity(document: &crate::file::Document) -> Option<PathBuf> {
+    document.path().map(Path::to_path_buf).or_else(|| {
+        document
+            .virtual_uri()
+            .map(|_| PathBuf::from(format!("lsp-virtual:{}", document.buffer.instance())))
+    })
+}
+
+fn uri_location_row(uri: &str, position: Position, label: &str, language: Language) -> Row {
+    if let Ok(path) = lsp::uri_path(uri) {
+        return location_row(path, position, label, None);
+    }
+    if language == Language::CSharp && lsp::is_csharp_metadata_uri(uri) {
+        return Row {
+            label: format!(
+                "{uri}:{}:{} {label}",
+                position.line.saturating_add(1),
+                position.character.saturating_add(1)
+            ),
+            detail: "Generated/decompiled source · Enter opens read only".into(),
+            action: Item::VirtualJump {
+                uri: uri.into(),
+                position,
+            },
+        };
+    }
+    Row {
+        label: format!("Unsupported location: {uri}"),
+        detail: "This server's virtual/decompiled source format is not supported".into(),
+        action: Item::Text,
     }
 }
 fn result_items(value: &Value) -> io::Result<impl Iterator<Item = &Value>> {
