@@ -151,6 +151,46 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_completion_acceptance_session(binary, directory, resize, capture_dir=None):
+    project = Path(directory) / "completion-acceptance"
+    project.mkdir()
+    (project / "pom.xml").write_text("<project/>")
+    source = project / "Main.kt"
+    original = "😀 value.\r\nnext\r\n".encode()
+    partial = "😀 value.le\r\nnext\r\n".encode()
+    source.write_bytes(original)
+    log = project / "protocol.jsonl"
+    fake = Path(__file__).parent / "lsp" / "fake_server.py"
+    environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+        sys.executable, str(fake.resolve()), "--log", str(log),
+        "--scenario", "auto-completion",
+    ])}
+    def ready():
+        return log.exists() and '"method": "textDocument/didOpen"' in log.read_text()
+    def saved(text):
+        return lambda: source.read_bytes() == text
+    output = run_session(binary, source, [
+        (ready, 10), b"Ale", (b"Tab/Enter accept", 10),
+        b"\x1b[B", b"\x1b[A", b"\x1b[B", b"\r", (b"inserted", 10),
+        b"\x1b", b":w\r", (saved("😀 value.lengthSquared\r\nnext\r\n".encode()), 10),
+        b"u", b":w\r", (saved(partial), 10),
+        b"A\x0e", (b"Tab accept", 10), b"d", (b"Resolved", 10),
+        resize(3, 1), resize(24, 100), b"\t", resize(24, 101), (b"Completion inserted", 10),
+        b"\x1b", b":w\r", (saved("😀 value.length\r\nnext\r\n".encode()), 10),
+        b"u", b":w\r", (saved(partial), 10),
+        b"A\x7fe", (b"Tab/Enter accept", 10), b"\x1b", b"\t\r",
+        b"\x1b", b":w\r", (saved("😀 value.le\t\r\n\r\nnext\r\n".encode()), 10),
+        b"u", b":w\r", (saved(partial), 10),
+        b"A\x0e", (b"Tab accept", 10), b"\x1b", b"\x1b", b":q\r",
+    ], partial, environment)
+    assert b"Enter applies" not in output, "Plain completions opened an edit preview"
+    messages = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any(m.get("method") == "workspace/executeCommand" for m in messages)
+    assert sum(m.get("method") == "completionItem/resolve" for m in messages) == 2
+    if capture_dir:
+        (Path(capture_dir) / "completion-acceptance.ansi").write_bytes(output)
+
+
 def run_file_tree_session(binary, directory, resize, capture_dir=None):
     # File-tree binding, prompts, safe mutations, folding and return to source.
     tree_root = Path(directory) / "tree-project"
@@ -449,6 +489,7 @@ def main():
         assert any(m.get("method") == "completionItem/resolve" for m in messages)
         if capture_dir:
             (Path(capture_dir) / "automatic-completion.ansi").write_bytes(output)
+        run_completion_acceptance_session(binary, directory, resize, capture_dir)
         # M6: disk search and a multi-file path with preserved location/undo.
         navigation_root = Path(directory) / "navigation"
         navigation_root.mkdir()
@@ -627,7 +668,7 @@ def main():
         if capture_dir:
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
         run_file_tree_session(binary, directory, resize, capture_dir)
-    print("PASS: 34 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, automatic completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 35 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

@@ -571,13 +571,17 @@ and buffer changes cancel scheduled/pending work; ordinary context, session,
 cursor and all-document guards reject stale replies and resolution results.
 Server-reported automatic request failures stay in logs; explicit acceptance errors are
 visible. The event loop polls at 16 ms while completion is scheduled or pending.
-Tab/Enter accepts a selected popup item; arrows/Ctrl-n/Ctrl-p navigate, Ctrl-e
-dismisses, and Escape retains the ordinary exit from Insert. Only an explicitly
-accepted, single-line edit within the current identifier applies directly, using
+Tab/Enter accepts a selected completion in either list; arrows/Ctrl-n/Ctrl-p
+navigate. Escape/Ctrl-e dismiss the popup while retaining Insert; Escape with no
+popup exits Insert. Only an explicitly accepted, single-line edit whose range
+contains the request cursor on the same line applies directly, using
 the same complete edit-plan validation, disk conflict checks and undo transaction
-as a preview. Additional edits, multiline replacements and server commands retain
-the preview path. Explicit :Complete/Ctrl-n without a popup retains the contextual
-list. Snippets and commit-character acceptance remain unsupported.
+as a preview. Server ranges can include punctuation and use the replace range of
+an insert/replace edit; implicit ranges use the identifier prefix. Additional edits,
+multiline replacements and server commands retain the preview path, which still
+requires Enter to approve. Explicit :Complete/Ctrl-n without a popup retains the
+contextual list and restores its originating mode on acceptance or dismissal.
+Snippets and commit-character acceptance remain unsupported.
 Completion resolution supplies documentation and additional edits; snippets are
 refused. Advertised completion commands are shown in the initial edit preview
 and run only after approval. Their subsequent server edits require another
@@ -599,8 +603,8 @@ document guards apply before expansion, resolution or navigation. Capability
 absence and virtual/decompiled locations remain explicit. These are read-only
 features, with no new server-edit authorization path.
 
-Rename, formatting, explicit completion and quick fixes create an edit proposal. Validate
-every URI, project boundary, known version, captured buffer stamp, scalar range,
+Rename, formatting, completions requiring review and quick fixes create an edit
+proposal. Validate every URI, project boundary, known version, captured buffer stamp, scalar range,
 overlap and size before constructing a preview. All affected buffers and disk
 baselines are rechecked before any splice. Applying makes one undo group per
 changed document. An open target absent from that server's synchronized snapshots

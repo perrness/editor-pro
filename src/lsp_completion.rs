@@ -256,6 +256,7 @@ impl Editor {
             return false;
         };
         match key {
+            Key::Escape => self.dismiss_completion(),
             Key::Down | Key::Ctrl('n') => menu.selected = (menu.selected + 1) % menu.items.len(),
             Key::Up | Key::Ctrl('p') => {
                 menu.selected = (menu.selected + menu.items.len() - 1) % menu.items.len()
@@ -293,7 +294,7 @@ impl Editor {
         }
     }
 
-    pub(super) fn simple_completion_edit(
+    pub(super) fn local_completion_edit(
         &self,
         value: &Value,
         context: &Context,
@@ -303,18 +304,12 @@ impl Editor {
         let range = lsp::scalar_range(self.document.buffer.text(), edit.range)?;
         let text = self.document.buffer.text();
         let line = text.char_to_line(context.cursor);
-        let line_end = text.line_to_char((line + 1).min(text.len_lines()));
-        let suffix = text.slice(context.cursor..line_end).to_string();
-        let end = context.cursor
-            + suffix
-                .graphemes(true)
-                .take_while(|g| g.chars().next().is_some_and(identifier))
-                .map(|g| g.chars().count())
-                .sum::<usize>();
-        Ok(range.start >= self.completion_prefix_start(context.cursor)
+        // Use the server's range, which may include punctuation (e.g. a Java
+        // method call), instead of guessing an identifier-only replacement.
+        Ok(text.char_to_line(range.start) == line
+            && text.char_to_line(range.end) == line
             && range.start <= context.cursor
             && range.end >= context.cursor
-            && range.end <= end
             && !edit.new_text.contains(['\n', '\r']))
     }
 }
@@ -381,7 +376,7 @@ pub(crate) fn render(
         );
     }
     let hint = format!(
-        " {}/{} Tab/Enter accept  ↑↓ select  Ctrl-e dismiss",
+        " {}/{} Tab/Enter accept  ↑↓ select  Esc/Ctrl-e dismiss",
         menu.selected + 1,
         menu.items.len()
     );

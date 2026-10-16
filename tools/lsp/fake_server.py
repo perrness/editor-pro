@@ -238,6 +238,14 @@ while True:
                 start = {**p["position"], "character": p["position"]["character"] - 2}
                 end = {**p["position"], "character": p["position"]["character"] + 3}
                 items = [{"label": "length", "textEdit": {"range": {"start": start, "end": end}, "newText": "length"}}]
+            if args.scenario in ("auto-completion-call-edit", "auto-completion-insert-replace"):
+                start = {**p["position"], "character": p["position"]["character"] - 2}
+                end = {**p["position"], "character": p["position"]["character"] + 2}
+                edit = {"range": {"start": start, "end": end}, "newText": "length()"}
+                if args.scenario == "auto-completion-insert-replace":
+                    edit["replace"] = edit.pop("range")
+                    edit["insert"] = {"start": start, "end": p["position"]}
+                items = [{"label": "length()", "textEdit": edit}]
             response = {"id": ident, "result": {"isIncomplete": True, "items": items}}
             if args.scenario == "auto-completion-error":
                 response = {"id": ident, "error": {"code": -32801, "message": "Indexing; retry later"}}
@@ -259,6 +267,10 @@ while True:
         item = {**p, "documentation": "Resolved completion documentation"}
         if args.scenario == "auto-completion-extra":
             item["additionalTextEdits"] = [{"range": span(0, 0), "newText": "import sample\r\n"}]
+        if args.scenario == "auto-completion-invalid-extra":
+            item["additionalTextEdits"] = {"invalid": "not an edit array"}
+        if args.scenario == "auto-completion-multiline":
+            item["insertText"] = "length\r\nnext"
         if args.scenario == "auto-completion-command":
             item["command"] = {"title": "Complete with command", "command": "fake.fix", "arguments": [next(iter(documents))]}
         if args.scenario == "auto-completion-resolve-slow":

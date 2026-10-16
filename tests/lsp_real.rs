@@ -425,34 +425,48 @@ impl Project {
         self.editor.handle_key(Key::Char('d'));
         self.wait("completion_documentation", |e| !e.lsp.pending);
         assert!(!self.editor.message_is_error, "{}", self.state());
-        if self.select_preview("completion_preview") {
-            self.editor.handle_key(Key::Enter);
-            self.wait("completion_apply", |e| !e.lsp.pending);
-            if self
+        self.editor.handle_key(Key::Enter);
+        self.wait("completion_accept", |e| !e.lsp.pending);
+        if Language::for_path(&self.main) == Some(Language::CSharp) {
+            assert_eq!(
+                self.editor.view,
+                View::Editing,
+                "Plain completion must accept directly"
+            );
+        }
+        let mut previews = 0;
+        for step in 0..2 {
+            if !self
                 .editor
                 .lsp
                 .panel
                 .as_ref()
                 .is_some_and(|p| p.title.starts_with("Apply"))
             {
-                // Command-driven completions require a second approval for the
-                // server's actual edits, using the same guarded edit path.
-                self.editor.handle_key(Key::Enter);
+                break;
             }
-            assert!(!self.editor.message_is_error, "{}", self.state());
-            assert!(
-                self.editor
-                    .document
-                    .buffer
-                    .text()
-                    .to_string()
-                    .contains(member.trim_end_matches("()")),
-                "{}",
-                self.state()
-            );
-            assert!(self.editor.document.buffer.undo());
-            assert_eq!(self.editor.document.buffer.text().to_string(), incomplete);
+            if step == 0 {
+                assert_eq!(self.editor.document.buffer.text().to_string(), incomplete);
+            }
+            previews += 1;
+            self.editor.handle_key(Key::Enter);
+            self.wait(&format!("completion_preview_{step}"), |e| !e.lsp.pending);
         }
+        self.report["checks"]["completion_accept"]["previews"] = json!(previews);
+        assert!(!self.editor.message_is_error, "{}", self.state());
+        assert_eq!(self.editor.view, View::Editing);
+        assert!(
+            self.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .contains(member.trim_end_matches("()")),
+            "{}",
+            self.state()
+        );
+        assert!(self.editor.document.buffer.undo());
+        assert_eq!(self.editor.document.buffer.text().to_string(), incomplete);
         self.editor.handle_key(Key::Escape);
         assert!(self.editor.document.buffer.undo());
         assert_eq!(
@@ -489,6 +503,14 @@ impl Project {
         let before_accept = self.editor.document.buffer.text().to_string();
         self.editor.handle_key(Key::Tab);
         self.wait("automatic_completion_accept", |e| !e.lsp.pending);
+        if Language::for_path(&self.main) == Some(Language::CSharp) {
+            assert_eq!(
+                self.editor.view,
+                View::Editing,
+                "Plain completion must accept directly"
+            );
+        }
+        let mut previews = 0;
         for step in 0..2 {
             if !self
                 .editor
@@ -499,11 +521,19 @@ impl Project {
             {
                 break;
             }
+            if step == 0 {
+                assert_eq!(
+                    self.editor.document.buffer.text().to_string(),
+                    before_accept
+                );
+            }
+            previews += 1;
             self.editor.handle_key(Key::Enter);
             self.wait(&format!("automatic_completion_preview_{step}"), |e| {
                 !e.lsp.pending
             });
         }
+        self.report["checks"]["automatic_completion_accept"]["previews"] = json!(previews);
         assert!(!self.editor.message_is_error, "{}", self.state());
         assert_eq!(self.editor.view, View::Editing);
         assert_eq!(self.editor.mode, editor_pro::editor::Mode::Insert);

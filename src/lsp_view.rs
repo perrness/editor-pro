@@ -1102,19 +1102,26 @@ impl Editor {
                 "newText":value["insertText"].as_str().or_else(||value["label"].as_str()).ok_or_else(||error("Completion has no text"))?})
         };
         let mut edits = vec![main];
-        if let Some(extra) = value["additionalTextEdits"].as_array() {
-            edits.extend(extra.iter().cloned());
+        if let Some(extra) = value.get("additionalTextEdits").filter(|v| !v.is_null()) {
+            edits.extend(
+                extra
+                    .as_array()
+                    .ok_or_else(|| error("Invalid additional completion edits"))?
+                    .iter()
+                    .cloned(),
+            );
         }
         let edit = json!({"changes":{lsp::file_uri(&context.path)?.as_str():edits}});
-        if context.inline_completion
-            && command.is_none()
+        if command.is_none()
             && edits.len() == 1
-            && self.simple_completion_edit(&edits[0], &context)?
+            && self.local_completion_edit(&edits[0], &context)?
         {
             let plan =
                 self.prepare_lsp_edit(&edit, &context.key.root, &versions, &context.guards)?;
-            self.apply_lsp_edit(plan)?;
+            self.view = View::Editing;
+            self.mode = context.mode;
             self.lsp.cancel();
+            self.apply_lsp_edit(plan)?;
             self.info("Completion inserted");
             Ok(())
         } else {
@@ -1299,7 +1306,14 @@ impl Editor {
             Key::Char('G') => panel.selected = panel.rows.len().saturating_sub(1),
             Key::Char('h') | Key::Left => panel.left = panel.left.saturating_sub(4),
             Key::Char('l') | Key::Right => panel.left += 4,
-            Key::Enter | Key::Char('d') => {
+            Key::Enter | Key::Char('d') | Key::Tab
+                if key != Key::Tab
+                    || (panel.plan.is_none()
+                        && panel
+                            .rows
+                            .get(panel.selected)
+                            .is_some_and(|row| matches!(row.action, Item::Completion { .. }))) =>
+            {
                 if let Err(e) = self.select_lsp(key == Key::Char('d')) {
                     if self.lsp.panel.is_none() {
                         self.close_lsp_panel();
@@ -1977,6 +1991,12 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
             &editor.message
         } else if panel.rows.iter().any(|r| matches!(r.action, Item::Call(_))) {
             "j/k select  i incoming  o outgoing  Enter source  Backspace parent  Esc return"
+        } else if panel
+            .rows
+            .iter()
+            .any(|r| matches!(r.action, Item::Completion { .. }))
+        {
+            "↑↓ select  Enter/Tab accept  d documentation  Esc return"
         } else {
             "j/k select  h/l scroll  Enter open/apply  d completion docs  Esc return"
         };

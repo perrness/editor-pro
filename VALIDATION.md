@@ -1409,3 +1409,52 @@ and verified exact CRLF source bytes and terminal restoration. Capture:
 `/tmp/editor-pro-issue6-terminal.ansi`. macOS and physical terminals were not tested.
 
 Formatting, Clippy with warnings denied and `git diff --check` also passed.
+
+## One-step completion acceptance
+
+2026-10-16, Linux x86_64. [Issue #7](https://github.com/perrness/editor-pro/issues/7)
+makes Enter/Tab accept plain local completions from both the popup and explicit
+`:Complete`/Ctrl-n list. Server replacement ranges may include punctuation;
+UTF-16 conversion and the existing complete edit-plan, disk and freshness guards
+still apply. Escape dismisses the popup without editing or leaving Insert.
+Additional edits, multiline text and commands retain the guarded preview path;
+Tab cannot approve those previews.
+
+Formatting, Clippy with warnings denied, the debug build, all **301 Rust tests**
+(seven opt-in tests ignored), and all **14 Python tests** passed. The **23 completion
+regressions** cover both acceptance keys and lists, optional resolution and
+documentation, selection, mode/cursor restoration, text and insert/replace edits,
+emoji/combining text/CRLF, undo/redo, key fallback, disk conflicts, malformed
+additional edits, command approvals and stale candidates/replies after typing,
+buffer switches, reloads and document changes.
+
+All **35 PTY sessions** passed. The new session exercises Up/Down selection,
+Enter acceptance from the popup, Tab acceptance after explicit documentation,
+Escape dismissal, ordinary Tab/newline fallback, undo, exact Unicode/CRLF saved
+bytes, narrow resizing and terminal restoration. Its capture is
+`/tmp/editor-pro-issue7-terminal/completion-acceptance.ansi`. The harness forces a
+repaint before checking the acceptance message because incremental ANSI updates
+can split that text across cursor movements.
+
+All three pinned real-server fixtures passed using managed server installations:
+
+| Fixture | Elapsed time | Explicit / popup completion previews |
+| --- | --- | --- |
+| `java_maven` | 30.07 s | 1 / 1; guarded approval retained. |
+| `kotlin_maven` | 102.20 s | 2 / 2; command and subsequent server edit approvals retained. |
+| `csharp_project` | 40.06 s | 0 / 0; Enter and Tab applied directly. |
+
+These fixtures also check diagnostics, navigation, rename, formatting, restart,
+undo and unchanged source/build files on disk. Reports are in
+`/tmp/editor-pro-issue7-real`; servers are in `/tmp/editor-pro-issue7-servers`.
+Java used the installed OpenJDK 25.0.4.1, Kotlin its bundled runtime, and C# the
+checksum-verified .NET SDK 10.0.402 under `/tmp/editor-pro-issue7-dotnet`.
+Cargo used `CARGO_NET_OFFLINE=true`; server installation/import used network access.
+The broken sandbox could not initialize its loopback interface, so commands ran
+with normal process/socket access. macOS, physical terminals and the larger
+Gradle/solution fixtures were not retested.
+
+Release preparation bumps the Cargo package and lockfile to v0.2.7. The stable
+tag check, all three CLI/version tests, all three release-tool tests, an offline
+Cargo check, formatting and whitespace checks passed. The tag-triggered release
+workflow gates native macOS archives and Homebrew publication on hosted checks.

@@ -542,8 +542,8 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 | Command / key | Action |
 | --- | --- |
 | Insert typing | Show completion suggestions beside the cursor after a short pause |
-| Popup arrows / `Ctrl-n` / `Ctrl-p` | Select a suggestion; Tab or Enter accepts; `Ctrl-e` dismisses |
-| `:Complete`, Insert `Ctrl-n` | Request a completion list; `d` resolves documentation, Enter chooses |
+| Popup arrows / `Ctrl-n` / `Ctrl-p` | Select a suggestion; Tab or Enter accepts; Esc or `Ctrl-e` dismisses |
+| `:Complete`, Insert `Ctrl-n` | Request a completion list; `d` resolves documentation, Enter or Tab accepts |
 | `:Hover` | Read documentation at the cursor |
 | `:Signature` | Show signatures and the active parameter |
 | Normal `gd`, `gr` | Request definitions or references at the cursor; jump directly to a single location, or choose from multiple results |
@@ -571,9 +571,9 @@ Documentation is displayed as plain text, including Markdown source.
 In Insert mode, typing an identifier or a server-advertised trigger such as `.`
 requests suggestions after a 120 ms pause. The popup keeps the source and cursor
 visible; continued typing and Backspace refresh it. Tab or Enter accepts the
-selected suggestion; arrows or `Ctrl-n`/`Ctrl-p` select, and `Ctrl-e` dismisses
-without leaving Insert. Escape leaves Insert as usual. Cursor movement, paste,
-buffer switches and newer edits cancel obsolete requests. Suggestions wait for
+selected suggestion; arrows or `Ctrl-n`/`Ctrl-p` select, and Escape or `Ctrl-e`
+dismisses without leaving Insert. With no popup, Escape leaves Insert as usual.
+Cursor movement, paste, buffer switches and newer edits cancel obsolete requests. Suggestions wait for
 the server to finish starting; they require a supported, named source file.
 With no popup, `Ctrl-n` still opens the explicit completion list. `:Complete`
 also remains available. Snippet expansion is unsupported. Advertised
@@ -582,12 +582,14 @@ further text edits from that command require a second preview. Only negotiated
 features can be requested. JDT LS signature help is explicitly enabled during
 initialization and configuration.
 
-**Server edits open a preview. Enter applies; Escape cancels.** Selecting a plain
-popup completion applies its single edit to the current identifier directly.
-Completions with additional edits, multiline replacements or commands still open
-a preview, as do explicit `:Complete` results, rename, formatting and quick fixes.
-All targets are validated before
-the first change, with buffer versions and exact disk-baseline checks repeated
+**Plain completions accept in one step with Enter or Tab**, from either the popup
+or the explicit completion list. A single-line insertion or replacement at the
+cursor applies directly, including server ranges that cover punctuation.
+Completions with additional edits, multiline replacements or commands open a
+preview, as do rename, formatting and quick fixes. **Enter applies a preview;
+Escape cancels.** Tab does not approve a preview.
+All targets are validated before the first change, with buffer versions and exact
+disk-baseline checks repeated
 at application. Applying produces unsaved edits with one undo group per buffer.
 An open target must have been synchronized by the requesting server; cross-server
 edits to unsynchronized open documents are refused, preserving their unsaved text.
