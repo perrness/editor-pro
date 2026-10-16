@@ -194,8 +194,14 @@ fn live_refresh_and_snapshot_capture_preserve_dirty_buffers_undo_and_viewports()
     assert!(e.git.diff().unwrap().rows.is_empty());
     r.write("a", "agent changed disk\n");
     r.write("b", "agent changed b\n");
-    assert!(e.check_external());
-    act(&mut e, "gitrefresh");
+    e.check_external();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while e.disk.busy {
+        e.tick();
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    settle(&mut e); // The disk monitor already invalidated the Git/review snapshot.
     assert!(e.git.diff().unwrap().rows.is_empty()); // Dirty text still owns this side.
     assert!(
         e.git
@@ -258,6 +264,56 @@ fn clean_open_buffers_stay_intact_while_review_displays_same_size_disk_revisions
     e.jump_diff_source().unwrap();
     assert_eq!(text(&e), "next\n");
     assert!(!e.document.buffer.is_modified());
+}
+
+#[test]
+fn disk_observations_invalidate_review_and_gutters_even_when_conflict_is_already_flagged() {
+    let r = Repo::new();
+    r.write("a", "base\n");
+    r.commit();
+    r.write("a", "next\n");
+    let mut e = r.editor();
+    act(&mut e, "review snapshot");
+    act(&mut e, "review full");
+    act(&mut e, "review file reviewed");
+    let record = records(&e)[0].clone();
+    let index = fs::read(r.path(".git/index")).unwrap();
+    for version in ["last\n", "more\n"] {
+        r.write("a", version);
+        e.check_external();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while e.disk.busy {
+            e.tick();
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!e.git_current());
+        assert_eq!(e.review_freshness(&record), Freshness::Unavailable);
+        assert!(e.git_mark(0).is_none());
+        settle(&mut e);
+        assert!(hunk_text(&e).contains(version.trim()));
+        assert_eq!(e.review_freshness(&record), Freshness::Stale);
+        assert!(e.git_mark(0).is_none()); // Compared disk differs from retained text.
+        assert_eq!(text(&e), "next\n");
+        assert!(e.document.external_changed);
+    }
+    // The source behind a review note is monitored too; the draft stays intact.
+    e.execute_command("note file").unwrap();
+    e.document.buffer.insert("draft");
+    r.write("a", "note-time revision\n");
+    e.check_external();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while e.disk.busy {
+        e.tick();
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(text(&e), "draft");
+    assert!(e.note_edit.is_some());
+    e.execute_command("note cancel").unwrap();
+    assert_eq!(text(&e), "next\n");
+    assert!(e.document.external_changed);
+    assert_eq!(fs::read(r.path(".git/index")).unwrap(), index);
 }
 
 #[test]

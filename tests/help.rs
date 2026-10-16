@@ -73,6 +73,7 @@ fn help_discovers_definition_git_review_and_codex_with_actual_bindings() {
             ],
         ),
         ("diagnostics", vec![":Diagnostics / :Dnext / :Dprev"]),
+        ("refresh", vec![":refresh / c / r / Esc", "confirmation"]),
         (
             "review",
             vec![

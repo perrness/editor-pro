@@ -297,7 +297,8 @@ ignored. Optional Git locks, external diff/textconv, fsmonitor and configured
 clean/process filters are disabled. `filters off` warns that filter-dependent
 repositories may show raw-content status differences. Snapshots sample Git state;
 concurrent external writes can race and are corrected by later polling. Existing
-synchronous file loading/saving/disk checks remain separate.
+synchronous file loading/saving remain separate; disk monitoring and `:refresh`
+comparisons run on a background worker.
 
 ## Code review
 
@@ -689,6 +690,7 @@ bytes. Inspect narrow/normal terminal layouts on Linux and macOS.
 | `:e path` | Open or switch to a buffer, retaining edits in the one being left |
 | `:e`, `:e!` | Reload the current file; ! explicitly discards its local edits |
 | `:e! path` | Reload the requested target, discarding that target's edits; retain other buffers |
+| `:refresh` | Compare the retained buffer with disk; `c` compares again, `r` reloads, Escape cancels |
 | `:enew` | Create an unnamed buffer |
 | `:bn`, `:bp`, `:b ID` | Next, previous, or numbered buffer |
 | `:ls` | Browse buffers and their dirty/disk-conflict flags |
@@ -715,6 +717,34 @@ environment variables, wildcards and shell commands are not expanded. There is
 no force-write command. To preserve both versions after an external change, use
 `:w new-path`, then open the externally modified file separately. Save-as cannot
 overwrite an unrelated existing file or take another open buffer's path.
+
+External file writes are sampled in the background about every two seconds,
+including inactive buffers and the source behind a review note. Focus gain
+requests an early scan. A batch checks at most 16 named buffers, rotating through
+larger sessions. Content checks detect same-size writes even with unchanged
+timestamps, atomic replacements, deletion and recreation. A new conflict shows
+`!DISK` and a `:refresh` hint; subsequent writes keep the indicator without
+repeated prompts or replacing text. Disk changes also invalidate Git/review
+results so their normal worker can refresh them.
+
+Use `:refresh` to inspect a read-only diff: `-` is the retained buffer, `+` is the
+disk sample. Scroll with j/k, PageUp/PageDown and h/l. `r` requests reload; a dirty
+buffer additionally requires `y` to discard its edits, or `n` to keep them.
+Escape cancels and restores the underlying context, cursor, viewport and undo
+group. Reload checks the compared disk bytes again and rejects changed files or
+obsolete buffer results. Successful reloads preserve the cursor's line/column
+and viewport where possible, with Unicode boundary clamping; they start a fresh
+undo history, like `:e!`. No files are written by this workflow.
+
+Missing/renamed files keep their original buffers and paths. Reload is refused;
+cancel and use `:w NEW_PATH` to recover their contents, or explicitly close the
+buffer. Renames are not followed automatically. Unreadable, non-regular and
+invalid UTF-8/NUL-containing replacements cannot replace source text. Comparison
+uses the existing Git executable and its 2 MiB-per-side limit; valid larger text
+can still be explicitly reloaded up to the normal 64 MiB document limit.
+Comparisons/reloads require two matching disk reads 150 ms apart. This samples
+consistency rather than locking out other writers; subsequent writes can still
+race, and every save retains its exact disk-baseline checks.
 
 ## AI-assisted comprehension (optional Codex CLI)
 
@@ -822,7 +852,7 @@ Large Markdown documents are slower; measured results are in the validation log.
   This prevents ordinary stale-buffer overwrites, but cannot exclude a concurrent
   writer in the final check/rename interval. Network filesystems may offer weaker
   guarantees. No concurrent-edit merge, swap file, crash recovery or autosave.
-- Loading, saving, disk comparison and search-cache rebuilding are synchronous;
+- Ordinary loading/saving, edit-approval disk checks and search-cache rebuilding are synchronous;
   avoid remote filesystems and very large files for now. Line segmentation is
   linear in line length. Terminal emoji/grapheme widths may differ from Unicode
   width tables. No bidi layout or terminal job-control/signal recovery; SIGKILL

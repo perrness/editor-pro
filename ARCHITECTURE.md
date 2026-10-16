@@ -11,7 +11,7 @@ One Cargo package with a small library and executable. No workspace hierarchy,
 plugin API, generic backend trait, event bus, dependency injection, or GUI layer.
 
 ```text
-main.rs      terminal lifetime, CLI, event loop, disk checks and worker polling
+main.rs      terminal lifetime, CLI, event loop, focus notifications and worker polling
 config.rs    optional bounded user settings and native configuration paths
 input.rs     Crossterm events -> terminal-independent Key values
 help.rs      shared shortcut metadata, bounded search and read-only help overlay
@@ -19,6 +19,7 @@ editor.rs    editing modes, pending counts/operators, prompts, unnamed register
 buffer.rs    Rope, grapheme cursor, bounded undo, edit descriptions and generation
 motion.rs    motions and text-object ranges in Unicode scalar coordinates
 file.rs      Document, file identity/baseline, guarded loading/saving
+disk.rs      bounded disk polling, content observations and explicit refresh overlay
 syntax.rs    incremental Tree-sitter state, viewport captures, plain fallback
 search.rs    literal matches, generation-based cache and navigation
 buffers.rs   buffer identities, inactive documents/viewports, guards and list
@@ -274,7 +275,8 @@ each compared content side caps at 2 MiB. On Unix each process gets a separate
 process group; cancellation kills it and reaps the child. Dropping the worker
 signals cancellation and joins only at editor shutdown, after terminal restoration.
 These checks are cooperative: filesystem stalls and OS scheduling are not a hard
-real-time guarantee. Existing synchronous document I/O remains unchanged.
+real-time guarantee. Ordinary document loading and saving remain synchronous;
+disk polling and explicit refresh use the separate read-only disk worker.
 
 Repository discovery uses `rev-parse` on the nearest existing parent. Git's
 [porcelain-v2 status](https://git-scm.com/docs/git-status) identifies branch/HEAD,
@@ -475,14 +477,44 @@ Opening a path with `:e path` retains the previous buffer, including unsaved
 edits. Reloading or closing a dirty buffer requires explicit `!`. `:q` and `:wq`
 check every buffer; `:q!` discards all unsaved edits. Explicit `!` never force-writes
 external changes. Disk polling and focus checks cover inactive buffers as well
-and report changes without replacing text. This is basic conflict detection, not
-the future live-agent refresh workflow.
+and report changes without replacing text, including the source held behind a
+review-note draft.
+
+`disk.rs` has one lazily started worker, one replaceable pending job and one result
+slot. Every two seconds (or on focus), the UI schedules up to 16 named documents
+in rotating stable-ID order. Requests share immutable `Arc` disk baselines;
+reads, byte comparisons and SHA-256 observations run on the worker, bounded to
+64 MiB per file. No timestamp shortcut can hide same-size/restored-mtime writes.
+Document path, buffer instance and a baseline generation reject obsolete results
+after reload, close, save or save-as, including directory-sync failures. New
+content/error observations invalidate Git, hence review freshness and gutters,
+even while a document is already flagged. Only the first conflict transition
+posts a message; polling never opens a prompt or reloads text. Unopened repository
+paths remain covered by the existing Git/review sampling.
+
+`:refresh` opens a read-only overlay over the current context and requests a
+buffer-to-disk comparison. It reuses the existing Git diff runner and its content,
+output, cancellation and timeout limits, including outside repositories. A missing
+file is explicitly labeled, and comparison errors do not hide reload/cancel
+choices. Reload is an explicit action; dirty text needs a separate confirmation.
+The worker requires two identical samples 150 ms apart, compares them to the
+preview bytes and constructs the replacement document off the input thread.
+A final read checks preparation races. UI acceptance also checks the buffer
+mutation generation. Missing, changing, unsupported or obsolete results preserve
+the source. A rename is a disappearance at the original path, never implicit
+path adoption. Cursor line/scalar column and viewport survive reload where
+possible; the new buffer clamps to a grapheme boundary and gets a fresh history.
+Cancel retains the original undo group and context. Help and refresh defer
+navigation-producing worker replies; the disk worker itself continues running.
+Cancellation/shutdown signals the read-only worker without waiting on filesystem
+stalls. The bounded queue prevents blocked reads from spawning more workers.
 
 The final check and rename cannot atomically compare-and-swap against arbitrary
 external writers. Symlink/hardlink restrictions and metadata limitations are
 documented in the README. Atomic rename is not an autosave or crash-recovery
-system. File I/O remains synchronous and bounded to 64 MiB; disk polling should
-move to a worker if real latency measurements justify it.
+system. Ordinary open/save and edit-approval checks remain synchronous and
+bounded to 64 MiB. Background polling and refresh remove their own disk reads
+from input/render, but cannot promise hard deadlines for filesystem calls.
 
 Terminal setup has a scope guard created before raw mode starts. Both screen
 state and raw mode restoration are attempted on errors. A panic hook restores

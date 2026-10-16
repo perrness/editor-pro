@@ -3,7 +3,7 @@ use std::{
     io::{self, IsTerminal, stdout},
     path::PathBuf,
     process::ExitCode,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use editor_pro::{
@@ -42,6 +42,7 @@ Objects: iw/aw, iW/aW, quotes, parentheses, brackets, braces (e.g. ciw, di{)
 Search: / or ?, Enter, n/N; Escape cancels prompts and selections
 Files: Ctrl-p or :files [directory]; :e path, :enew, :bn/:bp, :b ID, :ls
 Commands: :w [path], :q[!], :wq [path], :e[!] [path], :bd[!], :noh
+Disk: :refresh compares buffer/disk; c compare again, r reload, Esc cancel; y confirms discarding edits
 Help: F1 or :help [QUERY]; type to search, arrows scroll, Tab category, Esc returns
 Git: :changes, :diff HEAD|index|REV|staged, :gitbase REV, :gitrefresh, :gnext/:gprev
 Git keys (Normal): ]c/[c hunks, ]f/[f changed files, Space g d diff, Space g c changes
@@ -168,7 +169,6 @@ fn event_loop(
     editor: &mut Editor,
     mut preparation: Option<PathBuf>,
 ) -> io::Result<()> {
-    let mut last_check = Instant::now();
     let mut previous_mode = None;
     let mut redraw = true;
     while !editor.quit {
@@ -206,6 +206,7 @@ fn event_loop(
             || editor.lsp.installations.values().any(|state| state.busy)
             || editor.project_search.pending
             || editor.ai.pending
+            || (editor.disk.view.is_some() && editor.disk.busy)
         {
             16
         } else {
@@ -231,10 +232,6 @@ fn event_loop(
                 }
                 _ => {}
             }
-        }
-        if last_check.elapsed() >= Duration::from_secs(2) {
-            redraw |= editor.check_external();
-            last_check = Instant::now();
         }
     }
     Ok(())

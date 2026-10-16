@@ -114,7 +114,10 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
                 deadline = time.monotonic() + timeout
                 while not complete() and time.monotonic() < deadline:
                     if payload is not None:
-                        os.write(master, payload)
+                        if callable(payload):
+                            payload(master, slave, pid)
+                        else:
+                            os.write(master, payload)
                     pump(0.05)
                 assert complete(), f"Missing PTY completion {marker!r}: {output!r}"
             elif callable(command):
@@ -149,6 +152,51 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         os.close(master)
         os.close(slave)
         session_settings.cleanup()
+
+
+def run_disk_refresh_sessions(binary, directory, resize, capture_dir=None):
+    source = Path(directory) / "disk-refresh.txt"
+    original = "old 界\r\n".encode()
+    first = "agent é\r\n".encode()
+    final = "latest 👩‍💻\r\n".encode()
+    source.write_bytes(original)
+    columns = 100
+    def repaint(master, slave, pid):
+        nonlocal columns
+        # Incremental ANSI writes can split even a completed message. Repaint
+        # while waiting, without sending any additional editing/approval keys.
+        columns = 101 if columns == 100 else 100
+        resize(24, columns)(master, slave, pid)
+    def replace(master, slave, pid):
+        temporary = source.with_suffix(".temporary")
+        temporary.write_bytes(first)
+        temporary.replace(source)
+    output = run_session(binary, source, [
+        b"ilocal ", b"\x1b", replace,
+        (b"!DISK", 10), b":refresh\r", (repaint, b"Comparison ready", 10),
+        (repaint, b"UNSAVED conflict", 10), (repaint, b"- local old", 10),
+        b"r", (repaint, b"Discard unsaved", 10), b"n", b"\x1b",
+        b":w\r", (repaint, b"File changed on disk", 10),
+        b":refresh\r", (repaint, b"Comparison ready", 10),
+        lambda master, slave, pid: source.write_bytes(final),
+        b"r", b"y", (repaint, b"Disk changed", 10),
+        b"c", (repaint, b"Comparison ready", 10), resize(5, 20), resize(1, 1),
+        resize(24, 100), b"r", b"y", (repaint, b"Reloaded from disk", 10),
+        b":q\r",
+    ], final)
+    if capture_dir:
+        (Path(capture_dir) / "disk-refresh-conflict.ansi").write_bytes(output)
+
+    recovered = Path(directory) / "disk-recovered.txt"
+    output = run_session(binary, recovered, [
+        lambda master, slave, pid: source.unlink(),
+        b"\x1b[I", (b"!DISK", 10), b":refresh\r", (repaint, b"File deleted or renamed", 10),
+        b"r", b"y", b"\x1b", f":w {recovered}\r".encode(),
+        (lambda: recovered.exists() and recovered.read_bytes() == final, 10), b":q\r",
+    ], final, arguments=[source])
+    assert not source.exists()
+    if capture_dir:
+        (Path(capture_dir) / "disk-refresh-deletion.ansi").write_bytes(output)
 
 
 def run_help_session(binary, directory, resize, capture_dir=None):
@@ -746,7 +794,8 @@ def main():
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
-    print("PASS: 39 PTY sessions; searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        run_disk_refresh_sessions(binary, directory, resize, capture_dir)
+    print("PASS: 41 PTY sessions; disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

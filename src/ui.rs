@@ -27,6 +27,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         crate::help::render(frame, help, theme);
         return;
     }
+    if editor.disk.view.is_some() {
+        crate::disk::render(frame, editor, theme);
+        return;
+    }
     if editor.view == View::Tree {
         crate::file_tree::render(frame, editor, theme);
         return;

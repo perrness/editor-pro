@@ -1670,3 +1670,71 @@ Release preparation bumps the Cargo package and lockfile to **v0.2.10**. The
 stable-tag check, all three CLI/version tests, all three release-tool tests,
 offline Cargo check, formatting and whitespace checks passed. The tag-triggered
 release workflow gates publication and the Homebrew tap update on hosted checks.
+
+## Issue 10 — Safe external file refresh
+
+Validated on Linux x86_64, 2026-10-16, with Rust 1.99.0. Background disk checks
+replace the main loop's synchronous reads. One worker samples at most 16 named
+buffers per rotating batch every two seconds, with early focus checks. Content
+observations update `!DISK` and invalidate Git/review snapshots without opening
+prompts or replacing text. The source retained behind a review note is included.
+
+`:refresh` compares retained text against a stable disk sample. Reload is explicit;
+dirty text requires a separate confirmation. Cancel preserves the original context
+and undo group, including cancellation after confirmation while I/O is pending.
+Reload rechecks the compared bytes, document identity, baseline and mutation
+generation. Replies deferred behind Help are checked again. Successful reloads
+preserve line/column and viewport where possible; missing or unreadable files
+retain the source for save-as. The existing `:e` reload also retains position and
+refuses to empty a document whose file disappeared.
+
+All **344 Rust tests** passed (eleven opt-in tests ignored), including nine new
+disk regressions and a review regression. These cover restored-mtime same-size
+writes, rapid atomic replacements, clean/dirty buffers, inactive-buffer rotation,
+save conflicts/save-as, reload/save races, cancellation, Help, Unicode/CRLF and
+shorter files, invalid UTF-8/NUL content, symlinks, deletion/rename/recreation,
+tiny-terminal rendering, and repeated Git/review invalidation while a conflict
+is already flagged. Existing save and undo tests remain intact. The focused disk
+and snapshot suites also passed after the final rendering and dependency cleanup.
+
+Formatting, Clippy with warnings denied, whitespace checks, the debug build,
+all **14 Python tests**, and all **41 PTY sessions** passed:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue10-terminal python3 tools/terminal_smoke.py
+```
+
+The two new terminal workflows verify dirty comparison/reload/cancel, save refusal,
+a newer disk version rejecting an approved reload, narrow/tiny resizing, Unicode
+and CRLF bytes, deletion recovery through save-as, and terminal restoration.
+An initial harness assertion missed a ready message split across incremental ANSI
+writes. Retrying a repaint, without sending editing/approval keys, fixed the
+assertion; both focused workflows and the complete terminal run then passed.
+
+- `/tmp/editor-pro-issue10-terminal/disk-refresh-conflict.ansi`
+- `/tmp/editor-pro-issue10-terminal/disk-refresh-deletion.ansi`
+- `/tmp/editor-pro-issue10-rust-tests.log`
+- `/tmp/editor-pro-issue10-focused-tests.log`
+- `/tmp/editor-pro-issue10-terminal-tests.log`
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands used normal
+process/socket access because the sandbox could not initialize its loopback
+interface. macOS, physical terminals and real language servers/providers were
+not retested. Comparisons reuse Git's 2 MiB-per-side limit; valid text can still
+reload up to the 64 MiB document limit. Filesystem stalls have no hard deadline,
+and matching samples cannot exclude later concurrent writes. Exact save-baseline
+checks remain in place. Ordinary open/save and edit-approval disk checks retain
+their existing synchronous behavior; this change moves polling and `:refresh`
+I/O off the input/render loop.
+
+Release preparation bumps the Cargo package and lockfile to **v0.2.11**. The
+stable-tag check, all three CLI/version tests, all three release-tool tests,
+offline Cargo check, formatting and whitespace checks passed. The tag-triggered
+release workflow gates publication and the Homebrew tap update on hosted checks.

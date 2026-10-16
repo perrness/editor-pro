@@ -150,7 +150,13 @@ fn disk_checks_cover_inactive_buffers_and_switch_never_overwrites_them() {
     e.handle_key(Key::Escape);
     e.new_buffer();
     fs::write(&path, "external").unwrap();
-    assert!(e.check_external());
+    e.check_external();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while e.disk.busy {
+        e.tick();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
     assert!(
         e.buffer_infos()
             .iter()

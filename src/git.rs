@@ -850,6 +850,27 @@ fn working_mode(path: &Path) -> String {
     }
     "100644".into()
 }
+/// Used only by the disk worker; shares Git's bounds, cancellation and timeout.
+pub(crate) fn compare_disk_bytes(
+    old: &[u8],
+    new: &[u8],
+    serial: u64,
+    current: &AtomicU64,
+) -> Result<Diff, String> {
+    let config = Config::default();
+    compare_bytes(
+        &Runner {
+            config: &config,
+            serial,
+            current,
+            deadline: Instant::now() + config.timeout,
+            overrides: Vec::new(),
+        },
+        old,
+        new,
+    )
+}
+
 fn compare_bytes(runner: &Runner<'_>, old: &[u8], new: &[u8]) -> Result<Diff, String> {
     for bytes in [old, new] {
         if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {

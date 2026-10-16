@@ -301,6 +301,12 @@ const SHORTCUTS: &[Shortcut] = &[
     ),
     entry(
         "Files",
+        "Command / Disk refresh",
+        ":refresh / c / r / Esc",
+        "Compare retained buffer with disk; c compares again, r reloads, Escape cancels. Dirty reload requires y confirmation; n keeps edits. Missing files retain their buffers for save-as.",
+    ),
+    entry(
+        "Files",
         "Command",
         ":enew / :bn / :bp / :b ID / :ls",
         "New buffer, next/previous/numbered buffer, or buffer list. Other buffers retain unsaved edits.",

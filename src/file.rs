@@ -3,6 +3,7 @@ use std::{
     fs::{self, File, Metadata},
     io::{self, Read},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use tempfile::Builder;
@@ -12,10 +13,20 @@ use crate::syntax::Syntax;
 
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Last background observation, independent of editing/rendering state. Missing
+/// and empty files are distinct, and an I/O failure is never a clean sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DiskObservation {
+    pub content: Result<Option<[u8; 32]>, String>,
+    pub changed: bool,
+}
+
 pub struct Document {
     pub buffer: Buffer,
     path: Option<PathBuf>,
-    baseline: Option<Vec<u8>>,
+    baseline: Option<Arc<[u8]>>,
+    pub(crate) baseline_generation: u64,
+    pub(crate) disk_observation: Option<DiskObservation>,
     pub external_changed: bool,
     pub syntax: Syntax,
     save_generation: u64,
@@ -27,6 +38,8 @@ impl Default for Document {
             buffer: Buffer::new(""),
             path: None,
             baseline: None,
+            baseline_generation: 0,
+            disk_observation: None,
             external_changed: false,
             syntax: Syntax::for_path(None),
             save_generation: 0,
@@ -37,7 +50,11 @@ impl Default for Document {
 impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
         let path = absolute_path(path)?;
-        let baseline = read_optional(&path)?;
+        let baseline = read_optional(&path)?.map(Arc::from);
+        Self::from_disk(path, baseline)
+    }
+
+    pub(crate) fn from_disk(path: PathBuf, baseline: Option<Arc<[u8]>>) -> io::Result<Self> {
         let text = std::str::from_utf8(baseline.as_deref().unwrap_or_default())
             .map_err(|_| io::Error::other("Only UTF-8 text files are supported"))?;
         if text.contains('\0') {
@@ -50,6 +67,8 @@ impl Document {
             syntax: Syntax::for_path(Some(&path)),
             path: Some(path),
             baseline,
+            baseline_generation: 0,
+            disk_observation: None,
             external_changed: false,
             save_generation: 0,
         })
@@ -57,6 +76,10 @@ impl Document {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub(crate) fn baseline(&self) -> Option<Arc<[u8]>> {
+        self.baseline.clone()
     }
 
     pub fn save_generation(&self) -> u64 {
@@ -76,7 +99,7 @@ impl Document {
 
     pub fn check_external(&mut self) -> io::Result<bool> {
         let changed = match &self.path {
-            Some(path) => read_optional(path)? != self.baseline,
+            Some(path) => read_optional(path)?.as_deref() != self.baseline.as_deref(),
             None => false,
         };
         self.external_changed = changed;
@@ -101,12 +124,12 @@ impl Document {
             None
         };
         let disk = read_optional(&path)?;
-        if disk.as_ref() != expected {
+        if disk.as_deref() != expected.map(AsRef::as_ref) {
             if same_path {
                 self.external_changed = true;
             }
             return Err(io::Error::other(
-                "File changed on disk or destination exists. Use :w NEW_PATH to keep edits; :e! reloads",
+                "File changed on disk or destination exists. :refresh compares/reloads; :w NEW_PATH keeps edits",
             ));
         }
 
@@ -141,7 +164,7 @@ impl Document {
         temporary.as_file().sync_all()?;
 
         // Narrow (but cannot eliminate) the race with non-cooperating writers.
-        if read_optional(&path)?.as_ref() != expected {
+        if read_optional(&path)?.as_deref() != expected.map(AsRef::as_ref) {
             if same_path {
                 self.external_changed = true;
             }
@@ -163,7 +186,9 @@ impl Document {
             self.syntax = Syntax::for_path(Some(&path));
         }
         self.path = Some(path);
-        self.baseline = Some(self.buffer.text().to_string().into_bytes());
+        self.baseline = Some(self.buffer.text().to_string().into_bytes().into());
+        self.baseline_generation += 1;
+        self.disk_observation = None;
         self.external_changed = false;
         #[cfg(unix)]
         File::open(parent)
@@ -195,7 +220,7 @@ pub(crate) fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     Ok(parent.canonicalize()?.join(name))
 }
 
-fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(io::Error::other(
@@ -212,7 +237,22 @@ fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     }
-    let file = File::open(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // An agent can replace the entry between metadata and open. Never
+        // follow a replacement symlink or block opening a replacement FIFO.
+        options.custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+        );
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+        return Err(io::Error::other("Expected a regular file up to 64 MiB"));
+    }
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {

@@ -91,6 +91,7 @@ pub struct Editor {
     pub(crate) buffers: BTreeMap<usize, BufferSlot>,
     pub view: View,
     pub help: Option<crate::help::Help>,
+    pub disk: crate::disk::DiskState,
     pub picker: Option<FilePicker>,
     pub tree: crate::file_tree::FileTree,
     pub git: crate::git_view::GitState,
@@ -126,6 +127,7 @@ impl Editor {
             buffers: BTreeMap::new(),
             view: View::Editing,
             help: None,
+            disk: crate::disk::DiskState::default(),
             picker: None,
             tree: crate::file_tree::FileTree::default(),
             git: crate::git_view::GitState::default(),
@@ -164,6 +166,10 @@ impl Editor {
         }
         if key == Key::F1 {
             self.open_help("");
+            return;
+        }
+        if self.disk.view.is_some() {
+            self.refresh_key(key);
             return;
         }
         if self.view == View::Tree {
@@ -914,7 +920,7 @@ impl Editor {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if self.help.is_some() {
+        if self.help.is_some() || self.disk.view.is_some() {
             return;
         }
         self.dismiss_completion();
@@ -1022,6 +1028,11 @@ impl Editor {
         if self.help.is_some() {
             return Err(io::Error::other("Help is read-only; Escape returns"));
         }
+        if self.disk.view.is_some() {
+            return Err(io::Error::other(
+                "Disk comparison is read-only; Escape cancels",
+            ));
+        }
         if self.note_edit.is_some() {
             return if name == "note" {
                 self.note_command(argument)
@@ -1064,6 +1075,7 @@ impl Editor {
                 self.quit = true;
             }
             "e" | "e!" => self.edit_command(argument, name == "e!")?,
+            "refresh" if argument.is_empty() => self.open_refresh()?,
             "back" | "forward" if argument.is_empty() => self.navigate_history(name == "back")?,
             "recent" if argument.is_empty() => self.open_recent(),
             "tree" => self.toggle_tree((!argument.is_empty()).then(|| Path::new(argument)))?,

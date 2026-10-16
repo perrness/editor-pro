@@ -187,23 +187,39 @@ impl Editor {
                 .path()
                 .ok_or_else(|| io::Error::other("No file name"))?;
             let document = Document::open(path)?;
-            self.document = document;
-            self.viewport = Viewport::default();
-            self.reset_context();
+            if document.baseline().is_none() && self.document.baseline().is_some() {
+                return Err(io::Error::other(
+                    "File deleted or renamed; buffer retained. :refresh compares; :w NEW_PATH recovers it",
+                ));
+            }
+            self.replace_reloaded_document(document);
         } else if force {
             // A forced open reloads the requested target, never the document
             // being left behind. Prepare it first so failure cannot lose state.
             let document = Document::open(Path::new(argument))?;
             let path = document.path().unwrap().to_path_buf();
             self.open_buffer(&path)?;
-            self.document = document;
-            self.viewport = Viewport::default();
-            self.reset_context();
+            self.replace_reloaded_document(document);
         } else {
             self.open_buffer(Path::new(argument))?;
         }
         self.info("Opened");
         Ok(())
+    }
+
+    pub(crate) fn replace_reloaded_document(&mut self, mut document: Document) {
+        let (line, column) = self.document.buffer.position();
+        let line = line.min(document.buffer.line_count() - 1);
+        let cursor = document.buffer.text().line_to_char(line)
+            + column.min(document.buffer.line(line).chars().count());
+        document.buffer.set_cursor(cursor, false);
+        self.document = document;
+        self.viewport.top = self.viewport.top.min(line);
+        self.viewport.left = self.viewport.left.min(crate::text::display_column(
+            &self.document.buffer.line(line),
+            self.document.buffer.position().1,
+        ));
+        self.reset_context();
     }
 
     pub(crate) fn save_current(&mut self, destination: Option<&Path>) -> io::Result<()> {
@@ -233,37 +249,6 @@ impl Editor {
             )));
         }
         Ok(())
-    }
-
-    pub fn check_external(&mut self) -> bool {
-        let mut changed = false;
-        let mut message = None;
-        for (id, document) in std::iter::once((self.active_buffer_id, &mut self.document)).chain(
-            self.buffers
-                .iter_mut()
-                .map(|(id, slot)| (*id, &mut slot.document)),
-        ) {
-            let before = document.external_changed;
-            match document.check_external() {
-                Ok(true) if !before => {
-                    message = Some(format!(
-                        "Buffer {id} changed on disk. :e! reloads; :w NEW_PATH preserves edits"
-                    ))
-                }
-                Err(error) => {
-                    document.external_changed = true;
-                    if !before {
-                        message = Some(format!("Cannot check buffer {id} on disk: {error}"));
-                    }
-                }
-                _ => {}
-            }
-            changed |= before != document.external_changed;
-        }
-        if let Some(message) = message {
-            self.error(&message);
-        }
-        changed
     }
 
     pub(crate) fn buffer_list_key(&mut self, key: Key) {
