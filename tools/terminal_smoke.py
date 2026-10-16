@@ -633,14 +633,18 @@ def main():
         ], b"status fixture\r\n", cwd=status_source.parent)
         if capture_dir:
             (Path(capture_dir) / "repository-relative-status.ansi").write_bytes(output)
+        # Keep the extra Git status label identical locally and on hosted runners.
+        git("config", "filter.status-fixture.clean", "cat")
         shortened_status = f" {short_status_path}".encode()
         output = run_session(binary, long_status_source, [
-            b":gitrefresh\r", resize(24, 260), (b"main", 10),
-            resize(24, 195), (shortened_status, 10), b"i// LOCAL ", b"\x1b",
-            resize(7, 45), resize(3, 1), resize(24, 195), (shortened_status, 10),
+            b":gitrefresh\r", resize(24, 260), (b"main", 10), (b"Failed", 10),
+            resize(24, 200), (shortened_status, 10), b"i// LOCAL ", b"\x1b",
+            resize(7, 45), resize(3, 1), resize(24, 200), (shortened_status, 10),
             b"u", resize(24, 260), (f" Gjensidige.Alarm.Bff/{short_status_path}".encode(), 10),
             b":q\r",
-        ], b"// status fixture\r\n", cwd=long_status_source.parent)
+        ], b"// status fixture\r\n", cwd=long_status_source.parent,
+            environment={"EDITOR_PRO_CSHARP_LSP": json.dumps([str(repo / "missing-status-lsp")])})
+        git("config", "--remove-section", "filter.status-fixture")
         if capture_dir:
             (Path(capture_dir) / "shortened-status-path.ansi").write_bytes(output)
         rows[2] = "STAGED change\n"

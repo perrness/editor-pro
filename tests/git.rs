@@ -530,11 +530,19 @@ fn status_path_drops_whole_outer_directories_when_space_is_limited() {
     let relative = format!("Gjensidige.Alarm.Bff/{short}");
     r.write(&relative, "// original\r\n");
     r.commit();
+    // Hosted runners configure Git filters. Include their status label on every
+    // platform so the available path width does not depend on global Git config.
+    r.git(&["config", "filter.status-fixture.clean", "cat"]);
     let mut e = Editor::new(Document::open(&r.path(&relative)).unwrap());
+    e.lsp.config.commands.insert(
+        editor_pro::lsp::Language::CSharp,
+        vec![r.path("missing-status-lsp").into_os_string()],
+    );
     settle_editor(&mut e);
+    assert!(e.git.snapshot.as_ref().unwrap().filters_disabled);
     let absolute = e.document.path().unwrap().to_path_buf();
 
-    for width in [195, 400, 195] {
+    for width in [205, 400, 205] {
         let expected = if width == 400 { &relative } else { short };
         let status = status_line(&mut e, width);
         assert!(
@@ -553,7 +561,7 @@ fn status_path_drops_whole_outer_directories_when_space_is_limited() {
         if !pending {
             settle_editor(&mut e);
         }
-        let status = status_line(&mut e, 190);
+        let status = status_line(&mut e, 205);
         assert!(
             status.starts_with(&format!(" NORMAL  [B1] {short} [+] ")),
             "{status}"

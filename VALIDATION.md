@@ -2103,3 +2103,19 @@ Offline Cargo check, all three CLI tests, all eleven rendering tests, all three
 release-tool tests, the matching-tag check, formatting and whitespace checks
 passed after the version bump. The tag-triggered workflow gates publication and
 the Homebrew tap update on its hosted checks and installed-binary acceptance.
+
+The first hosted run blocked **v0.2.17** before publication: runners configure
+Git filters, adding `[filters off]` to the statusline and leaving less path space
+than the new regression assumed. The renderer correctly dropped another directory.
+The Rust and PTY fixtures now configure a filter and an unavailable LSP explicitly;
+their widths include the filter label, and the PTY waits for the LSP failure
+before checking a width that also remains stable through Git refreshes.
+
+The correction prepares **v0.2.18**, preserving the earlier tag. All 55 focused
+Git/CLI/rendering tests, all-target Clippy, the six release/harness tests, the
+debug build, version, formatting and whitespace checks passed. All 56 terminal
+scenarios completed across the main run and a focused retry: an existing
+file-deletion marker timed out once, then both disk-refresh sessions and the
+remaining AI sessions passed without further source changes. Recovery logs are
+`/tmp/editor-pro-issue16-recovery-{tests,clippy,terminal-tests,terminal-retry}.log`;
+captures are in `/tmp/editor-pro-issue16-recovery-terminal`.
