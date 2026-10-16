@@ -118,3 +118,33 @@ the deterministic suite covers crash/restart races with a protocol double.
 The earlier standalone Kotlin protocol experiment remains in `../kotlin-lsp/`.
 It checks a narrower Maven workflow, including clean shutdown/exit, independently
 of the Rust client. Its reports must not be substituted for these editor tests.
+
+## Startup latency comparison
+
+`tests/lsp_startup_real.rs` adds four opt-in benchmarks for Kotlin Gradle, Java
+Maven/Gradle and a C# solution. It uses the production manager and installed
+servers, without automatic installation. Supply the same argv overrides or
+`EDITOR_PRO_LSP_INSTALL_DIR` as above, with required SDKs on PATH:
+
+```sh
+EDITOR_PRO_LSP_REPORT_DIR=/tmp/editor-pro-startup-reports \
+  cargo test --locked --test lsp_startup_real -- --ignored --nocapture --test-threads=1
+```
+
+Each test alternates lazy/warm/warm/lazy runs with fresh project copies and
+processes. Both modes simulate ten seconds of browsing before opening the source;
+`EDITOR_PRO_LSP_BROWSE_MS` changes this lead time. Lazy mode starts the manager
+on file open, reproducing the previous startup behavior. Warm mode queues project
+preparation immediately, then sends the same document snapshot on open. A request
+counts only when definition resolves to the expected other source file. Empty or
+failed responses are recorded and retried, retaining normal request deadlines;
+the overall wait caps at four minutes after opening. Reports include latency from
+both launch and file open, initialization, first observed nonempty diagnostics,
+phase logs, retries, fixture fingerprint and session epochs (one required).
+
+Dependency/SDK caches are shared and not cleared; fresh processes/projects are
+not a measurement of empty-cache downloads. Alternate order exposes some cache
+effects but two samples per mode are insufficient for production performance
+claims. Do not compare initialize responses alone: Gradle/Maven/.NET import,
+indexing or document-triggered work can continue afterward. Keep failures in the
+report and distinguish additional cold-download runs from cached comparisons.

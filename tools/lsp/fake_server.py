@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic protocol test double. Not evidence of real language support."""
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -18,8 +19,14 @@ documents = {}
 root = ""
 executing = None
 starts = Path(args.log + ".starts")
-count = int(starts.read_text()) + 1 if starts.exists() else 1
-starts.write_text(str(count))
+with starts.open("a+") as counter:
+    fcntl.flock(counter, fcntl.LOCK_EX)
+    counter.seek(0)
+    count = int(counter.read() or "0") + 1
+    counter.seek(0)
+    counter.truncate()
+    counter.write(str(count))
+    counter.flush()
 diagnostic_pulls = 0
 refresh_supported = False
 
@@ -160,6 +167,9 @@ while True:
             caps["positionEncoding"] = "utf-8"
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "fake"}]}})
         send({"method": "$/progress", "params": {"token": 1, "value": {"kind": "begin", "title": "fake import"}}})
+        if args.scenario == "initialize-held":
+            while not Path(args.log + ".initialize").exists():
+                time.sleep(.01)
         send({"id": ident, "result": {"capabilities": caps, "serverInfo": {"name": "TEST DOUBLE"}}})
     elif method == "textDocument/didOpen":
         doc = p["textDocument"]

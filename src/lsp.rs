@@ -117,6 +117,11 @@ pub struct Request {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    Sessions {
+        keys: Vec<ServerKey>,
+        warm: Vec<ServerKey>,
+        discovering: bool,
+    },
     Installation {
         language: Language,
         state: crate::lsp_install::State,

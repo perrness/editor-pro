@@ -9,7 +9,7 @@ use crate::{
 use lsp_types::{Diagnostic, Position};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     path::{Path, PathBuf},
     time::Instant,
@@ -26,6 +26,9 @@ pub struct LspState {
     pub installations: BTreeMap<Language, crate::lsp_install::State>,
     worker: Option<Worker>,
     snapshots: Vec<Snapshot>,
+    sessions: BTreeSet<ServerKey>,
+    warm_sessions: BTreeSet<ServerKey>,
+    pub discovering: bool,
     pub routes: BTreeMap<PathBuf, ServerKey>,
     pub unavailable: BTreeMap<PathBuf, String>,
     pub servers: BTreeMap<ServerKey, ServerInfo>,
@@ -158,6 +161,21 @@ impl LspState {
 }
 
 impl Editor {
+    /// Queue directory discovery on the existing manager. No filesystem or
+    /// server work occurs on the editor thread. None cancels unused preparation.
+    pub fn prepare_lsp(&mut self, directory: Option<PathBuf>) -> io::Result<()> {
+        if directory.is_some() && self.lsp.worker.is_none() {
+            self.lsp.worker = Some(Worker::new(self.lsp.config.clone())?);
+        }
+        let discovering = directory.is_some();
+        if let Some(worker) = &self.lsp.worker
+            && worker.prepare(directory)
+        {
+            self.lsp.discovering = discovering;
+        }
+        Ok(())
+    }
+
     pub(crate) fn ai_lsp_symbol(&self) -> io::Result<(PathBuf, lsp_types::Range)> {
         let panel = self
             .lsp
@@ -292,7 +310,12 @@ impl Editor {
                 .unavailable
                 .retain(|path, _| self.lsp.snapshots.iter().any(|s| &s.path == path));
             if self.lsp.snapshots.is_empty() {
-                self.lsp.servers.clear();
+                self.lsp
+                    .sessions
+                    .retain(|key| self.lsp.warm_sessions.contains(key));
+                self.lsp
+                    .servers
+                    .retain(|key, _| self.lsp.warm_sessions.contains(key));
             }
         }
         let mut redraw = changed;
@@ -330,10 +353,22 @@ impl Editor {
                 self.error(&e.to_string());
             }
         }
-        if self.lsp.servers.len() > 16 {
-            self.lsp
-                .servers
-                .retain(|key, _| self.lsp.routes.values().any(|r| r == key));
+        if redraw
+            && self.view == View::Lsp
+            && self
+                .lsp
+                .panel
+                .as_ref()
+                .is_some_and(|panel| panel.title == "LspInfo")
+        {
+            let panel = self.lsp.panel.as_ref().unwrap();
+            let (selected, top, left) = (panel.selected, panel.top, panel.left);
+            self.lsp_information("LspInfo");
+            if let Some(panel) = &mut self.lsp.panel {
+                panel.selected = selected.min(panel.rows.len().saturating_sub(1));
+                panel.top = top.min(panel.rows.len().saturating_sub(1));
+                panel.left = left;
+            }
         }
         if self.lsp.pending
             && self.lsp.started.is_some_and(|t| {
@@ -356,29 +391,37 @@ impl Editor {
     }
     fn lsp_event(&mut self, event: Event) -> io::Result<()> {
         match event {
+            Event::Sessions {
+                keys,
+                warm,
+                discovering,
+            } => {
+                self.lsp.warm_sessions = warm.into_iter().collect();
+                // Membership can have been queued before the last source was
+                // closed. Do not resurrect its UI state during async teardown.
+                self.lsp.sessions = keys
+                    .into_iter()
+                    .filter(|key| {
+                        self.lsp.warm_sessions.contains(key)
+                            || self.lsp.routes.values().any(|route| route == key)
+                    })
+                    .collect();
+                self.lsp.discovering = discovering;
+                self.lsp
+                    .servers
+                    .retain(|key, _| self.lsp.sessions.contains(key));
+                for key in &self.lsp.sessions {
+                    self.lsp
+                        .servers
+                        .entry(key.clone())
+                        .or_insert_with(|| ServerInfo {
+                            status: format!("Preparing {}", key.language.id()),
+                            ..ServerInfo::default()
+                        });
+                }
+            }
             Event::Installation { language, state } => {
                 self.lsp.installations.insert(language, state);
-                if self.view == View::Lsp
-                    && self
-                        .lsp
-                        .panel
-                        .as_ref()
-                        .is_some_and(|p| p.title == "LspInfo")
-                {
-                    let position = self
-                        .lsp
-                        .panel
-                        .as_ref()
-                        .map(|panel| (panel.selected, panel.top, panel.left));
-                    self.lsp_information("LspInfo");
-                    if let (Some((selected, top, left)), Some(panel)) =
-                        (position, &mut self.lsp.panel)
-                    {
-                        panel.selected = selected.min(panel.rows.len().saturating_sub(1));
-                        panel.top = top.min(panel.rows.len().saturating_sub(1));
-                        panel.left = left;
-                    }
-                }
             }
             Event::Doctor { path, report } => {
                 if self.document.path() == Some(&path)
@@ -408,7 +451,7 @@ impl Editor {
                 message,
                 capabilities,
             } => {
-                if !self.lsp.routes.values().any(|k| k == &key) {
+                if !self.lsp.sessions.contains(&key) {
                     return Ok(());
                 }
                 let info = self.lsp.servers.entry(key.clone()).or_default();
@@ -428,7 +471,7 @@ impl Editor {
                 }
             }
             Event::Log { key, message } => {
-                if !self.lsp.routes.values().any(|k| k == &key) {
+                if !self.lsp.sessions.contains(&key) {
                     return Ok(());
                 }
                 let info = self.lsp.servers.entry(key).or_default();
@@ -1543,6 +1586,26 @@ impl Editor {
         for (language, state) in &self.lsp.installations {
             text += &format!("Install {}: {}\n", language.id(), state.message);
         }
+        if self.lsp.discovering {
+            text += "Preparing: detecting project languages in background\n";
+        }
+        for (other, server) in &self.lsp.servers {
+            if Some(other) != key {
+                text += &format!(
+                    "Prepared {}: {}\nRoot: {}\nSession: {}\n",
+                    other.language.id(),
+                    server.status,
+                    other.root.display(),
+                    server.epoch
+                );
+                if key.is_none() {
+                    for log in &server.logs {
+                        text += log;
+                        text.push('\n');
+                    }
+                }
+            }
+        }
         if let Some(key) = key {
             text += &format!(
                 "Language: {}\nProject root: {}\nCommand override: {} (JSON argv, no shell)\n",
@@ -1618,12 +1681,32 @@ impl Editor {
         })
     }
     pub fn lsp_summary(&self) -> String {
-        let Some(path) = self.document.path() else {
-            return String::new();
-        };
-        if Language::for_path(path).is_none() || self.note_edit.is_some() {
+        if self.note_edit.is_some() {
             return String::new();
         }
+        let path = self
+            .document
+            .path()
+            .filter(|path| Language::for_path(path).is_some());
+        let Some(path) = path else {
+            if self.lsp.discovering {
+                return "LSP detecting projects".into();
+            }
+            if let Some((language, state)) =
+                self.lsp.installations.iter().find(|(_, state)| state.busy)
+            {
+                return format!("LSP {}: {}", language.id(), state.message);
+            }
+            return self
+                .lsp
+                .servers
+                .iter()
+                .find(|(_, info)| info.status != "Ready")
+                .or_else(|| self.lsp.servers.iter().next())
+                .map_or_else(String::new, |(key, info)| {
+                    format!("LSP {}: {}", key.language.id(), info.status)
+                });
+        };
         if let Some(state) =
             Language::for_path(path).and_then(|language| self.lsp.installations.get(&language))
         {
@@ -1663,16 +1746,7 @@ impl Editor {
             .routes
             .get(path)
             .and_then(|k| self.lsp.servers.get(k))
-            .map_or_else(
-                || "LSP starting".into(),
-                |s| {
-                    if s.capabilities.is_object() {
-                        format!("LSP {}", s.status)
-                    } else {
-                        "LSP unavailable (:LspInfo)".into()
-                    }
-                },
-            )
+            .map_or_else(|| "LSP starting".into(), |s| format!("LSP {}", s.status))
     }
     fn open_diagnostics(&mut self) {
         self.close_lsp_panel();

@@ -35,6 +35,7 @@ review_store.rs bounded loading, record CAS, atomic persistence and Markdown wor
 review_view.rs  review commands, progress/navigation and contextual record list
 lsp.rs         protocol positions, immutable document stamps, capabilities and roots
 lsp_worker.rs  bounded multi-project server lifecycle, transport and synchronization
+lsp_warmup.rs  bounded cancellable project hints for the existing session manager
 lsp_install.rs pinned per-user server provisioning, runtime selection and installation jobs
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
@@ -463,6 +464,33 @@ restored too. Signals/job control require a separate future hardening change.
 ## Language-server integration
 
 One manager owns at most eight sessions keyed by project root and language.
+Directory/no-argument startup queues optional `lsp.warmup` (default true) only
+after the first terminal frame. A latest-value directory channel feeds one
+cancellable blocking scan owned by the same manager. The scan uses the nearest
+Git boundary (including worktree files), or nearest build marker outside Git,
+and examines at most two child levels, 64 directories, 4,096 entries, 512 KiB of
+marker content (64 KiB/file), and one second between filesystem calls. Hidden,
+generated/vendor directories, nested repositories and directory symlinks are
+skipped. Filesystem calls themselves are not hard-time bounded. Gradle Kotlin DSL
+filenames alone are not Kotlin evidence. Conservative layout/plugin hints feed
+the existing root resolver, including root overrides; no alternate root policy
+or second server manager is used. More than two candidate sessions or exhausted
+scan budgets fall back to demand-driven startup.
+
+Warm sessions have empty document snapshots, use ordinary startup/install/retry
+and shutdown paths, and are keyed exactly like sessions for opened documents.
+Opening a matching source claims its session, after which closing its last
+document retains normal teardown behavior. Other warm sessions are evicted before
+denying capacity to source documents. Replacing/cancelling preparation invalidates
+scan results, closes unused warm sessions and cancels installations initiated only
+for them; an open document or explicit install command retains a shared install.
+Session-membership events let the existing statusline/info view display progress
+before any source opens. Phase timings in bounded session logs distinguish
+executable discovery, runtime probing, process spawning, initialize response and
+first document synchronization; initialize completion does not prove indexing is
+finished. Explicit file startup and library editors remain lazy unless preparation
+is explicitly requested.
+
 A latest-value watch channel coalesces immutable Rope snapshots; bounded channels
 carry commands and results. Discovery, process spawning, protocol framing,
 serialization, synchronization and SDK probes run on its private Tokio thread.

@@ -148,7 +148,12 @@ fn run() -> io::Result<()> {
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
-    let result = event_loop(&mut terminal, &mut editor);
+    let preparation = if settings.lsp.warmup && (path.is_none() || directory.is_some()) {
+        env::current_dir().ok()
+    } else {
+        None
+    };
+    let result = event_loop(&mut terminal, &mut editor, preparation);
     drop(terminal);
     let restored = restore_terminal();
     // Drop is a fallback for early returns; restoration is deliberately idempotent.
@@ -159,6 +164,7 @@ fn run() -> io::Result<()> {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     editor: &mut Editor,
+    mut preparation: Option<PathBuf>,
 ) -> io::Result<()> {
     let mut last_check = Instant::now();
     let mut previous_mode = None;
@@ -179,6 +185,14 @@ fn event_loop(
             let theme = editor.theme.palette();
             terminal.draw(|frame| ui::render(frame, editor, &theme))?;
             redraw = false;
+            // Directory inspection starts only after the first frame is visible.
+            if let Some(directory) = preparation.take() {
+                if let Err(error) = editor.prepare_lsp(Some(directory)) {
+                    editor.message = format!("Cannot prepare language servers: {error}");
+                    editor.message_is_error = true;
+                }
+                redraw = true;
+            }
         }
         let poll_ms = if editor.view == View::Files
             || editor.git.loading

@@ -82,7 +82,7 @@ for the tap bootstrap, automated formula updates and manual binary installation.
 {
   "theme": "gruvbox",
   "editor": { "relative_line_numbers": true },
-  "lsp": { "auto_install": true }
+  "lsp": { "auto_install": true, "warmup": true }
 }
 ```
 
@@ -473,6 +473,23 @@ conflict while unrelated annotation changes merge. Validation still covers the
 current path plus up to 31 other annotated paths within Git's five-second budget.
 
 ## Language intelligence
+
+Launching `editor-pro .`, another directory, or with no arguments prepares likely
+Java, Kotlin and C# servers in the background after the first terminal frame.
+Discovery checks the repository/build root and at most two levels of child
+projects, using Gradle/Maven/solution markers and source-layout hints. Kotlin DSL
+build scripts alone do not select Kotlin. At most two likely sessions are warmed;
+broader polyglot projects, ambiguous solutions and unrecognized layouts keep lazy
+startup. Set `"lsp": { "warmup": false }` to disable preparation independently of
+automatic installation. Explicit file arguments retain normal lazy startup.
+
+Opening a matching source reuses the prepared session and synchronizes its current
+unsaved text. Root/argv overrides, installation policy and runtime requirements
+still apply. Unused warm sessions yield to opened files at the eight-session limit.
+Startup/import status appears in the statusline and `:LspInfo`; preparation does
+not send notifications or open hidden documents. Server import and indexing can
+continue after initialization, and some servers defer work until a document opens.
+Preparation moves work earlier; it does not guarantee instant code intelligence.
 
 Language servers are optional. Opening a named Kotlin (`.kt`/`.kts`), Java
 (`.java`) or C# (`.cs`) buffer starts background discovery. Default commands are

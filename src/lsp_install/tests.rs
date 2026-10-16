@@ -295,6 +295,65 @@ fn cancellation_cleans_staging_and_explicit_retry_succeeds() {
 }
 
 #[test]
+fn warm_installation_cancels_when_unused_but_is_retained_by_open_documents() {
+    for claimed in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        fs::write(root.join(".git"), "").unwrap();
+        fs::write(root.join("pom.xml"), "kotlin-maven-plugin").unwrap();
+        let main = root.join("Main.kt");
+        fs::write(&main, "bad value\r\n").unwrap();
+        let log = root.join("protocol.jsonl");
+        let body = package(&log);
+        let server = Server::new(body.clone(), Duration::from_millis(60));
+        let mut editor = Editor::new(Document::default());
+        editor.lsp.config.installation = options(
+            &root.join("managed"),
+            test_recipe(&body, server.url.clone()),
+        );
+        editor.prepare_lsp(Some(root.clone())).unwrap();
+        wait(&mut editor, |_| server.requests.load(Ordering::Relaxed) > 0);
+        if claimed {
+            editor.open_buffer(&main).unwrap();
+            editor.document.buffer.insert("unsaved ");
+            editor.tick();
+        }
+        editor.prepare_lsp(None).unwrap();
+        if !claimed {
+            wait(&mut editor, |e| {
+                e.lsp.servers.is_empty()
+                    && e.lsp
+                        .installations
+                        .values()
+                        .any(|state| !state.busy && state.failed)
+            });
+            assert!(
+                !log.exists(),
+                "Cancelled installation must not launch a session"
+            );
+            editor.open_buffer(&main).unwrap();
+            editor.execute_command("LspInstall kotlin").unwrap();
+        }
+        wait(&mut editor, |e| e.current_diagnostics().is_some());
+        assert_eq!(
+            server.requests.load(Ordering::Relaxed),
+            if claimed { 1 } else { 2 }
+        );
+        let messages = fs::read_to_string(log).unwrap();
+        assert_eq!(
+            messages
+                .lines()
+                .filter(|line| line.contains("\"method\": \"initialize\""))
+                .count(),
+            1
+        );
+        if claimed {
+            assert!(messages.contains("unsaved bad value"));
+        }
+    }
+}
+
+#[test]
 fn checksum_and_network_errors_leave_no_active_installation() {
     let temp = tempfile::tempdir().unwrap();
     let body = package(&temp.path().join("log"));

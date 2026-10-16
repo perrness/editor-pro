@@ -1458,3 +1458,97 @@ Release preparation bumps the Cargo package and lockfile to v0.2.7. The stable
 tag check, all three CLI/version tests, all three release-tool tests, an offline
 Cargo check, formatting and whitespace checks passed. The tag-triggered release
 workflow gates native macOS archives and Homebrew publication on hosted checks.
+
+## Repository language-server preparation
+
+2026-10-16, Linux x86_64. [Issue #14](https://github.com/perrness/editor-pro/issues/14)
+starts bounded project detection after the first frame for directory/no-argument
+launches. Up to two likely sessions use the existing LSP manager; matching sources
+claim them without another initialize/process. Explicit file launches remain lazy.
+`lsp.warmup` defaults to true and can be disabled independently of installation.
+
+Formatting, Clippy with warnings denied, the debug build, all **317 Rust tests**
+(eleven opt-in tests ignored), all **14 Python tests**, and all **37 PTY sessions**
+passed. New regressions cover Gradle Kotlin DSL versus source languages, mixed and
+nested projects, Maven/solution roots, overrides, ambiguity, scan limits and
+symlinks; initialization/file-opening races, Unicode/CRLF unsaved synchronization,
+cancellation/replacement, installation ownership/retry, missing executables, crash
+recovery, documentless shutdown and eviction at the eight-session limit.
+
+The terminal sessions launch both `editor-pro .` and with no arguments, hold the
+server's initialize response, inspect preparation status, open/edit/resize before
+releasing initialization, and verify one initialize, current unsaved text, unchanged
+disk bytes and terminal restoration. Captures:
+`/tmp/editor-pro-issue14-terminal/lsp-warmup-directory.ansi` and
+`/tmp/editor-pro-issue14-terminal/lsp-warmup-cwd.ansi`.
+
+The initial full Rust run exposed queued membership events restoring a closed
+session's UI state. Membership is now filtered against current routes and warm
+sessions; the focused regression and complete rerun passed. Concurrent session
+tests also required locking the protocol double's process counter. The first
+full PTY run exposed an existing footer assertion split by ANSI cursor movements;
+matching the completion view title fixed the assertion and the complete rerun passed.
+
+### Real-server latency investigation
+
+The new opt-in `lsp_startup_real` suite measures the first definition response
+pointing to the expected other source file. It records failed/empty attempts,
+initialization, nonempty diagnostics when observed, session epochs and startup
+phase logs. Each fixture alternates lazy/warm/warm/lazy with fresh project copies
+and processes and a ten-second browsing interval in both modes. Reports record
+latency from launch as well as file opening. JDT workspace indexes are fresh;
+dependency/SDK caches are shared. These are small fixture measurements with two
+samples per mode, not large-project or empty-cache download guarantees.
+
+All four fixtures passed in the initial run (sixteen successful sessions, each
+with one session epoch). In that exploratory run, executable discovery rounded
+to 0.000 s, runtime probing took 0.032–0.282 s, process spawning 0.000–0.003 s,
+and initial document synchronization 0.000–0.002 s. Initialize responses took
+0.57–0.64 s for C#, 6.45–8.94 s for Java and 4.48–8.46 s for Kotlin, while useful
+definitions arrived later. The first Java Gradle import took 78.98 s after file
+open: progress showed Gradle API JAR generation, Kotlin DSL compilation and model
+import after initialize had already completed. Later lazy startup took 16.57 s.
+Those cache/setup effects are recorded separately from preparation benefits.
+The initial reports are preserved in `/tmp/editor-pro-issue14-real`.
+
+The repeat comparison ran after Rust/Python/PTY/lint work finished, with the
+same installed distributions and populated dependency caches. All four tests
+passed in 360.89 s, covering sixteen useful definitions and one session epoch per
+run. The two observed samples per mode give these ranges, in seconds **after
+file opening**, with ten seconds of browsing before opening in both modes:
+
+| Real fixture | Lazy startup | Background preparation |
+| --- | --- | --- |
+| Kotlin multi-module Gradle | 39.49–42.93 | 27.82–29.72 |
+| Java Maven | 7.10–11.20 | 0.72–1.01 |
+| Java multi-module Gradle | 9.09–9.46 | 0.69–0.70 |
+| C# multi-project solution | 3.74–4.13 | 3.10–3.30 |
+
+Add approximately ten seconds to each figure for elapsed time from launch.
+These measure protocol responses through the production manager, with terminal
+responsiveness checked separately above. Final reports, including phase logs,
+attempts and fixture fingerprints, are in `/tmp/editor-pro-issue14-real-final`.
+
+Preparation spends
+CPU and memory earlier, even if a source is never opened, so it remains optional
+and capped at two candidates. It cannot remove import/indexing work, and an
+immediate file open offers little opportunity to hide that work. The C# runs in
+particular still take several seconds after opening despite early initialization.
+
+Managed distributions were reused from `/tmp/editor-pro-issue7-servers`: Kotlin
+263.6379.0 with bundled JBR 25, JDT LS 1.60.0 with installed OpenJDK 25, and
+csharp-ls 0.28.0 with .NET SDK 10.0.402 in `/tmp/editor-pro-issue7-dotnet`.
+Gradle fixtures use 9.1.0 and the installed JDK 21 project toolchain. No server
+download was needed; installation cancellation/retry is covered separately with
+local HTTP fixtures. Reproduction is documented in `tools/lsp/README.md`.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands used normal
+process/socket access because the sandbox could not initialize its loopback
+interface. macOS, physical terminals, uncached downloads and large production
+repositories were not tested. Filesystem stalls remain outside hard deadlines.
+
+Release preparation bumps the Cargo package and lockfile to v0.2.8. The stable
+tag check, all three CLI/version tests, all three release-tool tests, an offline
+Cargo check, formatting and whitespace checks passed. The tag-triggered release
+workflow gates native macOS archives and Homebrew publication on hosted checks.

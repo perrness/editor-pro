@@ -507,11 +507,12 @@ impl Installer {
     pub fn busy(&self) -> bool {
         !self.jobs.is_empty()
     }
-    pub fn automatic(&mut self, language: Language) -> io::Result<()> {
+    pub fn automatic(&mut self, language: Language) -> io::Result<bool> {
         if self.options.auto_install && !self.attempted.contains(&language) {
             self.start(language)?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
     pub fn start(&mut self, language: Language) -> io::Result<()> {
         if self.jobs.contains_key(&language) {

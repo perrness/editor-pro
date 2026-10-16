@@ -174,14 +174,14 @@ def run_completion_acceptance_session(binary, directory, resize, capture_dir=Non
         b"\x1b[B", b"\x1b[A", b"\x1b[B", b"\r", (b"inserted", 10),
         b"\x1b", b":w\r", (saved("😀 value.lengthSquared\r\nnext\r\n".encode()), 10),
         b"u", b":w\r", (saved(partial), 10),
-        b"A\x0e", (b"Tab accept", 10), b"d", (b"Resolved", 10),
+        b"A\x0e", (b"completion (", 10), b"d", (b"Resolved", 10),
         resize(3, 1), resize(24, 100), b"\t", resize(24, 101), (b"Completion inserted", 10),
         b"\x1b", b":w\r", (saved("😀 value.length\r\nnext\r\n".encode()), 10),
         b"u", b":w\r", (saved(partial), 10),
         b"A\x7fe", (b"Tab/Enter accept", 10), b"\x1b", b"\t\r",
         b"\x1b", b":w\r", (saved("😀 value.le\t\r\n\r\nnext\r\n".encode()), 10),
         b"u", b":w\r", (saved(partial), 10),
-        b"A\x0e", (b"Tab accept", 10), b"\x1b", b"\x1b", b":q\r",
+        b"A\x0e", (b"completion (", 10), b"\x1b", b"\x1b", b":q\r",
     ], partial, environment)
     assert b"Enter applies" not in output, "Plain completions opened an edit preview"
     messages = [json.loads(line) for line in log.read_text().splitlines()]
@@ -218,6 +218,42 @@ def run_file_tree_session(binary, directory, resize, capture_dir=None):
     ], tree_source.read_bytes(), cwd=tree_root)
     if capture_dir:
         (Path(capture_dir) / "file-tree.ansi").write_bytes(output)
+
+
+def run_lsp_warmup_sessions(binary, directory, resize, capture_dir=None):
+    for name, arguments in [("directory", ["."]), ("cwd", [])]:
+        root = Path(directory) / f"warmup-{name}"
+        root.mkdir()
+        (root / ".git").mkdir()
+        (root / "pom.xml").write_text("<artifactId>kotlin-maven-plugin</artifactId>")
+        source = root / "Main.kt"
+        source.write_bytes("bad value\r\n😀 é界\r\n".encode())
+        log = root / "protocol.jsonl"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+            "python3", str(Path("tools/lsp/fake_server.py").absolute()),
+            "--log", str(log), "--scenario", "initialize-held",
+        ])}
+
+        def messages():
+            return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+        def release(master, slave, pid):
+            assert not any(m.get("method") == "textDocument/didOpen" for m in messages())
+            Path(str(log) + ".initialize").write_text("ready")
+
+        output = run_session(binary, source, [
+            (lambda: any(m.get("method") == "initialize" for m in messages()), 10),
+            b"\x1b", b":LspInfo\r", (b"Prepared kotlin", 10), b"\x1b",
+            b":e Main.kt\r", b"iunsaved ", b"\x1b", resize(3, 1), resize(24, 101),
+            release, (lambda: any(m.get("method") == "textDocument/didOpen" for m in messages()), 10),
+            b":LspInfo\r", (b"Ready", 10), b"\x1b", b":q!\r",
+        ], source.read_bytes(), environment, arguments=arguments, cwd=root)
+        assert sum(m.get("method") == "initialize" for m in messages()) == 1
+        assert any(m.get("method") == "textDocument/didOpen" and
+                   m["params"]["textDocument"]["text"].startswith("unsaved ") for m in messages())
+        assert any(m.get("method") == "shutdown" for m in messages())
+        if capture_dir:
+            (Path(capture_dir) / f"lsp-warmup-{name}.ansi").write_bytes(output)
 
 
 def main():
@@ -668,7 +704,8 @@ def main():
         if capture_dir:
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
         run_file_tree_session(binary, directory, resize, capture_dir)
-    print("PASS: 35 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP edits, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
+    print("PASS: 37 PTY sessions; file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, disk conflicts, repository-relative status paths, Git, review/resume/export, LSP warmup/reuse, gd/gr navigation, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

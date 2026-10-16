@@ -8,7 +8,10 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -22,6 +25,10 @@ use tokio::{
 
 const QUEUE: usize = 32;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_SESSIONS: usize = 8;
+
+#[path = "lsp_warmup.rs"]
+mod warmup;
 
 fn settings(language: Language) -> Value {
     match language {
@@ -49,6 +56,7 @@ pub enum Control {
 
 pub struct Worker {
     documents: watch::Sender<Vec<Snapshot>>,
+    preparation: watch::Sender<Option<PathBuf>>,
     commands: mpsc::Sender<Control>,
     results: mpsc::Receiver<Event>,
     stop: watch::Sender<bool>,
@@ -57,6 +65,7 @@ pub struct Worker {
 impl Worker {
     pub fn new(config: Config) -> io::Result<Self> {
         let (documents, docs) = watch::channel(Vec::new());
+        let (preparation, projects) = watch::channel(None);
         let (commands, requests) = mpsc::channel(QUEUE);
         let (events, results) = mpsc::channel(128);
         let (stop, shutdown) = watch::channel(false);
@@ -66,10 +75,11 @@ impl Worker {
         let thread = thread::Builder::new()
             .name("language-servers".into())
             .spawn(move || {
-                runtime.block_on(manager(config, docs, requests, events, shutdown));
+                runtime.block_on(manager(config, docs, projects, requests, events, shutdown));
             })?;
         Ok(Self {
             documents,
+            preparation,
             commands,
             results,
             stop,
@@ -78,6 +88,16 @@ impl Worker {
     }
     pub fn sync(&self, documents: Vec<Snapshot>) {
         self.documents.send_replace(documents);
+    }
+    /// Replaces any pending discovery; None cancels unused warm sessions.
+    pub fn prepare(&self, directory: Option<PathBuf>) -> bool {
+        self.preparation.send_if_modified(|current| {
+            if *current == directory {
+                return false;
+            }
+            *current = directory;
+            true
+        })
     }
     pub fn submit(&self, command: Control) -> io::Result<()> {
         self.commands
@@ -104,9 +124,20 @@ struct Session {
     task: JoinHandle<()>,
 }
 
+struct Discovery {
+    cancelled: Arc<AtomicBool>,
+    task: JoinHandle<Vec<ServerKey>>,
+}
+impl Drop for Discovery {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
 async fn manager(
     config: Config,
     mut documents: watch::Receiver<Vec<Snapshot>>,
+    mut preparation: watch::Receiver<Option<PathBuf>>,
     mut commands: mpsc::Receiver<Control>,
     events: mpsc::Sender<Event>,
     mut stop: watch::Receiver<bool>,
@@ -115,14 +146,54 @@ async fn manager(
     let mut sessions: BTreeMap<ServerKey, Session> = BTreeMap::new();
     let mut installer = Installer::new(config.installation.clone());
     let mut installation_updates = BTreeMap::new();
+    let mut discovery: Option<Discovery> = None;
+    let mut requested: Option<PathBuf> = None;
+    let mut warm = BTreeSet::new();
+    let mut warm_installations = BTreeSet::new();
     loop {
+        if *stop.borrow() {
+            break;
+        }
+        // Keep at most one filesystem scan alive, even if requests are replaced
+        // while a filesystem call is stalled. A cancelled scan cannot publish.
+        if discovery.is_none()
+            && let Some(directory) = requested.take()
+        {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let scan_cancel = cancelled.clone();
+            let scan_config = config.clone();
+            discovery = Some(Discovery {
+                cancelled,
+                task: tokio::task::spawn_blocking(move || {
+                    warmup::discover(&scan_config, &directory, &scan_cancel)
+                }),
+            });
+        }
         let control = tokio::select! {
+            biased;
             _ = stop.changed() => break,
+            changed = preparation.changed() => {
+                if changed.is_err() { break; }
+                if let Some(scan) = &discovery { scan.cancelled.store(true, Ordering::Relaxed); }
+                warm.clear();
+                requested = preparation.borrow_and_update().clone();
+                None
+            },
+            result = async { (&mut discovery.as_mut().unwrap().task).await }, if discovery.is_some() => {
+                let scan = discovery.take().unwrap();
+                if !scan.cancelled.load(Ordering::Relaxed) {
+                    warm = result.unwrap_or_default().into_iter().collect();
+                }
+                None
+            },
             changed = documents.changed() => { if changed.is_err() { break; } None },
             command = commands.recv() => { let Some(command) = command else { break }; Some(command) },
             _ = tokio::time::sleep(Duration::from_millis(100)), if installer.busy() || !installation_updates.is_empty() => None,
         };
         let docs = documents.borrow_and_update().clone();
+        if let Some(Control::Install(language)) = &control {
+            warm_installations.remove(language);
+        }
         if let Some(Control::Install(language)) = &control
             && let Err(error) = installer.start(*language)
         {
@@ -215,6 +286,31 @@ async fn manager(
                 }
             }
         }
+        // Once a source claims a warm session, its ordinary document lifecycle
+        // owns it. Spare warm sessions never consume a slot needed by a source.
+        warm.retain(|key| !groups.contains_key(key));
+        let available = MAX_SESSIONS.saturating_sub(groups.len());
+        warm = warm
+            .into_iter()
+            .take(available.min(warmup::MAX_WARM_SESSIONS))
+            .collect();
+        for key in &warm {
+            groups.entry(key.clone()).or_default();
+        }
+        warm_installations.retain(|language| {
+            if groups
+                .iter()
+                .any(|(key, docs)| key.language == *language && !docs.is_empty())
+            {
+                // Open documents take ownership of this shared installation.
+                false
+            } else if groups.keys().any(|key| key.language == *language) {
+                true
+            } else {
+                installer.cancel(*language);
+                false
+            }
+        });
         let obsolete: Vec<_> = sessions
             .keys()
             .filter(|key| !groups.contains_key(*key))
@@ -225,7 +321,32 @@ async fn manager(
                 close_session(session).await;
             }
         }
+        // Publish membership before startup events, including documentless
+        // sessions. Await capacity so the UI never loses their initial status.
+        let keys = groups
+            .keys()
+            .filter(|key| sessions.contains_key(*key))
+            .cloned()
+            .chain(
+                groups
+                    .keys()
+                    .filter(|key| !sessions.contains_key(*key))
+                    .cloned(),
+            )
+            .take(MAX_SESSIONS)
+            .collect();
+        tokio::select! {
+            _ = stop.changed() => break,
+            result = events.send(Event::Sessions {
+                keys,
+                warm: warm.iter().cloned().collect(),
+                discovering: requested.is_some() || discovery.as_ref().is_some_and(|scan| !scan.cancelled.load(Ordering::Relaxed)),
+            }) => if result.is_err() { break; },
+        }
         for (key, docs) in groups {
+            if *stop.borrow() {
+                break;
+            }
             if let Some(session) = sessions.get(&key) {
                 let unchanged = {
                     let previous = session.documents.borrow();
@@ -237,7 +358,7 @@ async fn manager(
                 }
                 continue;
             }
-            if sessions.len() >= 8 {
+            if sessions.len() >= MAX_SESSIONS {
                 for doc in docs {
                     let _ = events.try_send(Event::Unavailable {
                         path: doc.path,
@@ -246,17 +367,23 @@ async fn manager(
                 }
                 continue;
             }
-            if matches!(lsp_install::resolve(&config, key.language), Ok(None))
-                && let Err(error) = installer.automatic(key.language)
-            {
-                installation_updates.insert(
-                    key.language,
-                    InstallState {
-                        message: error.to_string(),
-                        busy: false,
-                        failed: true,
-                    },
-                );
+            if matches!(lsp_install::resolve(&config, key.language), Ok(None)) {
+                match installer.automatic(key.language) {
+                    Ok(started) if started && docs.is_empty() => {
+                        warm_installations.insert(key.language);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        installation_updates.insert(
+                            key.language,
+                            InstallState {
+                                message: error.to_string(),
+                                busy: false,
+                                failed: true,
+                            },
+                        );
+                    }
+                }
             }
             let (sender, receiver) = watch::channel(docs);
             let (requests, input) = mpsc::channel(QUEUE);
@@ -305,6 +432,7 @@ async fn manager(
         }
         routes.retain(|path, _| documents.borrow().iter().any(|d| &d.path == path));
     }
+    drop(discovery);
     for (_, session) in sessions {
         close_session(session).await;
     }
@@ -366,6 +494,7 @@ async fn session_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     static EPOCH: AtomicU64 = AtomicU64::new(1);
+    let discovery_started = Instant::now();
     let launch = match command_for(&config, key.language) {
         Ok(launch) => launch,
         Err(e) => {
@@ -383,8 +512,14 @@ async fn session_loop(
     };
     let _ = events.try_send(Event::Log {
         key: key.clone(),
-        message: format!("{}\nLaunch argv: {:?}\n", launch.origin, launch.argv),
+        message: format!(
+            "{}\nLaunch argv: {:?}\nExecutable discovery: {:.3}s\n",
+            launch.origin,
+            launch.argv,
+            discovery_started.elapsed().as_secs_f64()
+        ),
     });
+    let runtime_started = Instant::now();
     let runtime = tokio::select! {
         _ = stop.changed() => return,
         result = launch.runtime_report() => result,
@@ -400,6 +535,13 @@ async fn session_loop(
         let _ = stop.changed().await;
         return;
     }
+    let _ = events.try_send(Event::Log {
+        key: key.clone(),
+        message: format!(
+            "Runtime probe: {:.3}s\n",
+            runtime_started.elapsed().as_secs_f64()
+        ),
+    });
     for attempt in 0..=config.restart_limit {
         if *stop.borrow() {
             return;
@@ -412,6 +554,7 @@ async fn session_loop(
             format!("Starting {} (attempt {})", key.language.id(), attempt + 1),
             Some(Value::Null),
         );
+        let launch_started = Instant::now();
         let mut transport = match Transport::start(&launch, &key, &events) {
             Ok(transport) => transport,
             Err(e) => {
@@ -426,6 +569,13 @@ async fn session_loop(
                 return;
             }
         };
+        let _ = events.try_send(Event::Log {
+            key: key.clone(),
+            message: format!(
+                "Process spawn: {:.3}s\n",
+                launch_started.elapsed().as_secs_f64()
+            ),
+        });
         let result = tokio::select! {
             _ = stop.changed() => Ok(()),
             result = run(&mut transport, &key, epoch, &config, &mut documents, &mut commands, &events) => result,
@@ -674,6 +824,7 @@ async fn run(
     events: &mpsc::Sender<Event>,
 ) -> io::Result<()> {
     let root = file_uri(&key.root)?;
+    let initialize_started = Instant::now();
     wire.request(1, "initialize", json!({
         "processId":std::process::id(),"clientInfo":{"name":"editor-pro","version":env!("CARGO_PKG_VERSION")},
         "rootUri":root,"workspaceFolders":[{"uri":root,"name":key.root.file_name().unwrap_or_default().to_string_lossy()}],
@@ -735,6 +886,13 @@ async fn run(
         server_message(wire, key, epoch, &frame, &BTreeMap::new(), None, events).await?;
     };
     wire.notify("initialized", json!({})).await?;
+    let _ = events.try_send(Event::Log {
+        key: key.clone(),
+        message: format!(
+            "Initialize response: {:.3}s (import/indexing may continue)\n",
+            initialize_started.elapsed().as_secs_f64()
+        ),
+    });
     status(
         events,
         key,
@@ -750,12 +908,24 @@ async fn run(
     let mut action: Option<Pending> = None;
     let mut awaiting_edit: Option<u64> = None;
     let mut timer = tokio::time::interval(Duration::from_millis(50));
+    let mut first_sync = true;
     loop {
         let snapshots = source.borrow_and_update().clone();
+        let sync_started = Instant::now();
         if synchronize(wire, &capabilities, &mut open, snapshots, &mut version).await?
             && capabilities["diagnosticProvider"]["interFileDependencies"] == true
         {
             pulled.clear();
+        }
+        if first_sync && !open.is_empty() {
+            first_sync = false;
+            let _ = events.try_send(Event::Log {
+                key: key.clone(),
+                message: format!(
+                    "Initial document synchronization: {:.3}s\n",
+                    sync_started.elapsed().as_secs_f64()
+                ),
+            });
         }
         pulled.retain(|path, _| open.contains_key(path));
         let obsolete: Vec<_> = pending

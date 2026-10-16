@@ -9,6 +9,7 @@ fn missing_config_uses_defaults_without_creating_directories() {
     let path = dir.path().join("editor-pro/config.json");
     assert_eq!(config::load(&path).unwrap().theme, ThemeName::TokyoNight);
     assert!(config::load(&path).unwrap().lsp.auto_install);
+    assert!(config::load(&path).unwrap().lsp.warmup);
     assert!(!config::load(&path).unwrap().editor.relative_line_numbers);
     assert!(!path.parent().unwrap().exists());
 }
@@ -35,6 +36,7 @@ fn invalid_settings_report_the_path_without_overwriting_them() {
         r#"{"them":"gruvbox"}"#,
         r#"{"theme":null}"#,
         r#"{"lsp":{"auto_install":"true"}}"#,
+        r#"{"lsp":{"warmup":"true"}}"#,
         r#"{"lsp":{"install":false}}"#,
         r#"{"editor":{"relative_line_numbers":"true"}}"#,
         r#"{"editor":{"relative_line_numbers":null}}"#,
@@ -66,6 +68,18 @@ fn automatic_installation_can_be_disabled_without_rewriting_settings() {
     let config = config::load(&path).unwrap();
     assert!(!config.lsp.auto_install);
     assert_eq!(config.theme, ThemeName::Gruvbox);
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn warmup_can_be_disabled_independently_of_installation() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let bytes = br#"{"lsp":{"warmup":false}}"#;
+    fs::write(&path, bytes).unwrap();
+    let settings = config::load(&path).unwrap();
+    assert!(!settings.lsp.warmup);
+    assert!(settings.lsp.auto_install);
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
 

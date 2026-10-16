@@ -30,10 +30,14 @@ pub struct EditorSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct LspSettings {
     pub auto_install: bool,
+    pub warmup: bool,
 }
 impl Default for LspSettings {
     fn default() -> Self {
-        Self { auto_install: true }
+        Self {
+            auto_install: true,
+            warmup: true,
+        }
     }
 }
 
