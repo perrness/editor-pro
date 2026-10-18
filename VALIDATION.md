@@ -2351,3 +2351,45 @@ Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
 process access because the sandbox could not initialize its loopback interface.
 macOS, hosted CI and physical-terminal appearance were not tested here. Real
 language servers and AI providers were not retested for this local editing change.
+
+## Issue 23 — Readable source diagnostics
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0, 2026-10-18, from `11db49c`.
+Source lines now show severity-colored diagnostic text after the code, with the
+highest severity first and a count of additional messages. The cursor line also
+gets a bounded, wrapped panel above the statusline; long source lines cannot hide
+that explanation. The existing diagnostic list and navigation remain available.
+Versionless reports retain their unverified marker. Rendering uses the existing
+current-document guard, so edits invalidate both messages and gutter marks.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo test --locked --all-targets` | 418 tests passed; 13 opt-in tests ignored. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Six tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight tests passed. |
+| Focused diagnostic PTY session | Passed after correcting the wait marker for the existing diagnostics list's path clipping. |
+| `EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue23-terminal python3 tools/terminal_smoke.py` | All 68 PTY sessions passed. |
+
+Five new Rust regressions cover severity priority and all themes, multiple
+messages, missing severity, wrapping alongside long source lines, command/search
+prompts and save errors, Unicode graphemes and tab/cell alignment, CRLF/control
+sanitization, truncation, unverified provenance, multiline/end-exclusive and
+zero-length ranges, stale/cleared reports, buffer switches and resizing down to
+zero cells. They assert that rendering preserves source text, generation and
+cursor. The new PTY scenario exercises inline and wrapped messages, diagnostic
+navigation, resizing, editing away the error, exact saved CRLF bytes and terminal
+restoration using the existing protocol double.
+
+The diagnostic capture is
+`/tmp/editor-pro-issue23-terminal/lsp-diagnostics.ansi`; `lsp-diagnostics.txt` and
+`lsp-diagnostics.svg` reconstruct its first complete diagnostic frame. Logs are
+`/tmp/editor-pro-issue23-{rust-tests,clippy,build,python,terminal-tests}.log`.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process access because the sandbox could not initialize its loopback interface.
+macOS, hosted CI, minimum Rust 1.88, physical terminals, real language servers and
+AI providers were not tested here. No release version or workflow changed.

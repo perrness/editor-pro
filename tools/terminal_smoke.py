@@ -595,6 +595,28 @@ def run_lsp_warmup_sessions(binary, directory, resize, capture_dir=None):
             (Path(capture_dir) / f"lsp-warmup-{name}.ansi").write_bytes(output)
 
 
+def run_diagnostic_session(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "diagnostic messages"
+    root.mkdir()
+    (root / "pom.xml").write_text("<project/>")
+    source = root / "Main.kt"
+    original = "bad value\r\nval text = \"界😀\"\r\n".encode()
+    source.write_bytes(original)
+    fake = Path(__file__).parent / "lsp" / "fake_server.py"
+    environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+        sys.executable, str(fake.resolve()), "--log", str(root / "protocol.jsonl"),
+        "--scenario", "diagnostics-display",
+    ])}
+    output = run_session(binary, source, [
+        (b"Type mismatch", 10), (b"unused variable", 10),
+        resize(10, 35), (b"Diagnostics", 10), resize(24, 80),
+        b":Dnext\r", b":Diagnostics\r", (b"j/k select", 10), b"\x1b",
+        b"cwgood", b"\x1b", b":wq\r",
+    ], original.replace(b"bad", b"good", 1), environment)
+    if capture_dir:
+        (Path(capture_dir) / "lsp-diagnostics.ansi").write_bytes(output)
+
+
 def run_lsp_startup_session(binary, directory, resize, capture_dir=None):
     root = Path(directory) / "lsp-startup"
     root.mkdir()
@@ -1186,12 +1208,13 @@ def main():
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_colorful_ui_sessions(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
+        run_diagnostic_session(binary, directory, resize, capture_dir)
         run_lsp_startup_session(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 67 PTY sessions; automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 68 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

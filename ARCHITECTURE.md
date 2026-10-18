@@ -49,6 +49,7 @@ ai_store.rs    private transcript loading, atomic persistence and conflict check
 ai_view.rs     context collection, conversations, citations and revision previews
 text.rs      shared grapheme/cell rules
 ui.rs        projects editor state into Ratatui; maintains derived state/viewport
+ui_diagnostics.rs bounded inline and cursor-line diagnostic projection (UI child module)
 splash.rs    responsive ASCII startup artwork, separate from document contents
 theme.rs     semantic colors and three selectable palettes
 ```
@@ -720,6 +721,15 @@ requests fresh reports after indexing refreshes. Servers declaring inter-file
 dependencies also trigger repulls after other synchronized documents change;
 those reports retain the captured session document stamps through UI acceptance
 and display invalidation.
+Source rendering uses that same current-diagnostic guard for severity-colored
+gutter marks, trailing summaries and a cursor-line message panel. Messages are
+ordered by severity and source position, with counts for multiple reports.
+LSP ranges exclude their end while zero-length ranges retain their start line.
+Inline text uses only cells after source text; a panel of at most four rows
+(header plus three message rows) reduces the source viewport without changing
+document coordinates or the status/command rows. Panel text processing is bounded
+by terminal cells, wraps at grapheme boundaries and sanitizes server controls.
+Versionless reports retain their unverified marker in both projections.
 No dynamic capability registration, watched-file registration or semantic tokens
 are advertised. C# enables its metadata-URI extension and configuration setting.
 

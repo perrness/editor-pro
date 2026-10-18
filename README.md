@@ -720,7 +720,14 @@ Use `:ls` to find affected buffers, `u` in each to undo, or `:w` in each to save
 Quit protects every dirty buffer. Sources are never saved automatically.
 Review note drafts are excluded from synchronization and language commands.
 
-Diagnostics mark the source gutter and appear in the statusline. Old versioned
+Diagnostics mark the source gutter and show a severity-colored message after the
+code when space permits. Errors take priority over warnings, information and
+hints; `(+N)` counts additional diagnostics on that line. Moving to an affected
+line opens a small wrapped panel above the statusline, so messages remain readable
+even when the source fills the row. The panel shows up to three message rows,
+shrinking or hiding on tiny terminals to keep the source cursor visible. Use
+`:Diagnostics` for the full list (left/right scrolls long messages), or
+`:Dnext` / `:Dprev` to move between diagnostics. Old versioned
 reports and stale request results are discarded. A `?` marks versionless push
 diagnostics as **unverified**: their server-side text version is unknowable.
 Known edits immediately invalidate diagnostics. Pull diagnostics carry captured

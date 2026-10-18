@@ -16,6 +16,9 @@ use crate::{
     theme::Theme,
 };
 
+#[path = "ui_diagnostics.rs"]
+mod diagnostics;
+
 /// Startup artwork is a read-only projection, never text in the unnamed buffer.
 pub fn render_splash(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme) {
     let area = frame.area();
@@ -89,7 +92,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     }
     editor.document.sync_syntax();
     editor.search.refresh(&editor.document.buffer);
-    let height = area.height.saturating_sub(2);
+    let diagnostic_panel = diagnostics::panel(editor, theme, area.width, area.height);
+    let height = area
+        .height
+        .saturating_sub(2 + diagnostic_panel.len() as u16);
     editor.viewport.height = usize::from(height);
     let buffer = &editor.document.buffer;
     let (cursor_line, cursor_column) = buffer.position();
@@ -187,15 +193,12 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 Rect::new(area.x, area.y + row, 1, 1),
             );
         }
+        let line_diagnostics = diagnostics::on_line(editor, line_index);
         if gutter >= 2
-            && editor.current_diagnostics().is_some_and(|d| {
-                d.items
-                    .iter()
-                    .any(|item| item.range.start.line as usize == line_index)
-            })
+            && let Some(diagnostic) = line_diagnostics.first()
         {
             frame.render_widget(
-                Paragraph::new("!").style(style.fg(theme.error)),
+                Paragraph::new("!").style(style.fg(diagnostics::color(diagnostic, theme))),
                 Rect::new(area.x + gutter - 1, area.y + row, 1, 1),
             );
         }
@@ -210,8 +213,9 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         } else {
             style
         };
+        let source = buffer.line(line_index);
         let text = styled_text(
-            &buffer.line(line_index),
+            &source,
             buffer.text().line_to_byte(line_index),
             editor.viewport.left,
             text_width,
@@ -221,6 +225,42 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         frame.render_widget(
             Paragraph::new(text).style(text_style),
             Rect::new(area.x + gutter, area.y + row, text_width as u16, 1),
+        );
+        if let Some(diagnostic) = line_diagnostics.first() {
+            let end = display_column(&source, usize::MAX);
+            let start = end.saturating_sub(editor.viewport.left) + 2;
+            if start < text_width {
+                let versioned = editor
+                    .current_diagnostics()
+                    .is_some_and(|set| set.versioned);
+                let message = diagnostics::summary(
+                    diagnostic,
+                    versioned,
+                    line_diagnostics.len(),
+                    text_width - start,
+                );
+                frame.render_widget(
+                    Paragraph::new(message).style(style.fg(diagnostics::color(diagnostic, theme))),
+                    Rect::new(
+                        area.x + gutter + start as u16,
+                        area.y + row,
+                        (text_width - start) as u16,
+                        1,
+                    ),
+                );
+            }
+        }
+    }
+
+    if !diagnostic_panel.is_empty() {
+        frame.render_widget(
+            Paragraph::new(diagnostic_panel).style(base.bg(theme.panel)),
+            Rect::new(
+                area.x,
+                area.y + height,
+                area.width,
+                area.height - height - 2,
+            ),
         );
     }
 

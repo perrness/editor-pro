@@ -110,6 +110,12 @@ def comprehension_reply(ident, result):
 
 def diagnostics(uri, version):
     items = [{"range": span(), "severity": 1, "message": "bad value"}] if documents[uri]["text"].startswith("bad") else []
+    if args.scenario == "diagnostics-display" and items:
+        items = [
+            {"range": span(), "severity": 2, "message": "unused variable"},
+            {"range": span(), "severity": 1,
+             "message": "Type mismatch: expected Int but found String.\nConvert the value before assigning it."},
+        ]
     params = {"uri": uri, "version": version, "diagnostics": items}
     if args.scenario == "unversioned":
         del params["version"]

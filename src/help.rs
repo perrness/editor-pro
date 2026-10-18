@@ -393,7 +393,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Navigation / LSP",
         "Command",
         ":Diagnostics / :Dnext / :Dprev",
-        "List diagnostics across open sources or jump to next/previous diagnostic in this buffer, wrapping.",
+        "Messages appear after source text and wrap below the cursor line. List all diagnostics or jump to next/previous in this buffer, wrapping.",
     ),
     entry(
         "Navigation / LSP",

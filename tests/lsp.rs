@@ -7,7 +7,7 @@ use editor_pro::{
     theme::Theme,
     ui,
 };
-use lsp_types::{Position, Range};
+use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use ratatui::{Terminal, backend::TestBackend};
 use ropey::Rope;
 use serde_json::{Value, json};
@@ -859,6 +859,286 @@ fn diagnostics_reject_old_versions_and_invalidate_immediately_on_edits() {
     });
     settle(&mut f.editor);
     assert!(f.editor.current_diagnostics().unwrap().items.is_empty());
+}
+
+fn diagnostic(line: u32, severity: Option<DiagnosticSeverity>, message: &str) -> Diagnostic {
+    Diagnostic {
+        range: Range::new(Position::new(line, 0), Position::new(line, 1)),
+        severity,
+        message: message.into(),
+        ..Diagnostic::default()
+    }
+}
+
+fn diagnostic_fixture(source: &str, items: Vec<Diagnostic>) -> Fixture {
+    let mut f = Fixture::new("normal");
+    let len = f.editor.document.buffer.text().len_chars();
+    f.editor.document.buffer.replace_range(0..len, source);
+    f.editor.document.buffer.set_cursor(0, false);
+    f.ready();
+    until(&mut f.editor, |e| e.current_diagnostics().is_some());
+    let path = f.editor.document.path().unwrap();
+    f.editor.lsp.diagnostics.get_mut(path).unwrap().items = items;
+    f
+}
+
+fn diagnostic_screen(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(usize::from(terminal.backend().buffer().area.width).max(1))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn diagnostic_messages_prioritize_severity_and_use_each_theme_without_changing_source() {
+    let source = "bad value\r\nwarning\r\ninfo\r\nhint\r\nunknown\r\n";
+    let mut f = diagnostic_fixture(
+        source,
+        vec![
+            diagnostic(0, Some(DiagnosticSeverity::WARNING), "secondary warning"),
+            diagnostic(0, Some(DiagnosticSeverity::ERROR), "expected an Int"),
+            diagnostic(1, Some(DiagnosticSeverity::WARNING), "unused variable"),
+            diagnostic(2, Some(DiagnosticSeverity::INFORMATION), "information"),
+            diagnostic(3, Some(DiagnosticSeverity::HINT), "simplify this"),
+            diagnostic(4, None, "missing severity"),
+        ],
+    );
+    let generation = f.editor.document.buffer.generation();
+    let cursor = f.editor.document.buffer.cursor();
+    for theme in [Theme::night(), Theme::catppuccin(), Theme::gruvbox()] {
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &theme))
+            .unwrap();
+        let rows = diagnostic_screen(&terminal);
+        assert!(
+            rows[0].contains("bad value  Error (+1): expected an Int"),
+            "{rows:?}"
+        );
+        for (line, expected, color) in [
+            (0, "Error (+1): expected an Int", theme.error),
+            (1, "Warning: unused variable", theme.modified),
+            (2, "Info: information", theme.normal),
+            (3, "Hint: simplify this", theme.muted),
+            (4, "Error: missing severity", theme.error),
+        ] {
+            let x = rows[line].find(expected).unwrap() as u16;
+            let cells = terminal.backend().buffer();
+            assert_eq!(cells[(x, line as u16)].fg, color);
+            assert_eq!(cells[(2, line as u16)].symbol(), "!");
+            assert_eq!(cells[(2, line as u16)].fg, color);
+        }
+        let panel = f.editor.viewport.height;
+        assert!(rows[panel].contains("Diagnostics line 1 (2)"));
+        assert!(rows[panel].contains(":Diagnostics"));
+        assert!(rows[panel + 1].starts_with("Error: expected an Int"));
+        assert!(rows[panel + 2].starts_with("Warning: secondary warning"));
+        assert_eq!(terminal.get_cursor_position().unwrap(), (3, 0).into());
+    }
+    assert_eq!(f.editor.document.buffer.text().to_string(), source);
+    assert_eq!(f.editor.document.buffer.generation(), generation);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+}
+
+#[test]
+fn diagnostic_panel_wraps_on_long_source_lines_and_keeps_prompts_and_errors_visible() {
+    let source = format!("bad {}\r\n", "long source ".repeat(20));
+    let mut f = diagnostic_fixture(
+        &source,
+        vec![diagnostic(
+            0,
+            Some(DiagnosticSeverity::ERROR),
+            "Expected an integer but this expression returns a string. Convert the value before assigning it.",
+        )],
+    );
+    f.editor.message = "Save conflict: file changed".into();
+    f.editor.message_is_error = true;
+    let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    let rows = diagnostic_screen(&terminal);
+    assert!(rows[0].starts_with(" 1!bad long source"));
+    assert!(!rows[0].contains("Error:"));
+    let panel = f.editor.viewport.height;
+    assert!(rows[panel + 1].starts_with("Error: Expected an integer"));
+    assert!(rows[panel + 2].contains("Convert the value"), "{rows:?}");
+    assert!(rows[9].contains("Save conflict: file changed"));
+
+    f.editor.mode = Mode::Command;
+    f.editor.command = "Diagnostics".into();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert!(diagnostic_screen(&terminal)[9].starts_with(":Diagnostics"));
+    assert_eq!(terminal.get_cursor_position().unwrap().y, 9);
+    f.editor.mode = Mode::Search;
+    f.editor.command = "long".into();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert!(diagnostic_screen(&terminal)[9].starts_with("/long"));
+}
+
+#[test]
+fn diagnostic_messages_clip_unicode_sanitize_controls_and_label_unverified_results() {
+    let mut f = diagnostic_fixture(
+        "\t😀e\u{301}界\r\n",
+        vec![diagnostic(
+            0,
+            Some(DiagnosticSeverity::WARNING),
+            "界e\u{301}👩‍💻\r\nnext\tword\x1b[2J\u{7} trailing message "
+                .repeat(30)
+                .as_str(),
+        )],
+    );
+    let path = f.editor.document.path().unwrap();
+    f.editor.lsp.diagnostics.get_mut(path).unwrap().versioned = false;
+    let mut terminal = Terminal::new(TestBackend::new(70, 10)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    let rows = diagnostic_screen(&terminal);
+    let output = rows.join("\n");
+    // Gutter (3) + tab (4) + emoji (2) + combining grapheme (1) + CJK (2) + gap (2).
+    assert_eq!(terminal.backend().buffer()[(14, 0)].symbol(), "W");
+    assert!(
+        output.contains("Warning?: 界 e\u{301}👩‍💻 ") || output.contains("Warning?: 界 e\u{301}"),
+        "{output}"
+    );
+    assert!(output.contains("Diagnostics? unverified"));
+    assert!(output.contains("�[2J�"));
+    assert!(output.contains('…'));
+    assert!(!output.contains(['\r', '\t', '\x1b', '\u{7}']));
+    for cell in &terminal.backend().buffer().content {
+        assert_ne!(cell.symbol(), "\u{301}");
+        assert_ne!(cell.symbol(), "👩");
+        assert_ne!(cell.symbol(), "💻");
+    }
+}
+
+#[test]
+fn diagnostic_messages_follow_multiline_ranges_and_hide_after_edits_clears_and_switches() {
+    let mut item = diagnostic(0, None, "multiline diagnostic");
+    item.range.end = Position::new(2, 0);
+    let mut f = diagnostic_fixture("bad first\r\nsecond\r\nthird\r\n", vec![item]);
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    let second = f.editor.document.buffer.text().line_to_char(1);
+    f.editor.document.buffer.set_cursor(second, false);
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    let rows = diagnostic_screen(&terminal);
+    assert!(rows[1].contains("multiline diagnostic"));
+    assert!(!rows[2].contains("multiline diagnostic"));
+    assert!(rows[f.editor.viewport.height].contains("Diagnostics line 2"));
+
+    let third = f.editor.document.buffer.text().line_to_char(2);
+    f.editor.document.buffer.set_cursor(third, false);
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert_eq!(f.editor.viewport.height, 8);
+    f.editor.document.buffer.replace_range(0..3, "good");
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert!(
+        !diagnostic_screen(&terminal)
+            .join("\n")
+            .contains("multiline diagnostic")
+    );
+    assert_eq!(terminal.backend().buffer()[(2, 0)].symbol(), " ");
+
+    let mut f = diagnostic_fixture(
+        "bad value\n",
+        vec![diagnostic(0, None, "active diagnostic")],
+    );
+    let path = f.editor.document.path().unwrap().to_path_buf();
+    f.editor
+        .execute_command(&format!(
+            "e {}",
+            f.directory.path().join("Other.kt").display()
+        ))
+        .unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert!(
+        !diagnostic_screen(&terminal)
+            .join("\n")
+            .contains("active diagnostic")
+    );
+    f.editor
+        .execute_command(&format!("e {}", path.display()))
+        .unwrap();
+    f.editor
+        .lsp
+        .diagnostics
+        .get_mut(&path)
+        .unwrap()
+        .items
+        .clear();
+    terminal
+        .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+        .unwrap();
+    assert!(
+        !diagnostic_screen(&terminal)
+            .join("\n")
+            .contains("active diagnostic")
+    );
+    assert_eq!(f.editor.viewport.height, 8);
+}
+
+#[test]
+fn diagnostic_layout_resizes_scrolls_and_keeps_the_source_cursor_visible() {
+    let mut source = "bad first\n".to_string();
+    source.push_str(&"middle\n".repeat(30));
+    source.push_str(&format!("\t{}界", "x".repeat(100)));
+    let mut item = diagnostic(
+        31,
+        None,
+        "A long diagnostic that should wrap or be clipped with an ellipsis",
+    );
+    // A zero-length range at the end of a file is still visible.
+    item.range.start.character = 102;
+    item.range.end = item.range.start;
+    let mut f = diagnostic_fixture(&source, vec![item]);
+    f.editor.mode = Mode::Insert;
+    let end = f.editor.document.buffer.text().len_chars();
+    f.editor.document.buffer.set_cursor(end, true);
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    for (width, height) in [
+        (80, 12),
+        (25, 8),
+        (8, 5),
+        (1, 5),
+        (1, 3),
+        (1, 1),
+        (0, 0),
+        (80, 12),
+    ] {
+        terminal.backend_mut().resize(width, height);
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        if height > 2 {
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(cursor.x < width, "{width}x{height}: {cursor:?}");
+            assert!((cursor.y as usize) < f.editor.viewport.height);
+            assert_eq!(cursor.y as usize, 31 - f.editor.viewport.top);
+        }
+        assert_eq!(f.editor.document.buffer.cursor(), end);
+        assert_eq!(f.editor.document.buffer.text().to_string(), source);
+    }
+    assert!(
+        diagnostic_screen(&terminal)
+            .join("\n")
+            .contains("Diagnostics line 32")
+    );
 }
 
 #[test]
