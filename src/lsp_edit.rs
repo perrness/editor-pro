@@ -28,6 +28,24 @@ pub struct PlannedFile {
     pub(crate) unopened: Option<Document>,
 }
 
+impl PlannedFile {
+    pub(crate) fn cursor_after(&self, old_cursor: usize) -> usize {
+        let mut cursor = old_cursor as isize;
+        for (range, text) in &self.edits {
+            if old_cursor < range.start {
+                break;
+            }
+            if old_cursor <= range.end {
+                cursor +=
+                    range.start as isize - old_cursor as isize + text.chars().count() as isize;
+                break;
+            }
+            cursor += text.chars().count() as isize - range.len() as isize;
+        }
+        cursor.max(0) as usize
+    }
+}
+
 impl Editor {
     pub fn lsp_edit_guards(&self) -> BTreeMap<PathBuf, Stamp> {
         std::iter::once((self.active_buffer_id, &self.document))
@@ -214,11 +232,11 @@ impl Editor {
             }
         }
         let mut changed = 0;
-        for file in plan.files {
+        for mut file in plan.files {
             if file.before == file.after {
                 continue;
             }
-            let id = if let Some(stamp) = file.stamp {
+            let id = if let Some(stamp) = &file.stamp {
                 stamp.buffer_id
             } else {
                 let id = self.next_buffer_id;
@@ -226,7 +244,7 @@ impl Editor {
                 self.buffers.insert(
                     id,
                     BufferSlot {
-                        document: file.unopened.unwrap(),
+                        document: file.unopened.take().unwrap(),
                         viewport: Viewport::default(),
                     },
                 );
@@ -234,25 +252,13 @@ impl Editor {
             };
             let insert = self.mode == crate::editor::Mode::Insert && id == self.active_buffer_id;
             let document = self.lsp_document_mut(id).unwrap();
-            let old_cursor = document.buffer.cursor();
-            let mut cursor = old_cursor as isize;
-            for (range, text) in &file.edits {
-                if old_cursor < range.start {
-                    break;
-                }
-                if old_cursor <= range.end {
-                    cursor +=
-                        range.start as isize - old_cursor as isize + text.chars().count() as isize;
-                    break;
-                }
-                cursor += text.chars().count() as isize - range.len() as isize;
-            }
+            let cursor = file.cursor_after(document.buffer.cursor());
             document.buffer.commit();
             document.buffer.replace_range(
                 0..document.buffer.text().len_chars(),
                 &file.after.to_string(),
             );
-            document.buffer.set_cursor(cursor.max(0) as usize, insert);
+            document.buffer.set_cursor(cursor, insert);
             document.buffer.commit();
             changed += 1;
         }

@@ -402,11 +402,11 @@ def run_completion_acceptance_session(binary, directory, resize, capture_dir=Non
     output = run_session(binary, source, [
         (ready, 10), b"Ale", (b"Tab/Enter accept", 10),
         b"\x1b[B", b"\x1b[A", b"\x1b[B", b"\r", (b"inserted", 10),
-        b"\x1b", b":w\r", (saved("😀 value.lengthSquared\r\nnext\r\n".encode()), 10),
+        b"\x1b", b":w\r", (saved("😀 value.lengthSquared \r\nnext\r\n".encode()), 10),
         b"u", b":w\r", (saved(partial), 10),
         b"A\x0e", (b"completion (", 10), b"d", (b"Resolved", 10),
         resize(3, 1), resize(24, 100), b"\t", resize(24, 101), (b"Completion inserted", 10),
-        b"\x1b", b":w\r", (saved("😀 value.length\r\nnext\r\n".encode()), 10),
+        b"\x1b", b":w\r", (saved("😀 value.length \r\nnext\r\n".encode()), 10),
         b"u", b":w\r", (saved(partial), 10),
         b"A\x7fe", (b"Tab/Enter accept", 10), b"\x1b", b"\t\r",
         b"\x1b", b":w\r", (saved("😀 value.le\t\r\n\r\nnext\r\n".encode()), 10),
@@ -419,6 +419,44 @@ def run_completion_acceptance_session(binary, directory, resize, capture_dir=Non
     assert sum(m.get("method") == "completionItem/resolve" for m in messages) == 2
     if capture_dir:
         (Path(capture_dir) / "completion-acceptance.ansi").write_bytes(output)
+
+
+def run_completion_edits_sessions(binary, directory, resize, capture_dir=None):
+    for scenario, completed in [
+        ("auto-completion-extra", "import sample\r\n😀 value.length \r\nnext\r\n"),
+        ("auto-completion-multiline", "😀 value.length\r\nnext \r\nnext\r\n"),
+        ("auto-completion-command", "😀 value.length() \r\nnext\r\n"),
+    ]:
+        project = Path(directory) / scenario
+        project.mkdir()
+        (project / "pom.xml").write_text("<project/>")
+        source = project / "Main.kt"
+        source.write_bytes("😀 value.\r\nnext\r\n".encode())
+        partial = "😀 value.le\r\nnext\r\n".encode()
+        log = project / "protocol.jsonl"
+        fake = Path(__file__).parent / "lsp" / "fake_server.py"
+        environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+            sys.executable, str(fake.resolve()), "--log", str(log), "--scenario", scenario,
+        ])}
+        def ready():
+            return log.exists() and '"method": "textDocument/didOpen"' in log.read_text()
+        def saved(text):
+            return lambda: source.read_bytes() == text
+        output = run_session(binary, source, [
+            (ready, 10), b"Ale", (b"Tab/Enter accept", 10),
+            b"\r", resize(24, 101), (b"Completion inserted", 10), b"\x1b", b":w\r",
+            (saved(completed.encode()), 10), b"u", b":w\r", (saved(partial), 10),
+            b"A\x0e", (b"completion (", 10), resize(3, 1), resize(24, 100),
+            b"\t", resize(24, 101), (b"Completion inserted", 10), b"\x1b", b":w\r",
+            (saved(completed.encode()), 10), b"u", b":w\r", (saved(partial), 10), b":q\r",
+        ], partial, environment)
+        assert b"Enter applies" not in output, f"{scenario} opened a completion preview"
+        if scenario == "auto-completion-command":
+            messages = [json.loads(line) for line in log.read_text().splitlines()]
+            assert sum(m.get("method") == "workspace/executeCommand" for m in messages) == 2
+            assert sum(m.get("id") == 777 and m.get("result", {}).get("applied", False) for m in messages) == 2
+        if capture_dir:
+            (Path(capture_dir) / f"{scenario}.ansi").write_bytes(output)
 
 
 def run_file_tree_session(binary, directory, resize, capture_dir=None):
@@ -862,10 +900,8 @@ def main():
         ])}
         output = run_session(binary, language_source, [
             (server_ready, 10), b":Complete\r", (b"detail", 10),
-            b"\r", (b"fake.fix", 10), b"\x1b",
-            b":Complete\r", (b"detail", 10), b"\r",
-            (b"fake.fix", 10), b"\r", (b"good", 10),
-            b"\r", (b"unsaved", 10), b"u", b":Format\r", (b"Enter applies", 10),
+            b"\x1b", b":Complete\r", (b"detail", 10), b"\r",
+            resize(24, 101), (b"Completion inserted", 10), b"u", b":Format\r", (b"Enter applies", 10),
             b"\r", b":wq\r",
         ], b"good value\n", environment)
         messages = [json.loads(line) for line in log.read_text().splitlines()]
@@ -892,6 +928,7 @@ def main():
         if capture_dir:
             (Path(capture_dir) / "automatic-completion.ansi").write_bytes(output)
         run_completion_acceptance_session(binary, directory, resize, capture_dir)
+        run_completion_edits_sessions(binary, directory, resize, capture_dir)
         # M6: disk search and a multi-file path with preserved location/undo.
         navigation_root = Path(directory) / "navigation"
         navigation_root.mkdir()
@@ -1096,7 +1133,7 @@ def main():
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 60 PTY sessions; colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 63 PTY sessions; colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

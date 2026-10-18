@@ -2217,3 +2217,54 @@ process access because the sandbox could not initialize its loopback interface.
 macOS, physical terminals and real language servers were not retested. File/tree,
 history and serialized-store limits still apply to binary assets. No release
 version, integration policy or publication workflow changed.
+
+## Issue 20 — Complete suggestions without another selection view
+
+Validated on Linux x86_64, 2026-10-18, with Rust/Cargo 1.99.0. Enter and Tab now
+accept completions with additional imports, multiline text and advertised server
+commands directly from either list. Command-provided edits use the existing
+version, session, project, size, overlap and disk checks without opening a preview.
+Acceptance adds or reuses a trailing space, preserves the originating mode and
+places the Insert cursor after that space. Command offsets are preserved by adding
+the space after the command's edit. Code-action, rename and format previews remain.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 376 passed; 13 opt-in tests ignored. |
+| Completion regressions | All 27 passed; expanded no-edit/import-only/other-file command cases also passed. |
+| `cargo build --locked` | Passed. |
+| Python tool/harness and Kotlin probe unit tests | All 14 passed. |
+| Focused completion PTY sessions | All four passed. |
+| `python3 tools/terminal_smoke.py` | All 58 sessions passed. |
+| `git diff --check` | Passed. |
+
+The regressions cover both lists and acceptance keys, optional resolution,
+additional edits, multiline text, command synchronization and follow-ups,
+Unicode/UTF-16/CRLF, existing whitespace, cursor placement, undo/redo, unchanged
+disk bytes and cancellation after typing, movement, Escape, dismissal or buffer
+switches. Invalid edits, disk conflicts, unadvertised commands and late edits
+following a failed command remain rejected. The real-server fixtures now require
+zero completion previews for Kotlin, Java and C#; they were compiled but not run.
+
+The focused terminal sessions save exact expected bytes, undo both acceptance
+paths, resize narrowly and verify terminal restoration. Captures are in
+`/tmp/editor-pro-issue20-terminal/`: `completion-acceptance.ansi`,
+`auto-completion-extra.ansi`, `auto-completion-multiline.ansi` and
+`auto-completion-command.ansi`. A smoke assertion initially missed a message
+split across incremental ANSI updates; forcing a resize before the assertion
+fixed the harness.
+
+The full terminal suite also passed editing, Git/review, LSP navigation and
+installation, disk refresh, help, project navigation, AI and terminal restoration.
+Logs are `/tmp/editor-pro-issue20-tests.log`, `/tmp/editor-pro-issue20-clippy.log`
+and `/tmp/editor-pro-issue20-terminal.log`.
+
+Cargo used `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`,
+`CARGO_INCREMENTAL=0` and two build jobs. The first build exhausted the host disk;
+this attempt's partial build was removed and final build/test artifacts used
+`/dev/shm/editor-pro-issue20-target` and `/dev/shm/editor-pro-issue20-tmp`.
+Commands required normal process access because the sandbox could not initialize
+its loopback interface. macOS, physical terminals and real language servers were
+not tested. No release version or workflow changed.

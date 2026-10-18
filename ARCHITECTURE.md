@@ -716,19 +716,25 @@ Server-reported automatic request failures stay in logs; explicit acceptance err
 visible. The event loop polls at 16 ms while completion is scheduled or pending.
 Tab/Enter accepts a selected completion in either list; arrows/Ctrl-n/Ctrl-p
 navigate. Escape/Ctrl-e dismiss the popup while retaining Insert; Escape with no
-popup exits Insert. Only an explicitly accepted, single-line edit whose range
-contains the request cursor on the same line applies directly, using
-the same complete edit-plan validation, disk conflict checks and undo transaction
-as a preview. Server ranges can include punctuation and use the replace range of
-an insert/replace edit; implicit ranges use the identifier prefix. Additional edits,
-multiline replacements and server commands retain the preview path, which still
-requires Enter to approve. Explicit :Complete/Ctrl-n without a popup retains the
+popup exits Insert. Explicitly accepted completions apply directly, including
+additional edits and multiline text, using the same complete edit-plan validation,
+disk conflict checks and undo transaction as a preview. The main range must contain
+the request cursor. Server ranges can include punctuation and use the replace range
+of an insert/replace edit; implicit ranges use the identifier prefix. Acceptance
+adds a trailing space to the same transaction, reuses an adjacent space when present,
+and maps the source cursor through preceding edits such as imports.
+Explicit :Complete/Ctrl-n without a popup retains the
 contextual list and restores its originating mode on acceptance or dismissal.
 Snippets and commit-character acceptance remain unsupported.
 Completion resolution supplies documentation and additional edits; snippets are
-refused. Advertised completion commands are shown in the initial edit preview
-and run only after approval. Their subsequent server edits require another
-guarded preview, reusing the code-action continuation path. Hover/signatures, definitions/references,
+refused. Acceptance validates any completion command against advertised capabilities
+before inserting text, then synchronizes the insertion and runs the command with
+a fresh request context. A completion-only marker retains the insertion position
+even when Normal mode clamps the visible cursor. Its one guarded workspace edit
+applies inline; the space is added after that edit, or when the command returns
+without edits, to preserve server offsets. Each stage remains independently undoable.
+Cancellation, stale context, failure or application retires this authorization;
+other server edits retain the code-action preview path. Hover/signatures, definitions/references,
 document symbols and diagnostic navigation operate on the ordinary documents.
 Normal-mode `gd`/`gr` reuse the definition/reference requests, marking their
 request context to jump directly when exactly one supported location is returned.
@@ -768,7 +774,7 @@ document guards apply before expansion, resolution or navigation. Capability
 absence and virtual/decompiled locations remain explicit. These are read-only
 features, with no new server-edit authorization path.
 
-Rename, formatting, completions requiring review and quick fixes create an edit
+Rename, formatting and quick fixes create an edit
 proposal. Validate every URI, project boundary, known version, captured buffer stamp, scalar range,
 overlap and size before constructing a preview. All affected buffers and disk
 baselines are rechecked before any splice. Applying makes one undo group per
@@ -782,9 +788,9 @@ are refused. Limits are 32 files/4,096 replacements and 2 MiB per resulting file
 Previews show up to 128 replacements per file with bounded text; truncation is
 labelled. Multi-file undo remains per buffer, without a new transaction engine.
 
-Only a selected, advertised code-action command or a preview-approved completion
-command can authorize a server
-workspace/applyEdit request, and it still requires a preview. Unsolicited, stale
+Only a selected, advertised code-action command or an explicitly accepted completion
+command can authorize a server workspace/applyEdit request. Code-action edits
+require a preview; the accepted completion's edit applies inline. Unsolicited, stale
 or concurrent server edit requests receive applied=false. Applying a proposal
 invalidates Git/review derived state through the established paths.
 

@@ -1572,7 +1572,7 @@ fn explicit_completion_accepts_with_enter_or_tab_after_optional_documentation() 
                 .to_string()
                 .starts_with("good")
         );
-        assert_eq!(f.editor.document.buffer.cursor(), 4);
+        assert_eq!(f.editor.document.buffer.cursor(), 5);
         assert!(f.editor.document.buffer.undo());
         assert!(
             f.editor
@@ -1705,9 +1705,9 @@ fn automatic_completion_debounces_filters_and_accepts_in_insert_with_undo() {
         assert_eq!(f.editor.view, View::Editing);
         assert_eq!(
             f.editor.document.buffer.text().to_string(),
-            "value.length\r\n"
+            "value.length \r\n"
         );
-        assert_eq!(f.editor.document.buffer.cursor(), 12);
+        assert_eq!(f.editor.document.buffer.cursor(), 13);
         assert!(f.editor.document.buffer.undo());
         assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
         assert_eq!(
@@ -1771,7 +1771,7 @@ fn automatic_completion_uses_filter_text_and_works_without_resolve() {
     f.editor.handle_key(Key::Tab);
     assert_eq!(
         f.editor.document.buffer.text().to_string(),
-        "value.method\n"
+        "value.method \n"
     );
     assert!(
         !f.log()
@@ -1798,9 +1798,9 @@ fn automatic_completion_preserves_unicode_graphemes_utf16_and_crlf() {
     until(&mut f.editor, |e| !e.lsp.pending);
     assert_eq!(
         f.editor.document.buffer.text().to_string(),
-        "😀 e\u{301}clair\r\n"
+        "😀 e\u{301}clair \r\n"
     );
-    assert_eq!(f.editor.document.buffer.cursor(), 9);
+    assert_eq!(f.editor.document.buffer.cursor(), 10);
     assert!(f.editor.document.buffer.undo());
     assert_eq!(
         f.editor.document.buffer.text().to_string(),
@@ -1818,9 +1818,9 @@ fn automatic_completion_applies_server_text_edit_over_identifier_suffix() {
     until(&mut f.editor, |e| !e.lsp.pending);
     assert_eq!(
         f.editor.document.buffer.text().to_string(),
-        "value.length\r\n"
+        "value.length \r\n"
     );
-    assert_eq!(f.editor.document.buffer.cursor(), 12);
+    assert_eq!(f.editor.document.buffer.cursor(), 13);
     assert_eq!(f.editor.view, View::Editing);
 }
 
@@ -1844,9 +1844,9 @@ fn completion_applies_utf16_text_and_insert_replace_edits_over_call_suffixes() {
             assert!(f.editor.lsp.panel.is_none());
             assert_eq!(
                 f.editor.document.buffer.text().to_string(),
-                "😀 value.length()tail\r\n"
+                "😀 value.length() tail\r\n"
             );
-            assert_eq!(f.editor.document.buffer.cursor(), 16);
+            assert_eq!(f.editor.document.buffer.cursor(), 17);
             f.editor.handle_key(Key::Escape);
             f.editor.handle_key(Key::Char('u'));
             assert_eq!(
@@ -1856,7 +1856,7 @@ fn completion_applies_utf16_text_and_insert_replace_edits_over_call_suffixes() {
             f.editor.handle_key(Key::Ctrl('r'));
             assert_eq!(
                 f.editor.document.buffer.text().to_string(),
-                "😀 value.length()tail\r\n"
+                "😀 value.length() tail\r\n"
             );
             assert_eq!(
                 fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
@@ -2022,55 +2022,237 @@ fn completion_rechecks_visible_candidates_before_acceptance() {
 }
 
 #[test]
-fn completion_keeps_additional_edits_multiline_text_and_commands_in_preview() {
+fn completion_accepts_additional_edits_and_multiline_text_without_a_preview() {
     for explicit in [false, true] {
-        for scenario in [
-            "auto-completion-extra",
-            "auto-completion-multiline",
-            "auto-completion-command",
+        for (scenario, expected) in [
+            (
+                "auto-completion-extra",
+                "import sample\r\nvalue.length \r\n",
+            ),
+            ("auto-completion-multiline", "value.length\r\nnext \r\n"),
         ] {
-            let mut f = auto_completion_fixture(scenario, "value.\r\n");
-            type_completion(&mut f, "le");
-            if explicit {
-                f.editor.handle_key(Key::Ctrl('n'));
-                until(&mut f.editor, |e| e.view == View::Lsp && !e.lsp.pending);
-            } else {
-                wait_completion(&mut f);
-            }
-            f.editor.handle_key(Key::Tab);
-            until(&mut f.editor, |e| e.view == View::Lsp && !e.lsp.pending);
-            settle(&mut f.editor);
-            assert!(
-                f.editor
-                    .lsp
-                    .panel
-                    .as_ref()
-                    .unwrap()
-                    .title
-                    .starts_with("Apply")
-            );
-            assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
-            assert!(
-                !f.log()
-                    .iter()
-                    .any(|m| m["method"] == "workspace/executeCommand")
-            );
-            f.editor.handle_key(Key::Tab);
-            assert_eq!(f.editor.view, View::Lsp);
-            assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
-            if scenario == "auto-completion-extra" {
-                f.editor.handle_key(Key::Enter);
+            for accept in [Key::Tab, Key::Enter] {
+                let mut f = auto_completion_fixture(scenario, "value.\r\n");
+                type_completion(&mut f, "le");
+                if explicit {
+                    f.editor.handle_key(Key::Ctrl('n'));
+                    until(&mut f.editor, |e| e.view == View::Lsp && !e.lsp.pending);
+                } else {
+                    wait_completion(&mut f);
+                }
+                f.editor.handle_key(accept);
+                until(&mut f.editor, |e| !e.lsp.pending);
+                assert!(!f.editor.message_is_error, "{}", f.editor.message);
+                assert_eq!(f.editor.view, View::Editing);
+                assert!(f.editor.lsp.panel.is_none());
+                assert!(f.editor.lsp.completion.is_none());
+                assert_eq!(f.editor.document.buffer.text().to_string(), expected);
                 assert_eq!(
-                    f.editor.document.buffer.text().to_string(),
-                    "import sample\r\nvalue.length\r\n"
+                    f.editor.document.buffer.cursor(),
+                    expected.chars().count() - 2
+                );
+                assert!(
+                    !f.log()
+                        .iter()
+                        .any(|m| m["method"] == "workspace/executeCommand")
                 );
                 assert!(f.editor.document.buffer.undo());
                 assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
-            } else {
-                f.editor.handle_key(Key::Escape);
-                assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
+                assert!(f.editor.document.buffer.redo());
+                assert_eq!(f.editor.document.buffer.text().to_string(), expected);
+                assert_eq!(
+                    fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
+                    "value.\r\n"
+                );
+                assert_eq!(f.editor.mode, Mode::Insert);
             }
-            assert_eq!(f.editor.mode, Mode::Insert);
+        }
+    }
+}
+
+#[test]
+fn completion_adds_or_reuses_one_space_and_leaves_insert_cursor_after_it() {
+    for scenario in ["auto-completion", "auto-completion-space"] {
+        for (suffix, separator) in [("", " "), (" next", " "), ("\tnext", " \t"), (";", " ")] {
+            for accept in [Key::Tab, Key::Enter] {
+                let original = format!("😀 value.{suffix}\r\n");
+                let mut f = auto_completion_fixture(scenario, &original);
+                f.editor.document.buffer.set_cursor(8, true);
+                type_completion(&mut f, "le");
+                wait_completion(&mut f);
+                f.editor.handle_key(accept);
+                until(&mut f.editor, |e| !e.lsp.pending);
+                assert!(!f.editor.message_is_error, "{}", f.editor.message);
+                let expected = if scenario == "auto-completion-space" && suffix.starts_with(' ') {
+                    // Existing source whitespace is never removed.
+                    format!("😀 value.length {suffix}\r\n")
+                } else {
+                    format!(
+                        "😀 value.length{separator}{}\r\n",
+                        suffix.trim_start_matches([' ', '\t'])
+                    )
+                };
+                assert_eq!(f.editor.document.buffer.text().to_string(), expected);
+                assert_eq!(f.editor.document.buffer.cursor(), 15);
+                assert_eq!(f.editor.view, View::Editing);
+                assert_eq!(f.editor.mode, Mode::Insert);
+                assert!(f.editor.document.buffer.undo());
+                assert_eq!(
+                    f.editor.document.buffer.text().to_string(),
+                    format!("😀 value.le{suffix}\r\n")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn completion_commands_from_both_lists_accept_inline_with_space_and_guarded_followup() {
+    for explicit in [false, true] {
+        for accept in [Key::Tab, Key::Enter] {
+            for scenario in [
+                "auto-completion-command",
+                "auto-completion-command-primary",
+                "auto-completion-command-other",
+            ] {
+                let mut f = auto_completion_fixture(scenario, "😀 value.\r\n");
+                type_completion(&mut f, "le");
+                if explicit {
+                    f.editor.handle_key(Key::Ctrl('n'));
+                    until(&mut f.editor, |e| e.view == View::Lsp && !e.lsp.pending);
+                } else {
+                    wait_completion(&mut f);
+                }
+                f.editor.handle_key(accept);
+                until(&mut f.editor, |e| !e.lsp.pending);
+                assert!(!f.editor.message_is_error, "{}", f.editor.message);
+                assert_eq!(f.editor.view, View::Editing);
+                assert_eq!(f.editor.mode, Mode::Insert);
+                assert!(f.editor.lsp.panel.is_none());
+                assert_eq!(
+                    f.editor.document.buffer.text().to_string(),
+                    "😀 value.length() \r\n"
+                );
+                assert_eq!(f.editor.document.buffer.cursor(), 17);
+                assert!(f.editor.document.buffer.undo());
+                if scenario == "auto-completion-command-primary" {
+                    assert_eq!(
+                        f.editor.document.buffer.text().to_string(),
+                        "😀 value.length\r\n"
+                    );
+                    assert!(f.editor.document.buffer.undo());
+                }
+                assert_eq!(
+                    f.editor.document.buffer.text().to_string(),
+                    "😀 value.le\r\n"
+                );
+                assert_eq!(
+                    fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
+                    "😀 value.\r\n"
+                );
+                if scenario == "auto-completion-command-other" {
+                    f.editor
+                        .open_buffer(&f.directory.path().join("Other.kt"))
+                        .unwrap();
+                    assert_eq!(f.editor.document.buffer.text().to_string(), "good other\n");
+                    assert!(f.editor.document.buffer.undo());
+                    assert!(!f.editor.document.buffer.is_modified());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn completion_commands_without_a_cursor_edit_still_finish_with_a_space() {
+    for (scenario, expected) in [
+        ("auto-completion-command-no-edit", "value.length \r\n"),
+        (
+            "auto-completion-command-import",
+            "import sample\r\nvalue.length \r\n",
+        ),
+        ("auto-completion-command-other-only", "value.length \r\n"),
+    ] {
+        let mut f = auto_completion_fixture(scenario, "value.\r\n");
+        type_completion(&mut f, "le");
+        wait_completion(&mut f);
+        f.editor.handle_key(Key::Enter);
+        until(&mut f.editor, |e| !e.lsp.pending);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert_eq!(f.editor.view, View::Editing);
+        assert_eq!(f.editor.document.buffer.text().to_string(), expected);
+        assert_eq!(
+            f.editor.document.buffer.cursor(),
+            expected.chars().count() - 2
+        );
+        assert!(f.editor.document.buffer.undo());
+        assert_eq!(
+            f.editor.document.buffer.text().to_string(),
+            "value.length\r\n"
+        );
+        assert!(f.editor.document.buffer.undo());
+        assert_eq!(f.editor.document.buffer.text().to_string(), "value.le\r\n");
+        if scenario == "auto-completion-command-other-only" {
+            f.editor
+                .open_buffer(&f.directory.path().join("Other.kt"))
+                .unwrap();
+            assert_eq!(f.editor.document.buffer.text().to_string(), "good other\n");
+            assert!(f.editor.document.buffer.undo());
+            assert!(!f.editor.document.buffer.is_modified());
+        }
+    }
+}
+
+#[test]
+fn completion_command_followups_reject_cancellation_conflicts_and_invalid_edits() {
+    for change in [
+        "typing", "move", "escape", "dismiss", "switch", "disk", "invalid", "error",
+    ] {
+        let scenario = match change {
+            "invalid" => "auto-completion-command-invalid",
+            "error" => "auto-completion-command-error",
+            _ => "auto-completion-command-slow",
+        };
+        let mut f = auto_completion_fixture(scenario, "value.\n");
+        type_completion(&mut f, "le");
+        wait_completion(&mut f);
+        f.editor.handle_key(Key::Tab);
+        f.wait_log("workspace/executeCommand", 1);
+        match change {
+            "typing" => type_completion(&mut f, "x"),
+            "move" => f.editor.handle_key(Key::Left),
+            "escape" => f.editor.handle_key(Key::Escape),
+            "dismiss" => f.editor.handle_key(Key::Ctrl('e')),
+            "switch" => f
+                .editor
+                .open_buffer(&f.directory.path().join("Other.kt"))
+                .unwrap(),
+            "disk" => fs::write(f.directory.path().join("Main.kt"), "external\n").unwrap(),
+            _ => (),
+        }
+        settle(&mut f.editor);
+        assert_eq!(f.editor.view, View::Editing);
+        assert!(f.editor.lsp.panel.is_none());
+        assert!(
+            !f.log()
+                .iter()
+                .any(|m| m["id"] == 777 && m["result"]["applied"] == true)
+        );
+        if change == "switch" {
+            f.editor
+                .open_buffer(&f.directory.path().join("Main.kt"))
+                .unwrap();
+        }
+        assert_eq!(
+            f.editor.document.buffer.text().to_string(),
+            if change == "typing" {
+                "value.lex\n"
+            } else {
+                "value.le\n"
+            }
+        );
+        if matches!(change, "disk" | "invalid" | "error") {
+            assert!(f.editor.message_is_error, "{change}: {}", f.editor.message);
         }
     }
 }
@@ -2246,63 +2428,50 @@ fn automatic_completion_popup_covers_source_text_and_restores_it_on_dismissal() 
 }
 
 #[test]
-fn completion_commands_require_selection_approval_and_a_separate_server_edit_preview() {
-    let mut f = Fixture::new("completion-command");
-    f.ready();
-    let before = f.editor.document.buffer.text().to_string();
-    for apply_command in [false, true] {
+fn completion_commands_accept_once_and_apply_their_guarded_edit_inline() {
+    for accept in [Key::Tab, Key::Enter] {
+        let mut f = Fixture::new("completion-command");
+        f.ready();
+        let before = f.editor.document.buffer.text().to_string();
         f.command("Complete");
-        f.editor.handle_key(Key::Tab);
-        until(&mut f.editor, |e| {
-            e.lsp
-                .panel
-                .as_ref()
-                .is_some_and(|p| p.title.starts_with("Apply"))
-        });
-        assert!(
-            f.editor
-                .lsp
-                .panel
-                .as_ref()
-                .unwrap()
-                .rows
-                .iter()
-                .any(|r| r.label.contains("Then run server command: fake.fix"))
-        );
+        escape(&mut f.editor);
         assert!(
             !f.log()
                 .iter()
                 .any(|m| m["method"] == "workspace/executeCommand")
         );
-        if !apply_command {
-            escape(&mut f.editor);
-            continue;
-        }
-        f.editor.handle_key(Key::Enter);
-        until(&mut f.editor, |e| {
-            e.lsp
-                .panel
-                .as_ref()
-                .is_some_and(|p| p.title.starts_with("Apply"))
-        });
-        assert_eq!(f.editor.document.buffer.text().to_string(), before);
-        f.editor.handle_key(Key::Enter);
+        f.command("Complete");
+        f.editor.handle_key(accept);
+        until(&mut f.editor, |e| !e.lsp.pending);
         assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert_eq!(f.editor.view, View::Editing);
+        assert_eq!(f.editor.mode, Mode::Normal);
+        assert!(f.editor.lsp.panel.is_none());
+        assert_eq!(
+            f.editor.document.buffer.text().to_string(),
+            before.replacen("bad", "good", 1)
+        );
+        assert_eq!(f.editor.document.buffer.cursor(), 5);
+        settle(&mut f.editor);
+        assert_eq!(
+            f.log()
+                .iter()
+                .filter(|m| m["method"] == "workspace/executeCommand")
+                .count(),
+            1
+        );
         assert!(
-            f.editor
-                .document
-                .buffer
-                .text()
-                .to_string()
-                .starts_with("good")
+            f.log()
+                .iter()
+                .any(|m| m["id"] == 777 && m["result"]["applied"] == true)
         );
         assert!(f.editor.document.buffer.undo());
         assert_eq!(f.editor.document.buffer.text().to_string(), before);
+        assert_eq!(
+            fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
+            before
+        );
     }
-    assert_eq!(
-        fs::read_to_string(f.directory.path().join("Main.kt")).unwrap(),
-        before
-    );
 }
 
 #[test]

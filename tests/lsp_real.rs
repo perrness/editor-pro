@@ -474,32 +474,18 @@ impl Project {
         assert!(!self.editor.message_is_error, "{}", self.state());
         self.editor.handle_key(Key::Enter);
         self.wait("completion_accept", |e| !e.lsp.pending);
-        if Language::for_path(&self.main) == Some(Language::CSharp) {
-            assert_eq!(
-                self.editor.view,
-                View::Editing,
-                "Plain completion must accept directly"
-            );
-        }
-        let mut previews = 0;
-        for step in 0..2 {
-            if !self
-                .editor
-                .lsp
-                .panel
-                .as_ref()
-                .is_some_and(|p| p.title.starts_with("Apply"))
-            {
-                break;
-            }
-            if step == 0 {
-                assert_eq!(self.editor.document.buffer.text().to_string(), incomplete);
-            }
-            previews += 1;
-            self.editor.handle_key(Key::Enter);
-            self.wait(&format!("completion_preview_{step}"), |e| !e.lsp.pending);
-        }
-        self.report["checks"]["completion_accept"]["previews"] = json!(previews);
+        assert_eq!(
+            self.editor.view,
+            View::Editing,
+            "Completion must accept directly: {}",
+            self.state()
+        );
+        assert!(
+            self.editor.lsp.panel.is_none(),
+            "Completion opened a preview: {}",
+            self.state()
+        );
+        self.report["checks"]["completion_accept"]["previews"] = json!(0);
         assert!(!self.editor.message_is_error, "{}", self.state());
         assert_eq!(self.editor.view, View::Editing);
         assert!(
@@ -550,37 +536,18 @@ impl Project {
         let before_accept = self.editor.document.buffer.text().to_string();
         self.editor.handle_key(Key::Tab);
         self.wait("automatic_completion_accept", |e| !e.lsp.pending);
-        if Language::for_path(&self.main) == Some(Language::CSharp) {
-            assert_eq!(
-                self.editor.view,
-                View::Editing,
-                "Plain completion must accept directly"
-            );
-        }
-        let mut previews = 0;
-        for step in 0..2 {
-            if !self
-                .editor
-                .lsp
-                .panel
-                .as_ref()
-                .is_some_and(|p| p.title.starts_with("Apply"))
-            {
-                break;
-            }
-            if step == 0 {
-                assert_eq!(
-                    self.editor.document.buffer.text().to_string(),
-                    before_accept
-                );
-            }
-            previews += 1;
-            self.editor.handle_key(Key::Enter);
-            self.wait(&format!("automatic_completion_preview_{step}"), |e| {
-                !e.lsp.pending
-            });
-        }
-        self.report["checks"]["automatic_completion_accept"]["previews"] = json!(previews);
+        assert_eq!(
+            self.editor.view,
+            View::Editing,
+            "Completion must accept directly: {}",
+            self.state()
+        );
+        assert!(
+            self.editor.lsp.panel.is_none(),
+            "Completion opened a preview: {}",
+            self.state()
+        );
+        self.report["checks"]["automatic_completion_accept"]["previews"] = json!(0);
         assert!(!self.editor.message_is_error, "{}", self.state());
         assert_eq!(self.editor.view, View::Editing);
         assert_eq!(self.editor.mode, editor_pro::editor::Mode::Insert);
