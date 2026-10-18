@@ -607,10 +607,14 @@ def run_diagnostic_session(binary, directory, resize, capture_dir=None):
         "--scenario", "diagnostics-display",
     ])}
     output = run_session(binary, source, [
-        (b"Type mismatch", 10), (b"unused variable", 10),
+        # Diagnostics may already arrive with the startup frame. Force a fresh
+        # frame so the wait observes output produced after its checkpoint.
+        (resize(24, 81), b"Type mismatch", 10), (b"unused variable", 10),
         resize(10, 35), (b"Diagnostics", 10), resize(24, 80),
         b":Dnext\r", b":Diagnostics\r", (b"j/k select", 10), b"\x1b",
-        b"cwgood", b"\x1b", b":wq\r",
+        # A fast completion response makes Escape dismiss the popup first.
+        # Observe and dismiss it explicitly before leaving Insert and saving.
+        b"cwgood", (b"Tab/Enter accept", 10), b"\x05", b"\x1b", b":wq\r",
     ], original.replace(b"bad", b"good", 1), environment)
     if capture_dir:
         (Path(capture_dir) / "lsp-diagnostics.ansi").write_bytes(output)

@@ -2440,3 +2440,24 @@ binary version output, formatting and whitespace checks. The tag-triggered
 workflow gates publication and the Homebrew tap update on Linux/macOS CI and
 native ARM64 Homebrew/PTY acceptance. Preparation logs are
 `/tmp/editor-pro-v0.2.19-prepare.log`.
+
+### Corrected v0.2.20 acceptance candidate
+
+The v0.2.19 workflow did not publish a release. Linux checks passed and the ARM64
+archive installed through Homebrew, but macOS acceptance exposed two PTY
+synchronization races in the new diagnostics scenario. CI had already rendered
+the diagnostic before the wait checkpoint; the Homebrew run received completion
+quickly enough that Escape dismissed its popup while retaining Insert mode.
+The attempted `:wq` then became source text instead of a command.
+
+The scenario now forces a fresh frame before waiting for diagnostics, observes
+the completion popup after editing, explicitly dismisses it with Ctrl-e, and
+then leaves Insert before saving. Diagnostic assertions and exact CRLF byte
+checks remain in place. The corrected scenario passed locally against the
+v0.2.20 binary, as did all four CLI tests, seven configuration tests, six
+release/harness Python tests, the stable-tag check, offline Cargo check, debug
+build/version check, formatting and whitespace checks.
+
+The v0.2.19 tag is preserved; v0.2.20 reruns the existing release gates with the
+corrected harness. Logs are `/tmp/editor-pro-v0.2.20-{prepare,diagnostics}.log`;
+the corrected capture is `/tmp/editor-pro-v0.2.20-terminal/lsp-diagnostics.ansi`.

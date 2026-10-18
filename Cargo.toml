@@ -1,6 +1,6 @@
 [package]
 name = "editor-pro"
-version = "0.2.19"
+version = "0.2.20"
 edition = "2024"
 rust-version = "1.88"
 description = "A small terminal-native, Vim-inspired code editor"
