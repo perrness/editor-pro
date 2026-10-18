@@ -800,12 +800,14 @@ def main():
         if capture_dir:
             (Path(capture_dir) / "repository-relative-status.ansi").write_bytes(output)
         # Keep the extra Git status label identical locally and on hosted runners.
+        # Match the 205-cell rendering regression so the colored status segments
+        # and dirty marker leave room for the same complete-directory suffix.
         git("config", "filter.status-fixture.clean", "cat")
         shortened_status = f" {short_status_path}".encode()
         output = run_session(binary, long_status_source, [
             b":gitrefresh\r", resize(24, 260), (b"main", 10), (b"Failed", 10),
-            resize(24, 200), (shortened_status, 10), b"i// LOCAL ", b"\x1b",
-            resize(7, 45), resize(3, 1), resize(24, 200), (shortened_status, 10),
+            resize(24, 205), (shortened_status, 10), b"i// LOCAL ", b"\x1b",
+            resize(7, 45), resize(3, 1), resize(24, 205), (shortened_status, 10),
             b"u", resize(24, 260), (f" Gjensidige.Alarm.Bff/{short_status_path}".encode(), 10),
             b":q\r",
         ], b"// status fixture\r\n", cwd=long_status_source.parent,
