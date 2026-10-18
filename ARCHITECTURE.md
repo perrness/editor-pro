@@ -156,6 +156,15 @@ Linux binary distribution is deferred. See [release setup](docs/RELEASING.md).
 6. Paths and source text are rendered as data. Control bytes are displayed as
    replacement glyphs; tabs are expanded. Bracketed paste never runs commands.
 
+Insert-mode delimiter pairing lives in `editor.rs`, above the literal buffer
+insertion API. Parentheses, square brackets, braces and three quote styles use
+lexical neighbor/escape checks; each pair insertion or empty-pair Backspace is
+one ordinary buffer splice in the current undo group. Both bytes must fit the
+source/note size limit before insertion. Stepping over an existing closer only
+moves the cursor, so it does not advance the mutation generation or schedule
+completion. Paste, registers and LSP edits retain their literal insertion paths.
+Pair deletion and overtyping require standalone delimiter graphemes.
+
 Segmenting one whole line is an intentional starting simplification. Extremely
 long/minified lines require later profiling and chunk-aware segmentation. Text
 width is shared by movement and rendering. Tree-sitter byte offsets are explicitly

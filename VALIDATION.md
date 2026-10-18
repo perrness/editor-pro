@@ -2058,3 +2058,42 @@ Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
 process access because the sandbox failed to initialize its loopback interface.
 The release CLI check used a fixture executable; hosted macOS builds, Homebrew
 execution and release publication were not run for this change.
+
+## Issue 21 — Automatic delimiter pairing
+
+Validated on Linux x86_64, 2026-10-18, with Rust/Cargo 1.99.0 and Python 3.12.
+Insert typing pairs parentheses, square brackets, braces, double/single quotes
+and backticks, leaving the cursor inside. Existing closers can be overtyped;
+Backspace removes an empty pair. Lexical neighbor and escape checks preserve
+ordinary word/apostrophe editing, and paste, registers and prompts remain literal.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 383 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| Python unit-test discovery in `tools` and `tools/kotlin-lsp` | All 14 passed. |
+| `python3 tools/terminal_smoke.py` | All 57 PTY sessions passed. |
+| `git diff --check` | Passed. |
+
+Eleven new Rust regressions cover all six pairs, nesting, closer overtyping,
+atomic empty-pair deletion, escaped quotes, apostrophes, Unicode graphemes, CRLF,
+undo/redo and movement groups, literal paste/registers/prompts, completion inside
+an automatic pair, and atomic rejection at the note size limit. The mixed-edit
+grapheme-boundary test also exercises every delimiter. The two new PTY sessions
+verify nested Unicode typing, undo/redo, empty-pair Backspace, literal bracketed
+paste, exact saved CRLF bytes and terminal restoration.
+
+Terminal captures are `/tmp/editor-pro-issue21-terminal/auto-pairs-nested.ansi`
+and `auto-pairs-backspace-paste.ansi` in the same directory. `auto-pairs.svg` and
+`auto-pairs.txt` reconstruct the captured Insert frame with the cursor between
+nested braces. Logs are `/tmp/editor-pro-issue21-{tests,clippy,build,terminal}.log`.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_PROFILE_DEV_STRIP=symbols`,
+`CARGO_PROFILE_TEST_STRIP=symbols` and `CARGO_INCREMENTAL=0` to fit the available
+disk space. Commands used normal process access after the sandbox failed to
+initialize its loopback interface. macOS, physical terminals and the opt-in real
+language-server/AI fixtures were not tested; completion coverage uses the
+existing protocol double.

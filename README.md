@@ -149,6 +149,15 @@ deletes inside braces. Pair objects support nesting and multiline content; quote
 objects are line-local and recognize escapes. Pair matching is lexical, so
 brackets inside strings/comments can affect it.
 
+In Insert mode, typing `(`, `[`, `{`, a double/single quote, or a backtick adds
+its closing delimiter and leaves the cursor between the pair. Typing the matching
+closer already under the cursor advances over it; Backspace between an empty pair
+removes both. Pairing applies at line ends, before whitespace, closing delimiters,
+commas, semicolons and colons. New quote pairs are suppressed after a word;
+quotes after an odd number of backslashes are literal. These are lexical rules,
+independent of language syntax; angle brackets remain literal. Paste, registers,
+command prompts and search stay literal.
+
 An Insert session or change plus replacement is one undo step; movement and
 bracketed paste create separate groups. History retains up to 1,000 groups per
 buffer. Bracketed paste is accepted only in Insert and cannot execute commands.
