@@ -2424,3 +2424,19 @@ and Unicode/CRLF source bytes while verifying terminal restoration. Captures:
 Native macOS execution, Homebrew installation and real language servers were not
 tested locally. The existing Linux/macOS CI runs the configuration regressions
 and terminal harness on both supported platforms.
+
+## Release v0.2.19 preparation
+
+The release integrates source diagnostics with the latest `main` configuration
+change, retaining both validation records and all 69 PTY scenarios. It also
+includes the previously merged navigation colors, batched/binary review
+snapshots, inline completion acceptance, delimiter pairing and automatic
+indentation since v0.2.18. Published v0.2.18 assets remain unchanged.
+
+The Cargo package and lockfile now report **0.2.19**. On the integrated code,
+all four CLI tests, seven configuration tests and six release/harness Python
+tests passed, along with the matching-tag check, offline Cargo check, debug build,
+binary version output, formatting and whitespace checks. The tag-triggered
+workflow gates publication and the Homebrew tap update on Linux/macOS CI and
+native ARM64 Homebrew/PTY acceptance. Preparation logs are
+`/tmp/editor-pro-v0.2.19-prepare.log`.
