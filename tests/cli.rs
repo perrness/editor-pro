@@ -16,11 +16,7 @@ fn informational_options_work_without_a_terminal_or_valid_config() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    let path = home.path().join(if cfg!(target_os = "macos") {
-        "Library/Application Support/editor-pro/config.json"
-    } else {
-        ".config/editor-pro/config.json"
-    });
+    let path = home.path().join(".config/editor-pro/config.json");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
         path.to_str().unwrap()
@@ -55,6 +51,36 @@ fn informational_options_work_without_a_terminal_or_valid_config() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains(path.to_str().unwrap()));
     assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn xdg_config_path_is_used_for_startup_with_or_without_home() {
+    let home = tempdir().unwrap();
+    let settings = tempdir().unwrap();
+    let path = settings.path().join("editor-pro/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "invalid json").unwrap();
+
+    for home in [Some(home.path()), None] {
+        let mut command = binary();
+        command.env("XDG_CONFIG_HOME", settings.path());
+        if let Some(home) = home {
+            command.env("HOME", home);
+        } else {
+            command.env_remove("HOME");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(path.to_str().unwrap()));
+        assert!(!output.stdout.contains(&0x1b));
+
+        let output = command.arg("--config-path").output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            path.to_str().unwrap()
+        );
+    }
 }
 
 #[cfg(unix)]

@@ -42,13 +42,15 @@ removes Cargo's binary; remove the `ep` symlink separately if you created it.
 
 | Platform | Path |
 | --- | --- |
-| macOS | `~/Library/Application Support/editor-pro/config.json` |
-| Linux | `$XDG_CONFIG_HOME/editor-pro/config.json`, or `~/.config/editor-pro/config.json` |
+| macOS and Linux | `$XDG_CONFIG_HOME/editor-pro/config.json`, or `~/.config/editor-pro/config.json` |
 
-On Linux only an absolute, nonempty `XDG_CONFIG_HOME` is used. A missing config
-file means defaults; if no absolute home/config directory is available, startup
-also uses defaults. `--config-path` reports an error when it cannot resolve a path.
-macOS uses its native Application Support directory, independently of XDG.
+Only an absolute, nonempty `XDG_CONFIG_HOME` is used; otherwise the default is
+`~/.config/editor-pro/config.json`. A missing config file means defaults; if no
+absolute home/config directory is available, startup also uses defaults.
+`--config-path` reports an error when it cannot resolve a path.
+The old macOS `~/Library/Application Support/editor-pro/config.json` location is
+no longer read. Move an existing settings file to the path printed by
+`ep --config-path`; the editor does not migrate or rewrite it.
 
 Create the directory and file yourself when you want a persistent setting:
 

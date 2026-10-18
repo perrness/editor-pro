@@ -39,8 +39,7 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         os.environ["XDG_DATA_HOME"] = str(settings_root / "data")
         for name in ("EDITOR_PRO_KOTLIN_LSP", "EDITOR_PRO_JAVA_LSP", "EDITOR_PRO_CSHARP_LSP"):
             os.environ.pop(name, None)
-        settings = (Path(os.environ["HOME"]) / "Library/Application Support/editor-pro/config.json"
-                    if sys.platform == "darwin" else Path(os.environ["XDG_CONFIG_HOME"]) / "editor-pro/config.json")
+        settings = Path(os.environ["XDG_CONFIG_HOME"]) / "editor-pro/config.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text('{"lsp":{"auto_install":false}}\n')
         if environment:
@@ -716,20 +715,26 @@ def main():
         ], "// before 界\r\n".encode(), arguments=[project])
 
         config_home = Path(directory) / "settings home"
-        config_env = {"HOME": str(config_home), "XDG_CONFIG_HOME": str(config_home / "xdg")}
-        config_path = Path(subprocess.check_output(
-            [str(ep), "--config-path"], env={**os.environ, **config_env}, text=True,
-        ).strip())
-        config_path.parent.mkdir(parents=True)
         config_bytes = b'{ "theme": "gruvbox" }\n'
-        config_path.write_bytes(config_bytes)
-        output = run_session(ep, project_file, [b":q\r"], "// before 界\r\n".encode(), config_env)
-        assert b"48;2;40;40;40" in output, "Configured Gruvbox background was not rendered"
-        assert config_path.read_bytes() == config_bytes
         capture_dir = os.environ.get("EDITOR_PRO_SMOKE_CAPTURE_DIR")
         if capture_dir:
             Path(capture_dir).mkdir(parents=True, exist_ok=True)
-            (Path(capture_dir) / "installation-config.ansi").write_bytes(output)
+        for xdg in ["", str(config_home / "xdg")]:
+            config_env = {"HOME": str(config_home), "XDG_CONFIG_HOME": xdg}
+            config_path = (Path(xdg) if xdg else config_home / ".config") / "editor-pro/config.json"
+            reported_path = subprocess.check_output(
+                [str(ep), "--config-path"], env={**os.environ, **config_env}, text=True,
+            ).strip()
+            assert Path(reported_path) == config_path
+            config_path.parent.mkdir(parents=True)
+            config_path.write_bytes(config_bytes)
+            output = run_session(ep, project_file, [b":q\r"], "// before 界\r\n".encode(), config_env)
+            assert b"48;2;40;40;40" in output, "Configured Gruvbox background was not rendered"
+            assert config_path.read_bytes() == config_bytes
+            if capture_dir:
+                name = "installation-config-xdg.ansi" if xdg else "installation-config.ansi"
+                (Path(capture_dir) / name).write_bytes(output)
+            config_path.unlink()
 
         path = Path(directory) / "source.rs"
         path.write_bytes(b"fn main() {}\n")
@@ -1214,7 +1219,7 @@ def main():
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 68 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 69 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 
