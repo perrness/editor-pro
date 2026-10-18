@@ -2260,7 +2260,16 @@ fn completion_command_followups_reject_cancellation_conflicts_and_invalid_edits(
             "disk" => fs::write(f.directory.path().join("Main.kt"), "external\n").unwrap(),
             _ => (),
         }
-        settle(&mut f.editor);
+        // Wait for the delayed server edit to be rejected, rather than assuming
+        // its response has arrived after the fixed settling delay on every host.
+        let log_path = f.directory.path().join("protocol.jsonl");
+        until(&mut f.editor, |_| {
+            fs::read_to_string(&log_path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|m| m["id"] == 777 && m["result"]["applied"].is_boolean())
+        });
         assert_eq!(f.editor.view, View::Editing);
         assert!(f.editor.lsp.panel.is_none());
         assert!(
