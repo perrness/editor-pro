@@ -1718,7 +1718,7 @@ fn automatic_completion_debounces_filters_and_accepts_in_insert_with_undo() {
 }
 
 #[test]
-fn automatic_completion_preserves_auto_pairs_and_closer_overtyping() {
+fn automatic_completion_keeps_its_trailing_space_before_auto_pairs_and_closer_overtyping() {
     let mut f = auto_completion_fixture("auto-completion", "\r\n");
     type_completion(&mut f, "(value.le");
     wait_completion(&mut f);
@@ -1731,12 +1731,12 @@ fn automatic_completion_preserves_auto_pairs_and_closer_overtyping() {
     assert!(!f.editor.message_is_error, "{}", f.editor.message);
     assert_eq!(
         f.editor.document.buffer.text().to_string(),
-        "(value.length)\r\n"
+        "(value.length )\r\n"
     );
-    assert_eq!(f.editor.document.buffer.cursor(), 13);
+    assert_eq!(f.editor.document.buffer.cursor(), 14);
     let generation = f.editor.document.buffer.generation();
     type_completion(&mut f, ")");
-    assert_eq!(f.editor.document.buffer.cursor(), 14);
+    assert_eq!(f.editor.document.buffer.cursor(), 15);
     assert_eq!(f.editor.document.buffer.generation(), generation);
     assert!(!f.editor.lsp.completion_scheduled());
     f.editor.handle_key(Key::Escape);
