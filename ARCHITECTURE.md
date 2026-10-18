@@ -12,7 +12,7 @@ plugin API, generic backend trait, event bus, dependency injection, or GUI layer
 
 ```text
 main.rs      terminal lifetime, CLI, event loop, focus notifications and worker polling
-config.rs    optional bounded user settings and native configuration paths
+config.rs    optional bounded user settings, XDG configuration and native data paths
 input.rs     Crossterm events -> terminal-independent Key values
 help.rs      shared shortcut metadata, bounded search and read-only help overlay
 editor.rs    editing modes, pending counts/operators, prompts, unnamed register
@@ -99,7 +99,7 @@ Opening/searching/rendering help performs no document edits or external work.
 | Project search | Installed ripgrep CLI with literal patterns, NUL-terminated filenames and vimgrep byte columns. A concrete standard-library worker owns requests/processes; no new crate or generic process framework. |
 | Review | `sha2` 0.10 supplies SHA-256; `serde`/`serde_json` supply a strict versioned local format. A small standard-library worker owns I/O; no new runtime or backend framework. |
 | AI | Installed Codex CLI `exec` with JSONL and structured output. A concrete standard-library worker uses existing serde/tempfile/hash dependencies. No SDK, additional runtime, provider trait or second provider. |
-| Configuration | An optional, bounded JSON file using existing serde/serde_json dependencies. Native macOS Application Support and Linux XDG paths; startup theme and LSP installation policy, with strict validation. No configuration framework. |
+| Configuration | An optional, bounded JSON file using existing serde/serde_json dependencies. XDG paths with a `~/.config` fallback on macOS and Linux; startup theme and LSP installation policy, with strict validation. No configuration framework. |
 | Server installation | ureq/rustls for HTTPS, tar/flate2 and zip for bounded archive extraction, fs2 for cross-process installation locks. Existing sha2 verifies pinned hashes. Concrete installation threads keep network/filesystem/SDK work outside the protocol loop. |
 
 Helix's separation of core text/history from terminal concerns is useful prior
@@ -118,9 +118,10 @@ configuration file. One directory argument opens the existing picker and sets
 the process working directory before starting workers; file arguments keep the
 existing buffer-opening path. There is no new project/session model.
 
-`config.rs` resolves macOS `~/Library/Application Support/editor-pro/config.json`
-or Linux `$XDG_CONFIG_HOME/editor-pro/config.json` (absolute paths only, otherwise
-`~/.config`). The optional file is read before terminal initialization, bounded
+`config.rs` resolves `$XDG_CONFIG_HOME/editor-pro/config.json` on macOS and Linux
+(absolute paths only, otherwise `~/.config/editor-pro/config.json` with an
+absolute home directory). The old macOS Application Support config location is
+not consulted. The optional file is read before terminal initialization, bounded
 to 64 KiB and never rewritten. Unknown fields/themes and invalid JSON are errors;
 a missing file uses defaults. `editor.relative_line_numbers` defaults to false; the source renderer derives
 relative distances from the current cursor while retaining its absolute line

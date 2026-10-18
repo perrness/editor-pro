@@ -79,10 +79,11 @@ for the tap bootstrap, automated formula updates and manual binary installation.
 
 ## User configuration
 
-`ep --config-path` prints the optional settings file location. On macOS it is
-`~/Library/Application Support/editor-pro/config.json`; on Linux it is
-`$XDG_CONFIG_HOME/editor-pro/config.json`, falling back to
-`~/.config/editor-pro/config.json`. Create it to choose a startup theme and relative line numbers:
+`ep --config-path` prints the optional settings file location. On macOS and Linux,
+it defaults to `~/.config/editor-pro/config.json`. An absolute, nonempty
+`XDG_CONFIG_HOME` overrides it with `$XDG_CONFIG_HOME/editor-pro/config.json`;
+empty or relative values use the default. Create it to choose a startup theme
+and relative line numbers:
 
 ```json
 {
@@ -101,6 +102,8 @@ The setting applies to source editing; diff panes retain their old/new coordinat
 Use JSON booleans (`true`/`false`), and correct the reported file and line/column
 if settings fail to load. Installation and upgrades never write this file,
 and settings are kept outside application binaries and project checkouts.
+If you previously used `~/Library/Application Support/editor-pro/config.json`
+on macOS, move that file to the location printed by `ep --config-path`.
 Missing language servers are installed automatically by default. Set
 `"lsp": { "auto_install": false }` for manual/offline operation; existing servers
 still start normally, and `:LspInstall` remains available.

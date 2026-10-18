@@ -2351,3 +2351,34 @@ Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
 process access because the sandbox could not initialize its loopback interface.
 macOS, hosted CI and physical-terminal appearance were not tested here. Real
 language servers and AI providers were not retested for this local editing change.
+
+## Issue 24 — Shared macOS and Linux configuration path
+
+Validated on Linux x86_64, 2026-10-18. Configuration now defaults to
+`~/.config/editor-pro/config.json` on macOS and Linux. An absolute, nonempty
+`XDG_CONFIG_HOME` takes precedence; the former macOS Application Support config
+path is no longer read. The README, installation guidance and architecture record
+describe the lookup and manual migration of existing settings.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 373 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Six release/harness tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| `python3 tools/terminal_smoke.py` | All 56 PTY sessions passed. |
+
+Path regressions cover absolute XDG precedence, unset/empty/relative XDG
+fallbacks, and missing or invalid home directories. CLI tests verify both the
+reported path and startup configuration errors, including XDG without `HOME`.
+The terminal harness loads Gruvbox from both `~/.config` and an XDG override,
+checks the expected path independently of the editor, and preserves settings
+and Unicode/CRLF source bytes while verifying terminal restoration. Captures:
+`/tmp/editor-pro-issue24-captures/installation-config.ansi` and
+`/tmp/editor-pro-issue24-captures/installation-config-xdg.ansi`.
+
+Native macOS execution, Homebrew installation and real language servers were not
+tested locally. The existing Linux/macOS CI runs the configuration regressions
+and terminal harness on both supported platforms.

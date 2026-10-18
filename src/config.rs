@@ -63,22 +63,17 @@ fn user_data_dir(macos: bool, home: Option<&Path>, xdg: Option<&Path>) -> Option
 
 pub fn config_path() -> Option<PathBuf> {
     user_config_dir(
-        cfg!(target_os = "macos"),
         env::var_os("HOME").as_deref().map(Path::new),
         env::var_os("XDG_CONFIG_HOME").as_deref().map(Path::new),
     )
     .map(|directory| directory.join("editor-pro/config.json"))
 }
 
-fn user_config_dir(macos: bool, home: Option<&Path>, xdg: Option<&Path>) -> Option<PathBuf> {
+fn user_config_dir(home: Option<&Path>, xdg: Option<&Path>) -> Option<PathBuf> {
     let home = home.filter(|path| path.is_absolute());
-    if macos {
-        home.map(|path| path.join("Library/Application Support"))
-    } else {
-        xdg.filter(|path| path.is_absolute())
-            .map(Path::to_path_buf)
-            .or_else(|| home.map(|path| path.join(".config")))
-    }
+    xdg.filter(|path| path.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|path| path.join(".config")))
 }
 
 pub fn load(path: &Path) -> io::Result<Config> {
@@ -136,23 +131,19 @@ mod tests {
     }
 
     #[test]
-    fn standard_user_directories_never_depend_on_the_binary_or_working_directory() {
+    fn config_uses_xdg_or_dot_config_with_absolute_directories_only() {
         let home = Some(Path::new("/users/test"));
         let xdg = Some(Path::new("/settings"));
-        assert_eq!(
-            user_config_dir(true, home, xdg),
-            Some("/users/test/Library/Application Support".into())
-        );
-        assert_eq!(user_config_dir(false, home, xdg), Some("/settings".into()));
+        assert_eq!(user_config_dir(home, xdg), Some("/settings".into()));
         for xdg in [None, Some(Path::new("")), Some(Path::new("relative"))] {
             assert_eq!(
-                user_config_dir(false, home, xdg),
+                user_config_dir(home, xdg),
                 Some("/users/test/.config".into())
             );
         }
-        assert_eq!(user_config_dir(true, None, xdg), None);
-        assert_eq!(user_config_dir(false, None, None), None);
-        assert_eq!(user_config_dir(false, Some(Path::new("")), None), None);
-        assert_eq!(user_config_dir(false, None, xdg), Some("/settings".into()));
+        for home in [None, Some(Path::new("")), Some(Path::new("relative"))] {
+            assert_eq!(user_config_dir(home, None), None);
+            assert_eq!(user_config_dir(home, xdg), Some("/settings".into()));
+        }
     }
 }
