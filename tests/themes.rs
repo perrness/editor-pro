@@ -58,6 +58,21 @@ fn each_theme_colors_syntax_search_and_selection_and_reports_buffer_status() {
         ] {
             assert!(output.contains(word), "{output}");
         }
+        let cells = terminal.backend().buffer();
+        for (label, color) in [
+            ("[B1]", theme.normal),
+            ("1dirty", theme.modified),
+            ("Rust", theme.type_name),
+            ("CRLF", theme.muted),
+            ("1:1", theme.normal),
+        ] {
+            let x = output.find(label).unwrap() as u16;
+            assert_eq!(cells[(x, 5)].fg, color, "{label}");
+        }
+        assert_eq!(
+            cells[(output.find("1:1").unwrap() as u16, 5)].bg,
+            theme.panel
+        );
         editor.handle_key(Key::Char('v'));
         terminal
             .draw(|f| ui::render(f, &mut editor, &theme))

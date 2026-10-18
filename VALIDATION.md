@@ -2119,3 +2119,48 @@ file-deletion marker timed out once, then both disk-refresh sessions and the
 remaining AI sessions passed without further source changes. Recovery logs are
 `/tmp/editor-pro-issue16-recovery-{tests,clippy,terminal-tests,terminal-retry}.log`;
 captures are in `/tmp/editor-pro-issue16-recovery-terminal`.
+
+## Issue 17 — Colorful dark interface
+
+2026-10-16, Linux x86_64, Rust/Cargo 1.99.0. All three existing dark themes now
+provide darker navigation panels and brighter secondary text. The file tree,
+picker and buffer list share accented headers, file-type text badges and a
+selection rail. The tree adds nesting guides, an active-source marker, entry
+counts and colored shortcut hints. Source status segments distinguish language,
+Git/LSP state, dirty buffers and position. Tree-sitter colors remain unchanged.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 375 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| Python tool/harness and Kotlin probe unit tests | All 14 passed. |
+| `python3 tools/terminal_smoke.py` | All 58 sessions passed. |
+| `git diff --check` | Passed. |
+
+Three new Rust regressions exercise tree selection and the active-file marker
+across palettes, deep Unicode/control-character filenames, prompt clipping and
+cursor bounds, and picker/buffer selection with unchanged source, CRLF bytes and
+undo history. Existing theme tests now check status segment colors as well as
+syntax/search/selection composition. Tree rendering also covers zero-cell and
+one-cell layouts. The three new PTY sessions inspect actual RGB output while
+switching between the tree, buffer list, picker and source, resizing to one cell,
+and checking edit/undo, unchanged disk bytes and terminal restoration. These
+sessions also passed separately after making initial navigation wait for the
+directory scan to finish.
+
+Raw ANSI captures are in `/tmp/editor-pro-issue17-terminal`, including
+`colorful-ui-{tokyo-night,catppuccin,gruvbox}.ansi`. Representative real PTY frames
+were reconstructed with pyte and inspected as images; the Tokyo Night
+[tree](docs/images/file-tree.png) and [source/status](docs/images/editor.png)
+captures are included in the repository. Other palette previews and their raw
+captures use the `preview-tree-*` prefix in the same temporary directory.
+No screenshot-generation dependency was added to the package or test suite.
+
+Full logs are `/tmp/editor-pro-issue17-{rust-tests,clippy,python,terminal-tests}.log`.
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process access because the sandbox could not initialize its loopback interface.
+macOS, physical terminals and real language/AI servers were not retested for this
+presentation change.

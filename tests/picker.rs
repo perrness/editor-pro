@@ -118,6 +118,55 @@ fn opening_a_picker_result_preserves_dirty_source_and_history() {
     keys(&mut e, "u");
     assert_eq!(e.document.buffer.text().to_string(), "");
 }
+
+#[test]
+fn themed_navigation_panels_preserve_selection_and_unicode_paths() {
+    use editor_pro::{theme::Theme, ui};
+    use ratatui::{Terminal, backend::TestBackend};
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("界e\u{301}.rs");
+    fs::write(&source, "fn main() {}\r\n").unwrap();
+    let mut e = Editor::new(Document::default());
+    e.document.buffer.insert("dirty source");
+    e.open_picker(dir.path()).unwrap();
+    settle(e.picker.as_mut().unwrap());
+    let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+    for theme in [Theme::night(), Theme::catppuccin(), Theme::gruvbox()] {
+        terminal.draw(|f| ui::render(f, &mut e, &theme)).unwrap();
+        let cells = terminal.backend().buffer();
+        let row: String = (0..80).map(|x| cells[(x, 2)].symbol()).collect();
+        assert!(row.contains("▎ [rs] 界"), "{row}");
+        assert_eq!(cells[(9, 2)].symbol(), "e\u{301}");
+        assert_eq!(cells[(2, 2)].fg, theme.number);
+        assert_eq!(cells[(79, 2)].bg, theme.selection);
+        assert_eq!(cells[(79, 3)].bg, theme.panel);
+        assert_eq!(e.picker.as_ref().unwrap().selected_path().unwrap(), source);
+    }
+    e.handle_key(Key::Enter);
+    assert_eq!(e.document.path(), Some(source.as_path()));
+    assert_eq!(e.dirty_buffer_count(), 1);
+    e.execute_command("ls").unwrap();
+    for theme in [Theme::night(), Theme::catppuccin(), Theme::gruvbox()] {
+        terminal.draw(|f| ui::render(f, &mut e, &theme)).unwrap();
+        let cells = terminal.backend().buffer();
+        let row: String = (0..80).map(|x| cells[(x, 2)].symbol()).collect();
+        assert!(row.contains("[rs]"), "{row}");
+        assert!(row.contains("界") && row.contains("e\u{301}.rs"), "{row}");
+        assert_eq!(cells[(0, 2)].symbol(), "▎");
+        assert_eq!(cells[(79, 2)].bg, theme.selection);
+        let dirty: String = (0..80).map(|x| cells[(x, 1)].symbol()).collect();
+        assert_eq!(
+            cells[(dirty.find('+').unwrap() as u16, 1)].fg,
+            theme.modified
+        );
+    }
+    e.handle_key(Key::Up);
+    e.handle_key(Key::Enter);
+    assert_eq!(e.document.buffer.text().to_string(), "dirty source");
+    assert!(e.document.buffer.undo());
+    assert_eq!(e.document.buffer.text().to_string(), "");
+    assert_eq!(fs::read_to_string(&source).unwrap(), "fn main() {}\r\n");
+}
 #[test]
 fn cancelled_picker_and_failed_open_preserve_source_location() {
     let dir = tempdir().unwrap();

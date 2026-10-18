@@ -208,6 +208,14 @@ cancellation flag; no worker join blocks the editing thread. Opening a match use
 the same guarded buffer-opening path as `:e`. No asynchronous service abstraction
 or process manager was introduced for these concrete requirements.
 
+Navigation chrome uses semantic panel/border colors from `theme.rs`, shared
+headers and filename-only text badges in `ui.rs`. Badge classification never
+reads files or creates syntax parsers. Styled labels retain the shared grapheme
+clipping/control-sanitizing rules. Tree indentation is capped by screen width,
+and selection/active-file decorations do not change navigation or source state.
+Statusline segments have independent styles; source Tree-sitter colors and
+selection/search precedence remain unchanged.
+
 ## Comprehension navigation and project search
 
 Source history stores stable buffer ID, fallback path, scalar cursor and viewport.
