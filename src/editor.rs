@@ -887,7 +887,7 @@ impl Editor {
         match key {
             Key::Escape => self.escape(),
             Key::Char(character) if !character.is_control() => {
-                self.insert_text(&character.to_string());
+                self.insert_character(character);
             }
             Key::Enter => {
                 if self.has_room(2) {
@@ -895,7 +895,7 @@ impl Editor {
                 }
             }
             Key::Tab => self.insert_text("\t"),
-            Key::Backspace => self.document.buffer.backspace(),
+            Key::Backspace => self.insert_backspace(),
             Key::Delete => self.document.buffer.delete(true),
             Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End => {
                 // Moving during Insert starts a new undo group on the next edit.
@@ -942,6 +942,61 @@ impl Editor {
     fn insert_text(&mut self, text: &str) {
         if self.has_room(text.len()) {
             self.document.buffer.insert(text);
+        }
+    }
+
+    fn insert_character(&mut self, character: char) {
+        let buffer = &self.document.buffer;
+        let cursor = buffer.cursor();
+        let next = buffer.text().get_char(cursor);
+        let quote = matches!(character, '\'' | '"' | '`');
+        let escaped = quote && escaped_at(buffer.text(), cursor);
+        if !escaped
+            && matches!(character, ')' | ']' | '}' | '\'' | '"' | '`')
+            && next == Some(character)
+            && buffer.grapheme_end(cursor) == cursor + 1
+        {
+            self.document.buffer.move_right(true);
+            return;
+        }
+
+        // Keep insertion before existing text literal. Quotes following a word
+        // are usually apostrophes or a closing quote, including combining text.
+        let after_word = quote
+            && cursor > 0
+            && buffer
+                .text()
+                .get_char(buffer.grapheme_start_before(cursor))
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
+        if let Some(close) = closing_delimiter(character)
+            && !escaped
+            && !after_word
+            && next.is_none_or(|ch| ch.is_whitespace() || ")]}'\"`,;:".contains(ch))
+        {
+            let pair = format!("{character}{close}");
+            if self.has_room(pair.len()) {
+                self.document.buffer.insert(&pair);
+                self.document.buffer.set_cursor(cursor + 1, true);
+            }
+        } else {
+            self.insert_text(&character.to_string());
+        }
+    }
+
+    fn insert_backspace(&mut self) {
+        let buffer = &mut self.document.buffer;
+        let cursor = buffer.cursor();
+        if cursor > 0
+            && let Some(open) = buffer.text().get_char(cursor - 1)
+            && let Some(close) = closing_delimiter(open)
+            && buffer.text().get_char(cursor) == Some(close)
+            && buffer.grapheme_start_before(cursor) == cursor - 1
+            && buffer.grapheme_end(cursor) == cursor + 1
+            && !(open == close && escaped_at(buffer.text(), cursor - 1))
+        {
+            buffer.replace_range(cursor - 1..cursor + 1, "");
+        } else {
+            buffer.backspace();
         }
     }
 
@@ -1231,6 +1286,25 @@ impl Editor {
         self.message = message.into();
         self.message_is_error = true;
     }
+}
+
+fn closing_delimiter(character: char) -> Option<char> {
+    match character {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '\'' | '"' | '`' => Some(character),
+        _ => None,
+    }
+}
+
+fn escaped_at(text: &ropey::Rope, cursor: usize) -> bool {
+    text.chars_at(cursor)
+        .reversed()
+        .take_while(|ch| *ch == '\\')
+        .count()
+        % 2
+        == 1
 }
 
 /// A note is an ephemeral Document handled by this same editor. Keep every

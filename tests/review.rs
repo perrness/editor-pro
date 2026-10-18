@@ -1010,6 +1010,40 @@ fn deleted_lines_notes_remain_historical_and_stale_notes_never_jump_by_ordinal()
     assert_eq!(fs::read_to_string(r.path("gone")).unwrap(), "unrelated\n");
 }
 #[test]
+fn auto_pairs_check_both_bytes_against_the_note_size_limit() {
+    let (r, _) = fixture();
+    let mut e = editor(&r);
+    act(&mut e, "diff");
+    e.git.diff_view.as_mut().unwrap().selected = 2;
+    e.execute_command("note new").unwrap();
+    e.handle_key(Key::Char('i'));
+    let text = format!("{} ", "x".repeat(editor_pro::review::MAX_NOTE - 2));
+    e.paste(&text);
+    let generation = e.document.buffer.generation();
+    let cursor = e.document.buffer.cursor();
+    for open in ['(', '[', '{', '"', '\'', '`'] {
+        e.handle_key(Key::Char(open));
+        assert!(e.message_is_error);
+        assert!(e.message.contains("Size limit"));
+        assert_eq!(e.document.buffer.text().to_string(), text);
+        assert_eq!(e.document.buffer.generation(), generation);
+        assert_eq!(e.document.buffer.cursor(), cursor);
+    }
+    e.handle_key(Key::Backspace);
+    e.handle_key(Key::Char('('));
+    assert_eq!(
+        e.document.buffer.text().len_bytes(),
+        editor_pro::review::MAX_NOTE
+    );
+    assert!(e.document.buffer.text().to_string().ends_with("()"));
+    let generation = e.document.buffer.generation();
+    e.handle_key(Key::Char(')'));
+    assert_eq!(e.document.buffer.cursor(), editor_pro::review::MAX_NOTE);
+    assert_eq!(e.document.buffer.generation(), generation);
+    assert_eq!(fs::read_to_string(r.path("a")).unwrap(), "new\n");
+}
+
+#[test]
 fn bounded_context_and_note_limits_do_not_persist_an_unsaved_source_copy() {
     let (r, _) = fixture();
     let mut e = editor(&r);

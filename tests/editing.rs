@@ -43,6 +43,215 @@ fn insert_session_is_one_undo_step_and_redo_restores_it() {
 }
 
 #[test]
+fn typed_delimiters_pair_with_the_cursor_inside_and_share_insert_undo() {
+    for (open, close) in [
+        ('(', ')'),
+        ('[', ']'),
+        ('{', '}'),
+        ('"', '"'),
+        ('\'', '\''),
+        ('`', '`'),
+    ] {
+        let mut e = editor("\r\n");
+        keys(&mut e, &format!("i{open}"));
+        assert_eq!(content(&e), format!("{open}{close}\r\n"));
+        assert_eq!(e.document.buffer.position(), (0, 1));
+        let edits = e.document.buffer.take_edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_end_byte, 2);
+
+        let inside = "界e\u{301}👩‍💻";
+        keys(&mut e, inside);
+        let generation = e.document.buffer.generation();
+        e.handle_key(Key::Char(close));
+        assert_eq!(e.document.buffer.generation(), generation);
+        assert_eq!(e.document.buffer.cursor(), inside.chars().count() + 2);
+        let expected = format!("{open}{inside}{close}\r\n");
+        assert_eq!(content(&e), expected);
+        e.handle_key(Key::Escape);
+        keys(&mut e, "u");
+        assert_eq!(content(&e), "\r\n");
+        assert!(!e.document.buffer.is_modified());
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(content(&e), expected);
+    }
+}
+
+#[test]
+fn nested_pairs_close_without_duplicates_across_crlf_lines() {
+    let mut e = editor("\r\n");
+    keys(&mut e, "i([{");
+    assert_eq!(content(&e), "([{}])\r\n");
+    assert_eq!(e.document.buffer.cursor(), 3);
+    e.handle_key(Key::Enter);
+    keys(&mut e, "\"value\"}])");
+    assert_eq!(content(&e), "([{\r\n\"value\"}])\r\n");
+    assert_eq!(e.document.buffer.position(), (1, 10));
+    e.handle_key(Key::Escape);
+    keys(&mut e, "u");
+    assert_eq!(content(&e), "\r\n");
+    e.handle_key(Key::Ctrl('r'));
+    assert_eq!(content(&e), "([{\r\n\"value\"}])\r\n");
+}
+
+#[test]
+fn typing_existing_closers_moves_without_modifying_text_or_history() {
+    for close in [')', ']', '}', '"', '\'', '`'] {
+        let original = format!("{close} tail");
+        let mut e = editor(&original);
+        keys(&mut e, "ix");
+        e.handle_key(Key::Escape);
+        keys(&mut e, "ui");
+        let generation = e.document.buffer.generation();
+        e.handle_key(Key::Char(close));
+        assert_eq!(content(&e), original);
+        assert_eq!(e.document.buffer.cursor(), 1);
+        assert_eq!(e.document.buffer.generation(), generation);
+        e.handle_key(Key::Escape);
+        assert!(!e.document.buffer.is_modified());
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(content(&e), format!("x{original}"));
+    }
+}
+
+#[test]
+fn backspace_removes_empty_pairs_as_one_edit_and_keeps_no_op_history() {
+    for pair in ["()", "[]", "{}", "\"\"", "''", "``"] {
+        let mut e = editor(pair);
+        keys(&mut e, "a");
+        e.handle_key(Key::Backspace);
+        assert_eq!(content(&e), "");
+        assert_eq!(e.document.buffer.cursor(), 0);
+        assert_eq!(e.document.buffer.take_edits().len(), 1);
+        e.handle_key(Key::Escape);
+        keys(&mut e, "u");
+        assert_eq!(content(&e), pair);
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(content(&e), "");
+
+        let mut e = editor("");
+        keys(&mut e, "ix");
+        e.handle_key(Key::Escape);
+        keys(&mut e, "ui");
+        e.handle_key(Key::Char(pair.chars().next().unwrap()));
+        e.handle_key(Key::Backspace);
+        e.handle_key(Key::Escape);
+        assert_eq!(content(&e), "");
+        assert!(!e.document.buffer.is_modified());
+        e.handle_key(Key::Ctrl('r'));
+        assert_eq!(content(&e), "x");
+    }
+}
+
+#[test]
+fn escaped_quotes_are_literal_and_even_backslashes_allow_pairing() {
+    for quote in ['"', '\'', '`'] {
+        for backslashes in 0..=4 {
+            let prefix = "\\".repeat(backslashes);
+            let mut e = editor(&prefix);
+            keys(&mut e, "A");
+            e.handle_key(Key::Char(quote));
+            let suffix = if backslashes % 2 == 0 {
+                format!("{quote}{quote}")
+            } else {
+                quote.to_string()
+            };
+            assert_eq!(content(&e), format!("{prefix}{suffix}"));
+            assert_eq!(e.document.buffer.cursor(), backslashes + 1);
+        }
+        let mut e = editor(&format!("\\{quote}"));
+        keys(&mut e, "a");
+        e.handle_key(Key::Char(quote));
+        assert_eq!(content(&e), format!("\\{quote}{quote}"));
+        e.handle_key(Key::Backspace);
+        assert_eq!(content(&e), format!("\\{quote}"));
+    }
+    let mut e = editor("");
+    keys(&mut e, "i\"hello\\\"world\"");
+    assert_eq!(content(&e), "\"hello\\\"world\"");
+}
+
+#[test]
+fn pairing_respects_existing_words_apostrophes_and_comparison_operators() {
+    for open in ['(', '[', '{', '"', '\'', '`'] {
+        let mut e = editor("word");
+        keys(&mut e, "i");
+        e.handle_key(Key::Char(open));
+        assert_eq!(content(&e), format!("{open}word"));
+    }
+    for word in ["don", "界", "e\u{301}", "name_"] {
+        let mut e = editor(word);
+        keys(&mut e, "A't");
+        assert_eq!(content(&e), format!("{word}'t"));
+    }
+    for suffix in [" ", "\t", ")", "]", "}", ",", ";", ":"] {
+        let mut e = editor(suffix);
+        keys(&mut e, "i(");
+        assert_eq!(content(&e), format!("(){suffix}"));
+    }
+    let mut e = editor("");
+    keys(&mut e, "ia < b > c");
+    assert_eq!(content(&e), "a < b > c");
+}
+
+#[test]
+fn pair_backspace_preserves_neighboring_graphemes_and_nonempty_pairs() {
+    for (original, cursor, expected) in [
+        ("界e\u{301}()👩‍💻", 4, "界e\u{301}👩‍💻"),
+        ("(\u{301})", 2, ")"),
+        ("()\u{301}", 1, ")\u{301}"),
+        ("(x)", 2, "()"),
+        ("(]", 1, "]"),
+        ("", 0, ""),
+    ] {
+        let mut e = editor(original);
+        keys(&mut e, "i");
+        e.document.buffer.set_cursor(cursor, true);
+        e.handle_key(Key::Backspace);
+        assert_eq!(content(&e), expected);
+    }
+}
+
+#[test]
+fn pairing_does_not_transform_paste_registers_or_prompts() {
+    let literal = "([{'\"`<>";
+    let mut e = editor("");
+    keys(&mut e, "i(");
+    e.paste(literal);
+    assert_eq!(content(&e), format!("({literal})"));
+    e.handle_key(Key::Char(')'));
+    e.handle_key(Key::Escape);
+    keys(&mut e, "u");
+    assert_eq!(content(&e), "()");
+    keys(&mut e, "u");
+    assert_eq!(content(&e), "");
+    e.register.text = literal.into();
+    keys(&mut e, "p");
+    assert_eq!(content(&e), literal);
+
+    for prefix in [":", "/", "?"] {
+        e.handle_key(Key::Escape);
+        keys(&mut e, prefix);
+        keys(&mut e, literal);
+        assert_eq!(e.command, literal);
+        assert_eq!(content(&e), literal);
+    }
+}
+
+#[test]
+fn insert_movement_keeps_pair_insertion_and_later_typing_in_separate_undo_groups() {
+    let mut e = editor("");
+    keys(&mut e, "i(");
+    e.handle_key(Key::Right);
+    keys(&mut e, "x");
+    e.handle_key(Key::Escape);
+    keys(&mut e, "u");
+    assert_eq!(content(&e), "()");
+    keys(&mut e, "u");
+    assert_eq!(content(&e), "");
+}
+
+#[test]
 fn unicode_motions_and_deletion_use_extended_graphemes() {
     let mut editor = editor("a\u{301}👨‍👩‍👧‍👦界z");
     keys(&mut editor, "l");
@@ -156,7 +365,7 @@ fn git_shortcut_prefixes_cancel_and_do_not_consume_later_editing_keys() {
 fn git_shortcuts_preserve_insert_text_objects_find_and_operator_input() {
     let mut e = editor("");
     keys(&mut e, "i]c[c]f[f gd gc");
-    assert_eq!(content(&e), "]c[c]f[f gd gc");
+    assert_eq!(content(&e), "]c[c]f[f gd gc]");
     assert_eq!(e.mode, Mode::Insert);
     let mut e = editor("a[b]c");
     keys(&mut e, "f]");
@@ -358,6 +567,15 @@ fn mixed_edit_sequences_never_leave_cursor_inside_a_grapheme() {
         Key::Char('o'),
         Key::Char('G'),
         Key::Char('g'),
+        Key::Char('('),
+        Key::Char(')'),
+        Key::Char('['),
+        Key::Char(']'),
+        Key::Char('{'),
+        Key::Char('}'),
+        Key::Char('"'),
+        Key::Char('\''),
+        Key::Char('`'),
     ];
     let mut random = 17_u64;
     for _ in 0..2_000 {

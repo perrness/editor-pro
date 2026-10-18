@@ -211,6 +211,26 @@ def run_binary_snapshot_session(binary, directory, resize, capture_dir=None):
         (Path(capture_dir) / "binary-review-snapshot.ansi").write_bytes(output)
 
 
+def run_auto_pair_sessions(binary, directory, capture_dir=None):
+    source = Path(directory) / "auto-pairs.txt"
+    source.write_bytes(b"\r\n")
+    output = run_session(binary, source, [
+        b"i([{", b'"', "界e\u0301👩‍💻".encode(), b'"}])',
+        b"\x1b", b"u", b"\x12", b":wq\r",
+    ], '([{"界e\u0301👩‍💻"}])\r\n'.encode())
+    if capture_dir:
+        (Path(capture_dir) / "auto-pairs-nested.ansi").write_bytes(output)
+
+    source.write_bytes(b"\r\n")
+    literal = b"([{'\"`"
+    output = run_session(binary, source, [
+        b"i(\x7f[\x7f{\x7f'\x7f\"\x7f`\x7f(",
+        b"\x1b[200~" + literal + b"\x1b[201~", b")", b"\x1b", b":wq\r",
+    ], b"(" + literal + b")\r\n")
+    if capture_dir:
+        (Path(capture_dir) / "auto-pairs-backspace-paste.ansi").write_bytes(output)
+
+
 def run_splash_sessions(binary, directory, resize, capture_dir=None):
     root = Path(directory) / "splash-project"
     root.mkdir()
@@ -1124,6 +1144,7 @@ def main():
         output = run_session(binary, history_path, history_commands, history_states[-1].encode())
         if capture_dir:
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
+        run_auto_pair_sessions(binary, directory, capture_dir)
         run_splash_sessions(binary, directory, resize, capture_dir)
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_colorful_ui_sessions(binary, directory, resize, capture_dir)
@@ -1133,7 +1154,7 @@ def main():
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 63 PTY sessions; colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 65 PTY sessions; automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

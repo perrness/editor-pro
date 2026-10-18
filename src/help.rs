@@ -265,6 +265,12 @@ const SHORTCUTS: &[Shortcut] = &[
     ),
     entry(
         "Editing",
+        "Insert",
+        "( / [ / { / quotes / backtick",
+        "Auto-close pairs at line ends or before whitespace, closers, comma, semicolon or colon. Type a matching closer to step over it; Backspace removes an empty pair. Escaped quotes and quotes after words stay literal; paste stays literal.",
+    ),
+    entry(
+        "Editing",
         "Editing / prompt",
         "Esc / Ctrl-[ / Ctrl-c",
         "Leave Insert/Visual or cancel pending input and prompts.",

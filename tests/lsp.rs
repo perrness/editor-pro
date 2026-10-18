@@ -1718,6 +1718,36 @@ fn automatic_completion_debounces_filters_and_accepts_in_insert_with_undo() {
 }
 
 #[test]
+fn automatic_completion_preserves_auto_pairs_and_closer_overtyping() {
+    let mut f = auto_completion_fixture("auto-completion", "\r\n");
+    type_completion(&mut f, "(value.le");
+    wait_completion(&mut f);
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "(value.le)\r\n"
+    );
+    f.editor.handle_key(Key::Tab);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(!f.editor.message_is_error, "{}", f.editor.message);
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "(value.length)\r\n"
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 13);
+    let generation = f.editor.document.buffer.generation();
+    type_completion(&mut f, ")");
+    assert_eq!(f.editor.document.buffer.cursor(), 14);
+    assert_eq!(f.editor.document.buffer.generation(), generation);
+    assert!(!f.editor.lsp.completion_scheduled());
+    f.editor.handle_key(Key::Escape);
+    f.editor.handle_key(Key::Char('u'));
+    assert_eq!(
+        f.editor.document.buffer.text().to_string(),
+        "(value.le)\r\n"
+    );
+}
+
+#[test]
 fn automatic_completion_honors_triggers_incomplete_results_and_backspace() {
     let mut f = auto_completion_fixture("auto-completion", "value\n");
     type_completion(&mut f, ".");
