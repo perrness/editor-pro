@@ -51,7 +51,7 @@ impl Editor {
             .lsp
             .context
             .as_ref()
-            .is_some_and(|c| c.inline_completion)
+            .is_some_and(|c| c.inline_completion || c.completion_command.is_some())
         {
             self.lsp.cancel_request();
         }
@@ -294,23 +294,168 @@ impl Editor {
         }
     }
 
-    pub(super) fn local_completion_edit(
+    pub(super) fn validate_lsp_command(
         &self,
-        value: &Value,
+        command: &Value,
         context: &Context,
-    ) -> io::Result<bool> {
-        let edit: lsp_types::TextEdit =
-            serde_json::from_value(value.clone()).map_err(io::Error::other)?;
-        let range = lsp::scalar_range(self.document.buffer.text(), edit.range)?;
-        let text = self.document.buffer.text();
-        let line = text.char_to_line(context.cursor);
-        // Use the server's range, which may include punctuation (e.g. a Java
-        // method call), instead of guessing an identifier-only replacement.
-        Ok(text.char_to_line(range.start) == line
-            && text.char_to_line(range.end) == line
-            && range.start <= context.cursor
-            && range.end >= context.cursor
-            && !edit.new_text.contains(['\n', '\r']))
+    ) -> io::Result<()> {
+        let advertised =
+            &self.lsp.servers[&context.key].capabilities["executeCommandProvider"]["commands"];
+        if !command["command"].is_string()
+            || !advertised
+                .as_array()
+                .is_some_and(|items| items.contains(&command["command"]))
+        {
+            return Err(error(
+                "Server did not advertise this completion/action command",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn completion_edit(
+        &mut self,
+        value: Value,
+        context: Context,
+        versions: Vec<Versioned>,
+    ) -> io::Result<()> {
+        if value["insertTextFormat"] == 2 {
+            return Err(error(
+                "Server returned a snippet despite snippetSupport=false",
+            ));
+        }
+        let command = value.get("command").filter(|v| !v.is_null()).cloned();
+        if let Some(command) = &command {
+            self.validate_lsp_command(command, &context)?;
+        }
+        let main = if let Some(edit) = value.get("textEdit") {
+            let range = edit
+                .get("range")
+                .or_else(|| edit.get("replace"))
+                .ok_or_else(|| error("Invalid completion edit"))?;
+            json!({"range":range,"newText":edit["newText"]})
+        } else {
+            let start = self.completion_prefix_start(context.cursor);
+            let text = self.document.buffer.text();
+            json!({"range":lsp_types::Range::new(lsp::position(text,start)?,lsp::position(text,context.cursor)?),
+                "newText":value["insertText"].as_str().or_else(||value["label"].as_str()).ok_or_else(||error("Completion has no text"))?})
+        };
+        let main_edit: lsp_types::TextEdit =
+            serde_json::from_value(main.clone()).map_err(io::Error::other)?;
+        let range = lsp::scalar_range(self.document.buffer.text(), main_edit.range)?;
+        if range.start > context.cursor || range.end < context.cursor {
+            return Err(error("Completion edit does not contain the request cursor"));
+        }
+        let mut edits = vec![main];
+        if let Some(extra) = value.get("additionalTextEdits").filter(|v| !v.is_null()) {
+            edits.extend(
+                extra
+                    .as_array()
+                    .ok_or_else(|| error("Invalid additional completion edits"))?
+                    .iter()
+                    .cloned(),
+            );
+        }
+        let edit = json!({"changes":{lsp::file_uri(&context.path)?.as_str():edits}});
+        let plan = self.prepare_lsp_edit(&edit, &context.key.root, &versions, &context.guards)?;
+        self.view = View::Editing;
+        self.mode = context.mode;
+        self.lsp.cancel();
+        let cursor =
+            self.apply_completion_plan(plan, &context, context.cursor, command.is_none())?;
+        if let Some(command) = command {
+            // Synchronize the primary edits before running the selected command.
+            // Add the space after its edit so server-provided offsets stay intact.
+            self.tick_lsp();
+            let mut context = self.lsp_request_context()?;
+            context.completion_command = Some(cursor);
+            self.send_lsp("workspace/executeCommand", command, Some(context))?;
+        }
+        Ok(())
+    }
+
+    fn completion_noop(
+        &self,
+        context: &Context,
+        versions: &[Versioned],
+        cursor: usize,
+    ) -> io::Result<EditPlan> {
+        let position = lsp::position(self.document.buffer.text(), cursor)?;
+        let edit = json!({"changes":{lsp::file_uri(&context.path)?.as_str():[
+            {"range":lsp_types::Range::new(position, position),"newText":""}
+        ]}});
+        self.prepare_lsp_edit(&edit, &context.key.root, versions, &context.guards)
+    }
+
+    pub(super) fn apply_completion_command_edit(
+        &mut self,
+        edit: Option<&Value>,
+        context: &Context,
+        versions: &[Versioned],
+    ) -> io::Result<()> {
+        let cursor = context.completion_command.unwrap();
+        let mut plan = if let Some(edit) = edit {
+            self.prepare_lsp_edit(edit, &context.key.root, versions, &context.guards)?
+        } else {
+            self.completion_noop(context, versions, cursor)?
+        };
+        if !plan.files.iter().any(|file| file.path == context.path) {
+            let source = self.completion_noop(context, versions, cursor)?;
+            plan.files.extend(source.files);
+            plan.edit_count += source.edit_count;
+        }
+        self.apply_completion_plan(plan, context, cursor, true)?;
+        Ok(())
+    }
+
+    fn apply_completion_plan(
+        &mut self,
+        mut plan: EditPlan,
+        context: &Context,
+        old_cursor: usize,
+        finish: bool,
+    ) -> io::Result<usize> {
+        let source = plan
+            .files
+            .iter_mut()
+            .find(|file| file.path == context.path)
+            .ok_or_else(|| error("Completion has no source edit"))?;
+        let mut cursor = source.cursor_after(old_cursor);
+        if finish && (cursor == 0 || source.after.char(cursor - 1) != ' ') {
+            if source.after.get_char(cursor) != Some(' ') {
+                if source.after.len_bytes() >= lsp::MAX_DOCUMENT_BYTES {
+                    return Err(error("LSP edit result exceeds 2 MiB"));
+                }
+                // Keep the space in the same transaction as the completion and
+                // account for imports or other edits before the insertion point.
+                if let Some((_, text)) = source
+                    .edits
+                    .iter_mut()
+                    .find(|(range, _)| range.start <= old_cursor && old_cursor <= range.end)
+                {
+                    text.push(' ');
+                } else {
+                    source.edits.push((old_cursor..old_cursor, " ".into()));
+                    source
+                        .edits
+                        .sort_by_key(|(range, _)| (range.start, range.end));
+                    plan.edit_count += 1;
+                }
+                source.after.insert(cursor, " ");
+            }
+            cursor += 1;
+        }
+        if plan.files.len() > 32 || plan.edit_count > lsp::MAX_ITEMS {
+            return Err(error("Completion exceeds workspace edit limits"));
+        }
+        self.apply_lsp_edit(plan)?;
+        self.document
+            .buffer
+            .set_cursor(cursor, context.mode == Mode::Insert);
+        if finish {
+            self.info("Completion inserted");
+        }
+        Ok(cursor)
     }
 }
 

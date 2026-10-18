@@ -69,6 +69,9 @@ struct Context {
     epoch: u64,
     apply_resolved: bool,
     inline_completion: bool,
+    // Insertion position after the primary edit, before a completion command.
+    // Unlike the visible Normal-mode cursor, this may be at the end of a line.
+    completion_command: Option<usize>,
     jump_to_single_location: bool,
     ai_question: Option<String>,
     call_item: Option<Value>,
@@ -599,6 +602,9 @@ impl Editor {
                         message: message.clone(),
                     });
                 }
+                if context.completion_command.is_some() && result.is_err() {
+                    self.lsp.cancel_request();
+                }
                 let result = result.map_err(io::Error::other)?;
                 self.lsp_response(&request.method, result, context, documents)?;
             }
@@ -617,7 +623,28 @@ impl Editor {
                         && self.lsp_context_current(c)
                         && self.lsp.panel.as_ref().is_none_or(|p| p.plan.is_none())
                 });
-                if let Some(context) = context {
+                if let Some(context) = context.as_ref().filter(|c| c.completion_command.is_some()) {
+                    let result =
+                        self.apply_completion_command_edit(Some(&edit), context, &documents);
+                    self.lsp
+                        .worker
+                        .as_ref()
+                        .unwrap()
+                        .submit(Control::ApplyReply {
+                            key,
+                            epoch,
+                            id,
+                            applied: result.is_ok(),
+                            reason: result
+                                .as_ref()
+                                .err()
+                                .map_or(String::new(), ToString::to_string),
+                        })?;
+                    // Acceptance authorizes this command's one guarded edit,
+                    // exactly as applying its former preview did.
+                    self.lsp.cancel_request();
+                    result?;
+                } else if let Some(context) = context {
                     match self.stage_lsp_edit(&edit, context, documents, None) {
                         Ok(()) => {
                             self.lsp.pending = false;
@@ -953,6 +980,7 @@ impl Editor {
             epoch: info.epoch,
             apply_resolved: false,
             inline_completion: false,
+            completion_command: None,
             jump_to_single_location: false,
             ai_question: None,
             call_item: None,
@@ -1218,6 +1246,11 @@ impl Editor {
                 return self.stage_lsp_edit(&edit, context, versions, None);
             }
             "workspace/executeCommand" => {
+                if context.completion_command.is_some() {
+                    let result = self.apply_completion_command_edit(None, &context, &versions);
+                    self.lsp.cancel_request();
+                    return result;
+                }
                 self.info(
                     "Code action completed; any returned edits require applying their preview",
                 );
@@ -1244,59 +1277,6 @@ impl Editor {
             self.ai_explain(&question)?;
         }
         Ok(())
-    }
-    fn completion_edit(
-        &mut self,
-        value: Value,
-        context: Context,
-        versions: Vec<Versioned>,
-    ) -> io::Result<()> {
-        if value["insertTextFormat"] == 2 {
-            return Err(error(
-                "Server returned a snippet despite snippetSupport=false",
-            ));
-        }
-        let command = value.get("command").filter(|v| !v.is_null()).cloned();
-        let main = if let Some(edit) = value.get("textEdit") {
-            let range = edit
-                .get("range")
-                .or_else(|| edit.get("replace"))
-                .ok_or_else(|| error("Invalid completion edit"))?;
-            json!({"range":range,"newText":edit["newText"]})
-        } else {
-            let start = self.completion_prefix_start(context.cursor);
-            let text = self.document.buffer.text();
-            json!({"range":lsp_types::Range::new(lsp::position(text,start)?,lsp::position(text,context.cursor)?),
-                "newText":value["insertText"].as_str().or_else(||value["label"].as_str()).ok_or_else(||error("Completion has no text"))?})
-        };
-        let mut edits = vec![main];
-        if let Some(extra) = value.get("additionalTextEdits").filter(|v| !v.is_null()) {
-            edits.extend(
-                extra
-                    .as_array()
-                    .ok_or_else(|| error("Invalid additional completion edits"))?
-                    .iter()
-                    .cloned(),
-            );
-        }
-        let edit = json!({"changes":{lsp::file_uri(&context.path)?.as_str():edits}});
-        if command.is_none()
-            && edits.len() == 1
-            && self.local_completion_edit(&edits[0], &context)?
-        {
-            let plan =
-                self.prepare_lsp_edit(&edit, &context.key.root, &versions, &context.guards)?;
-            self.view = View::Editing;
-            self.mode = context.mode;
-            self.lsp.cancel();
-            self.apply_lsp_edit(plan)?;
-            self.info("Completion inserted");
-            Ok(())
-        } else {
-            let mut context = context;
-            context.inline_completion = false;
-            self.stage_lsp_edit(&edit, context, versions, command)
-        }
     }
     fn select_action(
         &mut self,
@@ -1343,17 +1323,7 @@ impl Editor {
         continuation: Option<Value>,
     ) -> io::Result<()> {
         if let Some(command) = &continuation {
-            let advertised =
-                &self.lsp.servers[&context.key].capabilities["executeCommandProvider"]["commands"];
-            if !command["command"].is_string()
-                || !advertised
-                    .as_array()
-                    .is_some_and(|items| items.contains(&command["command"]))
-            {
-                return Err(error(
-                    "Server did not advertise this completion/action command",
-                ));
-            }
+            self.validate_lsp_command(command, &context)?;
         }
         let plan = self.prepare_lsp_edit(edit, &context.key.root, &versions, &context.guards)?;
         let mut panel = Panel::text(

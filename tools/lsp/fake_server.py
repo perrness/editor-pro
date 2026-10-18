@@ -271,6 +271,15 @@ while True:
             ]
             if args.scenario == "auto-completion-many":
                 items = [{"label": f"item{index:02d}"} for index in range(16)]
+            if args.scenario == "auto-completion-space":
+                items = [{"label": "length", "insertText": "length "}]
+            if args.scenario.startswith("auto-completion-command"):
+                start = {**p["position"], "character": p["position"]["character"] - 2}
+                items = [{"label": "length", "data": {
+                    "uri": p["textDocument"]["uri"], "start": start, "end": p["position"]}}]
+                if args.scenario not in ("auto-completion-command-primary", "auto-completion-command-no-edit",
+                                          "auto-completion-command-import", "auto-completion-command-other-only"):
+                    items[0]["textEdit"] = {"range": {"start": p["position"], "end": p["position"]}, "newText": ""}
             if args.scenario == "auto-completion-text-edit":
                 start = {**p["position"], "character": p["position"]["character"] - 2}
                 end = {**p["position"], "character": p["position"]["character"] + 3}
@@ -308,8 +317,8 @@ while True:
             item["additionalTextEdits"] = {"invalid": "not an edit array"}
         if args.scenario == "auto-completion-multiline":
             item["insertText"] = "length\r\nnext"
-        if args.scenario == "auto-completion-command":
-            item["command"] = {"title": "Complete with command", "command": "fake.fix", "arguments": [next(iter(documents))]}
+        if args.scenario.startswith("auto-completion-command"):
+            item["command"] = {"title": "Complete with command", "command": "fake.fix", "arguments": [item["data"]]}
         if args.scenario == "auto-completion-resolve-slow":
             later({"id": ident, "result": item})
             continue
@@ -433,6 +442,34 @@ while True:
         send({"id": ident, "result": {**p, "edit": {"changes": {p["data"]["uri"]: [edit()]}}}})
     elif method == "workspace/executeCommand":
         executing = ident
+        if args.scenario.startswith("auto-completion-command"):
+            data = p["arguments"][0]
+            uri = data["uri"]
+            end = data["end"]
+            if args.scenario == "auto-completion-command-primary":
+                end = {**data["start"], "character": data["start"]["character"] + len("length")}
+                assert documents[uri]["text"][offset(documents[uri]["text"], data["start"]):offset(documents[uri]["text"], end)] == "length"
+            change = {"range": {"start": data["start"], "end": end}, "newText": "length()"}
+            changes = {uri: [change]}
+            if args.scenario == "auto-completion-command-invalid":
+                changes[uri].append(change)
+            if args.scenario == "auto-completion-command-other":
+                changes[uri.replace("Main.kt", "Other.kt")] = [edit()]
+            if args.scenario == "auto-completion-command-other-only":
+                changes = {uri.replace("Main.kt", "Other.kt"): [edit()]}
+            if args.scenario == "auto-completion-command-import":
+                changes = {uri: [{"range": span(0, 0), "newText": "import sample\r\n"}]}
+            response = {"id": 777, "method": "workspace/applyEdit", "params": {"edit": {"changes": changes}}}
+            if args.scenario == "auto-completion-command-slow":
+                later(response)
+            elif args.scenario == "auto-completion-command-error":
+                send({"id": ident, "error": {"code": -32803, "message": "Completion failed"}})
+                later(response)
+            elif args.scenario == "auto-completion-command-no-edit":
+                send({"id": ident, "result": None})
+            else:
+                send(response)
+            continue
         send({"id": 777, "method": "workspace/applyEdit",
               "params": {"edit": {"changes": {p["arguments"][0]: [edit()]}}}})
     elif method is None and ident == 777:

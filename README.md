@@ -669,17 +669,20 @@ dismisses without leaving Insert. With no popup, Escape leaves Insert as usual.
 Cursor movement, paste, buffer switches and newer edits cancel obsolete requests. Suggestions wait for
 the server to finish starting; they require a supported, named source file.
 With no popup, `Ctrl-n` still opens the explicit completion list. `:Complete`
-also remains available. Snippet expansion is unsupported. Advertised
-completion commands appear in an edit preview and run after approval. Any
-further text edits from that command require a second preview. Only negotiated
-features can be requested. JDT LS signature help is explicitly enabled during
+also remains available. Snippet expansion is unsupported. Selecting a completion
+also accepts its advertised server command and the command's guarded text edit.
+Only negotiated features can be requested. JDT LS signature help is explicitly enabled during
 initialization and configuration.
 
-**Plain completions accept in one step with Enter or Tab**, from either the popup
-or the explicit completion list. A single-line insertion or replacement at the
-cursor applies directly, including server ranges that cover punctuation.
-Completions with additional edits, multiline replacements or commands open a
-preview, as do rename, formatting and quick fixes. **Enter applies a preview;
+**Completions accept in one step with Enter or Tab**, from either the popup
+or the explicit completion list, including additional imports, multiline text
+and command-provided edits. Acceptance returns to the source and its original
+mode without another selection or edit preview. It adds a trailing space and
+places the Insert cursor after it; an existing space is reused. The space is
+part of the completion's undo group. A command's later edits form a separate
+undo group if its initial insertion also changed text. Typing, moving or
+dismissing cancels a pending command; edits already inserted remain undoable.
+Rename, formatting and quick fixes still open a preview. **Enter applies a preview;
 Escape cancels.** Tab does not approve a preview.
 All targets are validated before the first change, with buffer versions and exact
 disk-baseline checks repeated

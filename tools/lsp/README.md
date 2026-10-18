@@ -103,9 +103,9 @@ protection and restart/resynchronization. Original source/build-file bytes must
 remain unchanged on disk. An unavailable server, timeout or failed feature fails
 the selected test; it is never converted to a skip or a successful empty result.
 Completion also exercises actual typing in Insert mode, a filtered popup, Tab
-acceptance with any required command/edit previews, and undo back to the original
-fixture. Plain completions from either list must apply directly; the reports record
-the number of previews, and C#'s plain length completion asserts zero previews.
+acceptance including command-provided edits, and undo back to the original
+fixture. Completions from either list must apply directly for all three languages;
+the reports record zero previews, and a preview fails the fixture.
 This uses the same installed server as the explicit completion checks.
 M6 also exercises workspace-symbol navigation/lazy resolution and incoming/outgoing
 call hierarchy with location-history restoration. If a server does not advertise
