@@ -207,7 +207,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Editing",
         "Normal",
         "i / a / I / A / o / O",
-        "Enter Insert before/after the cursor, at first nonblank/end, or on a new line below/above.",
+        "Enter Insert before/after the cursor, at first nonblank/end, or on an automatically indented line below/above.",
     ),
     entry(
         "Editing",
@@ -261,7 +261,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Editing",
         "Insert",
         "Text / Enter / Tab / Backspace / Delete",
-        "Insert text, newline or literal tab; delete/join lines. Arrows, Home and End move and start a new undo group.",
+        "Insert text, an automatically indented newline or a literal tab; delete/join lines. Arrows, Home and End move and start a new undo group.",
     ),
     entry(
         "Editing",

@@ -2307,3 +2307,47 @@ disk space. Commands used normal process access after the sandbox failed to
 initialize its loopback interface. macOS, physical terminals and the opt-in real
 language-server/AI fixtures were not tested; completion coverage uses the
 existing protocol double.
+
+## Issue 22 — Automatic newline indentation
+
+Validated on Linux x86_64, 2026-10-18, from `98761c8`. Enter and Normal `o`/`O`
+inherit leading spaces/tabs. Supported code delimiters add an indentation level;
+Enter between paired delimiters moves the closer below the indented blank line.
+Nearby code supplies the indentation unit, excluding comment-only margins such
+as Javadoc/KDoc. Defaults are four spaces for Rust/Java/Kotlin/C# and two for
+JSON/YAML/TOML. Unknown languages, Markdown and unavailable syntax copy existing
+whitespace. Framework settings and `.editorconfig` are not read.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | All 388 ordinary tests passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | All six tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | All eight tests passed. |
+| `python3 tools/terminal_smoke.py` | All 57 PTY sessions passed. |
+| `git diff --check` | Passed. |
+
+Fifteen indentation regressions cover language defaults and incomplete syntax,
+local tabs/space widths, documentation-comment margins, nested pairs, `o`/`O`,
+strings/comments, closer alignment, plain/blank lines, splitting whitespace,
+Unicode scalar cursors, CRLF, grouped undo/redo and incremental/fresh syntax
+equivalence. They also cover literal paste/Tab, syntax-size fallback, save-as
+language detection and save conflicts. An additional note regression rejects
+the complete indented insertion at the size limit without changing text/cursor
+or entering Insert. The completion-popup regression now verifies that Enter
+after dismissal inherits a tab and places the cursor after it.
+
+The two new PTY sessions verify exact saved bytes for nested Java braces with
+Unicode, CRLF, save/undo/redo and resize, plus tab-indented `o`/`O`. Captures are
+`/tmp/editor-pro-issue22-terminal/autoindent-java-crlf.ansi` and
+`/tmp/editor-pro-issue22-terminal/autoindent-tabs-open-lines.ansi`, produced with
+`EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue22-terminal`. Full logs are
+`/tmp/editor-pro-issue22-{clippy,rust-tests,build,python,terminal-tests}.log`.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands required normal
+process access because the sandbox could not initialize its loopback interface.
+macOS, hosted CI and physical-terminal appearance were not tested here. Real
+language servers and AI providers were not retested for this local editing change.
