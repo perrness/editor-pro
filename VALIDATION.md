@@ -2164,3 +2164,56 @@ Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
 process access because the sandbox could not initialize its loopback interface.
 macOS, physical terminals and real language/AI servers were not retested for this
 presentation change.
+
+## Issue 18 — Binary assets and snapshot capture timeouts
+
+Validated on Linux x86_64, 2026-10-16, with Rust/Cargo 1.99.0 and Python 3.12.
+Snapshots now retain exact binary/non-UTF-8 bytes alongside text. Binary changes,
+additions, deletions, exact renames and text/binary transitions remain visible in
+snapshot deltas; a selected binary diff reports unsupported text content without
+preventing text review elsewhere. Existing text-only version-2 stores retain
+their representation. Binary payloads use bounded hexadecimal encoding, with
+content hashes and decoded byte limits checked on load.
+
+Baseline capture uses the original NUL-delimited tree/index listing and two Git
+batch calls per sample, checking sizes before requesting blob contents. A
+512-file regression exercises HEAD, index and revision baselines with a 20 ms
+delay per Git invocation. Each capture finishes within the ordinary five-second
+test configuration and uses at most 20 Git processes, including both baseline
+samples and discovery. Product capture retains its 30-second deadline. These
+fixture results are not a guarantee for slow filesystems or larger repositories.
+
+All **378 ordinary Rust tests** passed; 13 opt-in tests were ignored. The snapshot
+suite now has **21 tests**, including six new regressions for mixed binary/text
+capture and restart, immutable binary checkpoints, transitions and renames,
+encoding/hash validation, batched collection at the path limit, size preflight,
+malformed/truncated batch output and timeout cleanup/retry. Existing source,
+index, ref, dirty-buffer, Unicode/CRLF and persistence checks also passed.
+The debug build, formatting, Clippy with warnings denied, whitespace checks and
+all **14 Python tests** passed.
+
+```sh
+cargo build --locked
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo fmt --check
+git diff --check
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v
+```
+
+The new `run_binary_snapshot_session` fixture in `tools/terminal_smoke.py` passed
+independently against the debug binary. It captures tracked PNG and untracked
+non-UTF-8 assets, navigates full/since and binary diffs, verifies exact persisted
+bytes, unchanged source/index/HEAD and terminal restoration. Its ANSI capture is
+`/tmp/editor-pro-issue18-terminal/binary-review-snapshot.ansi`. The complete
+56-session PTY harness was not rerun in this change. Rust test and lint logs are
+`/tmp/editor-pro-issue18-all-tests.log` and `/tmp/editor-pro-issue18-clippy.log`.
+
+Cargo used `CARGO_TARGET_DIR=/tmp/editor-pro-issue18-target`,
+`CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands needed normal
+process access because the sandbox could not initialize its loopback interface.
+macOS, physical terminals and real language servers were not retested. File/tree,
+history and serialized-store limits still apply to binary assets. No release
+version, integration policy or publication workflow changed.

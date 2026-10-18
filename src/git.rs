@@ -9,7 +9,7 @@ pub use snapshots::capture_review;
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -339,6 +339,9 @@ impl Runner<'_> {
         }
     }
     fn run(&self, cwd: &Path, args: &[&OsStr]) -> Result<Output, String> {
+        self.run_with_input(cwd, args, Stdio::null())
+    }
+    fn run_with_input(&self, cwd: &Path, args: &[&OsStr], input: Stdio) -> Result<Output, String> {
         self.check()?;
         let mut out = tempfile::tempfile().map_err(err)?;
         let mut stderr = tempfile::tempfile().map_err(err)?;
@@ -366,7 +369,7 @@ impl Runner<'_> {
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_ATTR_NOSYSTEM", "1")
             .env("GIT_NO_LAZY_FETCH", "1")
-            .stdin(Stdio::null())
+            .stdin(input)
             .stdout(out.try_clone().map_err(err)?)
             .stderr(stderr.try_clone().map_err(err)?);
         for name in [
@@ -414,6 +417,20 @@ impl Runner<'_> {
     }
     fn git(&self, cwd: &Path, args: &[&OsStr]) -> Result<Vec<u8>, String> {
         let result = self.run(cwd, args)?;
+        if result.success {
+            Ok(result.bytes)
+        } else {
+            Err(format!("Git failed: {}", result.error))
+        }
+    }
+    fn git_with_input(&self, cwd: &Path, args: &[&OsStr], bytes: &[u8]) -> Result<Vec<u8>, String> {
+        self.check()?;
+        // A private file avoids pipe backpressure while retaining the ordinary
+        // process deadline, cancellation, output bounds and child cleanup.
+        let mut input = tempfile::tempfile().map_err(err)?;
+        input.write_all(bytes).map_err(err)?;
+        input.seek(SeekFrom::Start(0)).map_err(err)?;
+        let result = self.run_with_input(cwd, args, input.into())?;
         if result.success {
             Ok(result.bytes)
         } else {

@@ -154,6 +154,63 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_binary_snapshot_session(binary, directory, resize, capture_dir=None):
+    repo = Path(directory) / "binary-snapshot-project"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "--no-optional-locks", *args], cwd=repo)
+
+    git("init", "-b", "main")
+    git("config", "user.name", "PTY Snapshot Test")
+    git("config", "user.email", "snapshot@example.invalid")
+    git("config", "commit.gpgsign", "false")
+    git("config", "core.autocrlf", "false")
+    source = repo / "source.txt"
+    source.write_bytes(b"base revision\n")
+    asset = repo / "asset.png"
+    original_asset = b"\x89PNG\r\n\x1a\n\0original"
+    current_asset = b"\x89PNG\r\n\x1a\n\0revision"
+    asset.write_bytes(original_asset)
+    git("add", "--all")
+    git("commit", "-m", "mixed snapshot base")
+    source.write_bytes(b"next revision\n")
+    asset.write_bytes(current_asset)
+    encoded = repo / "z-encoded"
+    encoded.write_bytes(b"\xff\xfe\x80")
+    index = (repo / ".git/index").read_bytes()
+    head = git("rev-parse", "HEAD")
+    store = repo / ".git/editor-pro-review.json"
+
+    def captured():
+        return store.exists() and len(json.loads(store.read_text()).get("history", {}).get("checkpoints", [])) == 1
+
+    output = run_session(binary, source, [
+        (b":review snapshots\r", b"No snapshots", 10),
+        b":review snapshot\r", (captured, 30),
+        (b":review full\r", b"review full HEAD", 10),
+        resize(24, 130), (b"base revision", 10),
+        b":changes\r", resize(24, 129), (b"asset.png", 10),
+        (b"d", b"binary or non-UTF-8 content", 10),
+        b"\x1b", b":review full\r", resize(24, 130), (b"next revision", 10),
+        b":review since\r", resize(24, 129), (b"No textual changes", 10),
+        b"\x1b", b":q\r",
+    ], b"next revision\n")
+    history = json.loads(store.read_text())["history"]
+    baseline = {bytes(f["path"]).decode(): f for f in history["baseline"]["files"]}
+    checkpoint = {bytes(f["path"]).decode(): f for f in history["checkpoints"][0]["files"]}
+    assert bytes.fromhex(baseline["asset.png"]["binary"]) == original_asset
+    assert bytes.fromhex(checkpoint["asset.png"]["binary"]) == current_asset
+    assert bytes.fromhex(checkpoint["z-encoded"]["binary"]) == encoded.read_bytes()
+    assert baseline["source.txt"]["text"] == "base revision\n"
+    assert checkpoint["source.txt"]["text"] == "next revision\n"
+    assert asset.read_bytes() == current_asset
+    assert (repo / ".git/index").read_bytes() == index
+    assert git("rev-parse", "HEAD") == head
+    if capture_dir:
+        (Path(capture_dir) / "binary-review-snapshot.ansi").write_bytes(output)
+
+
 def run_splash_sessions(binary, directory, resize, capture_dir=None):
     root = Path(directory) / "splash-project"
     root.mkdir()
@@ -1038,7 +1095,8 @@ def main():
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 59 PTY sessions; colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+        run_binary_snapshot_session(binary, directory, resize, capture_dir)
+    print("PASS: 60 PTY sessions; colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

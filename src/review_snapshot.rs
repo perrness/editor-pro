@@ -15,12 +15,46 @@ pub struct File {
     #[serde(with = "crate::review::path_bytes")]
     pub path: PathBuf,
     pub text: String,
+    /// Exact bytes for binary/non-UTF-8 files; text is empty in this case.
+    /// Omitted for text so existing version-2 stores keep their representation.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "binary_bytes"
+    )]
+    pub binary: Option<Vec<u8>>,
     pub sha256: String,
     pub mode: String,
     pub blob: Option<String>,
     pub unsaved: bool,
 }
 impl File {
+    pub(crate) fn new(
+        path: PathBuf,
+        bytes: Vec<u8>,
+        mode: String,
+        blob: Option<String>,
+        unsaved: bool,
+    ) -> Self {
+        let sha256 = fingerprint(&bytes);
+        let (text, binary) = match String::from_utf8(bytes) {
+            Ok(text) if !text.contains('\0') => (text, None),
+            Ok(text) => (String::new(), Some(text.into_bytes())),
+            Err(error) => (String::new(), Some(error.into_bytes())),
+        };
+        Self {
+            path,
+            text,
+            binary,
+            sha256,
+            mode,
+            blob,
+            unsaved,
+        }
+    }
+    pub fn bytes(&self) -> &[u8] {
+        self.binary.as_deref().unwrap_or(self.text.as_bytes())
+    }
     pub fn same_content(&self, other: &Self) -> bool {
         self.sha256 == other.sha256 && self.mode == other.mode
     }
@@ -112,20 +146,61 @@ pub fn validate_files(files: &[File]) -> Result<usize, String> {
     for file in files {
         if !valid_path(&file.path)
             || !paths.insert(&file.path)
-            || file.text.len() > crate::git::CONTENT_LIMIT
+            || file.bytes().len() > crate::git::CONTENT_LIMIT
             || file.text.contains('\0')
+            || file.binary.as_ref().is_some_and(|bytes| {
+                !file.text.is_empty() || (!bytes.contains(&0) && std::str::from_utf8(bytes).is_ok())
+            })
             || !matches!(file.mode.as_str(), "100644" | "100755")
             || !valid_oid(file.blob.as_deref())
-            || file.sha256 != fingerprint(file.text.as_bytes())
+            || file.sha256 != fingerprint(file.bytes())
         {
             return Err("Invalid review snapshot content; original preserved".into());
         }
-        bytes += file.text.len();
+        bytes += file.bytes().len();
     }
     if bytes > TREE_LIMIT {
         return Err("Review tree exceeds 8 MiB".into());
     }
     Ok(bytes)
+}
+
+// Hex keeps binary storage bounded to two characters per byte, even in the
+// pretty-printed store. JSON byte arrays would add indentation for every byte.
+mod binary_bytes {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(bytes: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match bytes {
+            None => s.serialize_none(),
+            Some(bytes) => {
+                const HEX: &[u8] = b"0123456789abcdef";
+                let mut encoded = String::with_capacity(bytes.len() * 2);
+                for &byte in bytes {
+                    encoded.push(HEX[(byte >> 4) as usize] as char);
+                    encoded.push(HEX[(byte & 15) as usize] as char);
+                }
+                s.serialize_some(&encoded)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let Some(encoded) = Option::<String>::deserialize(d)? else {
+            return Ok(None);
+        };
+        if encoded.len() > crate::git::CONTENT_LIMIT * 2
+            || encoded.len() % 2 != 0
+            || !encoded.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(D::Error::custom("Invalid review binary content"));
+        }
+        (0..encoded.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16).map_err(D::Error::custom))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
 }
 pub fn valid_path(path: &std::path::Path) -> bool {
     !path.as_os_str().is_empty()

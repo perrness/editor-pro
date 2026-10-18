@@ -442,7 +442,7 @@ made a disk change.
 
 | Command | Action |
 | --- | --- |
-| `:review snapshot` | Capture the worktree's current text and dirty buffers as a new immutable checkpoint |
+| `:review snapshot` | Capture the worktree's current files and dirty buffers as a new immutable checkpoint |
 | `:review full` | Compare the first captured full baseline against current text |
 | `:review since [ID]` | Compare a checkpoint against current text; defaults to the latest checkpoint |
 | `:review snapshots` | Show the retained checkpoint range and latest file count |
@@ -459,7 +459,8 @@ original baseline, including after commits or branch movement.
 
 Capture includes tracked files, non-ignored untracked files, previously captured
 paths, and named dirty buffers in the worktree. Dirty buffers supply their exact
-request-time text; other files are read from disk. All source bytes, presence,
+request-time text; other files are read from disk. Binary and non-UTF-8 assets are
+retained too, with exact bytes and content hashes. All source bytes, presence,
 Unix executable modes and raw filenames are retained. Capture never saves source,
 changes HEAD or writes the index. Disk is sampled twice and a changing sample is
 refused. This is **not an atomic filesystem snapshot**; writes can still occur
@@ -472,7 +473,9 @@ The existing diff view, paired layout, hunk navigation, `n`/`p` and `:changes` w
 with either review comparison. The changed-file list labels its entries as
 **snapshot deltas**, including committed changes, additions, deletions and mode
 changes. Git-reported renames and unique nonempty exact-content moves are matched;
-ambiguous moves remain additions/deletions. Refresh polls every two seconds and on
+ambiguous moves remain additions/deletions. Binary assets participate in these
+deltas; selecting one reports that a text diff is unavailable. Text review in
+the rest of the repository stays available. Refresh polls every two seconds and on
 focus/`r`/`:gitrefresh`. It hashes disk bytes, including files hidden by dirty
 buffers, and reports `disk revised` when a later sample differs. `disk differs`
 means disk and an open buffer disagree; unsaved edits can also cause this label.
@@ -496,12 +499,15 @@ derived during refresh: stored identities, notes and historical coordinates are
 not rewritten. Explicit `:note attach` / `:review revalidate` remain available.
 
 Limits are **512 paths** across current and retained trees, **2 MiB per file**,
-**8 MiB per tree**, **32 checkpoints**, **24 MiB of retained source text**, and
-**32 MiB of serialized metadata**. Binary/non-UTF-8 content, symlinks, submodules,
+**8 MiB per tree**, **32 checkpoints**, **24 MiB of retained file bytes**, and
+**32 MiB of serialized metadata**. Binary bytes count toward the same limits and
+use two hexadecimal characters per byte in metadata. Symlinks, submodules,
 conflicts and exceeded limits fail visibly; no partial checkpoint is saved.
 There is one baseline per worktree store, with no automatic pruning/reset. Full snapshot
 trees are stored privately in Git metadata and omitted from Markdown feedback
-exports; ordinary annotation excerpts remain included. Older editor versions refuse the version-2 store. Snapshot
+exports; ordinary annotation excerpts remain included. Existing text snapshots
+remain readable; older editors that lack binary support refuse stores containing
+binary payloads. Older version-1 editors refuse all version-2 stores. Snapshot
 writes reuse the annotation lock and atomic persistence; competing checkpoints
 conflict while unrelated annotation changes merge. Validation still covers the
 current path plus up to 31 other annotated paths within Git's five-second budget.

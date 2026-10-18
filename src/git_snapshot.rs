@@ -1,7 +1,7 @@
 //! Snapshot collection and comparisons run inside the existing Git/review workers.
 use super::*;
 use crate::{
-    review::{ContentId, Identity, fingerprint},
+    review::{ContentId, Identity},
     review_snapshot::{self, Baseline, Capture, File as CapturedFile, History},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,27 +143,8 @@ fn live_tree(
         if bytes > review_snapshot::TREE_LIMIT {
             return Err("Review tree exceeds 8 MiB".into());
         }
-        if content.contains(&0) {
-            return Err(format!(
-                "Snapshot cannot include binary file {}",
-                display_path(&relative)
-            ));
-        }
-        let sha256 = fingerprint(&content);
-        let text = String::from_utf8(content).map_err(|_| {
-            format!(
-                "Snapshot cannot include non-UTF-8 content {}",
-                display_path(&relative)
-            )
-        })?;
-        tree.files.push(CapturedFile {
-            path: relative,
-            text,
-            sha256,
-            mode,
-            blob: None,
-            unsaved: dirty,
-        });
+        tree.files
+            .push(CapturedFile::new(relative, content, mode, None, dirty));
     }
     Ok(tree)
 }
@@ -227,8 +208,7 @@ fn baseline(
     } else {
         Vec::new()
     };
-    let mut files = Vec::new();
-    let mut bytes = 0;
+    let mut entries = Vec::new();
     for record in names.split(|b| *b == 0).filter(|n| !n.is_empty()) {
         runner.check()?;
         let tab = record
@@ -239,38 +219,133 @@ fn baseline(
         if !review_snapshot::valid_path(&path) {
             return Err("Unsupported snapshot path".into());
         }
-        if files.len() == review_snapshot::MAX_FILES {
+        if entries.len() == review_snapshot::MAX_FILES {
             return Err("Review baseline exceeds 512 files".into());
         }
-        let content = blob(runner, repo, resolved_base.as_deref(), &path)?;
-        bytes += content.bytes.len();
-        if bytes > review_snapshot::TREE_LIMIT {
-            return Err("Review baseline exceeds 8 MiB".into());
+        let fields: Vec<_> = record[..tab].split(|b| *b == b' ').collect();
+        if fields.len() != 3 {
+            return Err("Malformed Git tree entry".into());
         }
-        if content.bytes.contains(&0) {
-            return Err(format!(
-                "Snapshot baseline contains binary file {}",
-                display_path(&path)
-            ));
+        if !matches!(fields[0], b"100644" | b"100755") {
+            return Err("Unsupported Git content: symlink, tree or submodule".into());
         }
-        let sha256 = fingerprint(&content.bytes);
-        files.push(CapturedFile {
+        let oid = if *comparison == Comparison::Index {
+            if fields[2] != b"0" {
+                return Err("Unresolved conflict in review baseline".into());
+            }
+            fields[1]
+        } else {
+            if fields[1] != b"blob" {
+                return Err("Unsupported Git object in review baseline".into());
+            }
+            fields[2]
+        };
+        if !matches!(oid.len(), 40 | 64) || !oid.iter().all(u8::is_ascii_hexdigit) {
+            return Err("Invalid Git object ID in review baseline".into());
+        }
+        entries.push(TreeEntry {
             path,
-            text: String::from_utf8(content.bytes).map_err(err)?,
-            sha256,
-            mode: content
-                .mode
-                .ok_or("Snapshot baseline changed during collection")?,
-            blob: content.oid,
-            unsaved: false,
+            mode: std::str::from_utf8(fields[0]).map_err(err)?.into(),
+            oid: std::str::from_utf8(oid).map_err(err)?.into(),
         });
     }
+    let mut files = baseline_files(runner, repo, entries)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Baseline {
         comparison: comparison.clone(),
         resolved_base,
         files,
     })
+}
+
+struct TreeEntry {
+    path: PathBuf,
+    mode: String,
+    oid: String,
+}
+
+fn batch_header(output: &mut &[u8], oid: &str) -> Result<usize, String> {
+    let end = output
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or("Missing Git batch header")?;
+    let header = std::str::from_utf8(&output[..end]).map_err(err)?;
+    let fields: Vec<_> = header.split(' ').collect();
+    if fields.len() != 3 || fields[0] != oid || fields[1] != "blob" {
+        return Err("Invalid or missing Git blob in review baseline".into());
+    }
+    let size: usize = fields[2].parse().map_err(err)?;
+    if size > CONTENT_LIMIT {
+        return Err("Review baseline file exceeds 2 MiB".into());
+    }
+    *output = &output[end + 1..];
+    Ok(size)
+}
+
+fn baseline_files(
+    runner: &Runner<'_>,
+    repo: &Repository,
+    entries: Vec<TreeEntry>,
+) -> Result<Vec<CapturedFile>, String> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Tree/index listings already supply exact object IDs and modes. Only IDs
+    // enter the line-delimited batch protocol, so raw filenames stay lossless.
+    let mut input = String::new();
+    for entry in &entries {
+        input.push_str(&entry.oid);
+        input.push('\n');
+    }
+    let sizes = runner.git_with_input(
+        &repo.root,
+        &refs(&args(&["cat-file", "--batch-check"])),
+        input.as_bytes(),
+    )?;
+    let mut output = sizes.as_slice();
+    let mut expected = Vec::new();
+    let mut total = 0;
+    for entry in &entries {
+        runner.check()?;
+        let size = batch_header(&mut output, &entry.oid)?;
+        total += size;
+        if total > review_snapshot::TREE_LIMIT {
+            return Err("Review baseline exceeds 8 MiB".into());
+        }
+        expected.push(size);
+    }
+    if !output.is_empty() {
+        return Err("Unexpected Git batch size output".into());
+    }
+    // Check both per-file and aggregate sizes before asking Git for any bytes.
+    let contents = runner.git_with_input(
+        &repo.root,
+        &refs(&args(&["cat-file", "--batch"])),
+        input.as_bytes(),
+    )?;
+    let mut output = contents.as_slice();
+    let mut files = Vec::new();
+    for (entry, size) in entries.into_iter().zip(expected) {
+        runner.check()?;
+        if batch_header(&mut output, &entry.oid)? != size
+            || output.len() <= size
+            || output[size] != b'\n'
+        {
+            return Err("Incomplete or changed Git blob in review baseline".into());
+        }
+        files.push(CapturedFile::new(
+            entry.path,
+            output[..size].to_vec(),
+            entry.mode,
+            Some(entry.oid),
+            false,
+        ));
+        output = &output[size + 1..];
+    }
+    if !output.is_empty() {
+        return Err("Unexpected Git batch content output".into());
+    }
+    Ok(files)
 }
 /// Called by the review I/O worker. Captured buffers are immutable request-time
 /// Ropes; disk is sampled twice. This is deliberately not a filesystem transaction.
@@ -397,7 +472,7 @@ pub(super) fn inspect_tree(
         old.clone()
     };
     for (to, file) in &new {
-        if old.contains_key(to) || renames.contains_key(to) || file.text.is_empty() {
+        if old.contains_key(to) || renames.contains_key(to) || file.bytes().is_empty() {
             continue;
         }
         let candidates: Vec<_> = reference
@@ -479,8 +554,8 @@ pub(super) fn comparison(
         .map_or(relative, PathBuf::as_path);
     let old = base.iter().find(|f| f.path == old_path);
     let new = files.iter().find(|f| f.path == relative);
-    let old_bytes = old.map_or(&b""[..], |f| f.text.as_bytes());
-    let new_bytes = new.map_or(&b""[..], |f| f.text.as_bytes());
+    let old_bytes = old.map_or(&b""[..], |f| f.bytes());
+    let new_bytes = new.map_or(&b""[..], |f| f.bytes());
     let mut diff = compare_bytes(runner, old_bytes, new_bytes)?;
     let base_label = match request.comparison {
         Comparison::ReviewSince(id) => format!("review checkpoint #{id}"),
