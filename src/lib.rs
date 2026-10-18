@@ -14,6 +14,7 @@ pub mod git;
 mod git_ui;
 pub mod git_view;
 pub mod help;
+mod indent;
 pub mod input;
 pub mod lsp;
 pub mod lsp_edit;

@@ -2156,7 +2156,8 @@ fn automatic_completion_popup_preserves_source_cursor_and_handles_small_screens(
     f.editor.handle_key(Key::Ctrl('e'));
     assert_eq!(f.editor.mode, Mode::Insert);
     f.editor.handle_key(Key::Enter);
-    assert_eq!(f.editor.document.buffer.text().to_string(), "\t😀 i\n\n");
+    assert_eq!(f.editor.document.buffer.text().to_string(), "\t😀 i\n\t\n");
+    assert_eq!(f.editor.document.buffer.position(), (1, 1));
 
     let mut f = auto_completion_fixture("auto-completion-many", "first\nsecond\nthird\nlast ");
     let end = f.editor.document.buffer.text().len_chars();

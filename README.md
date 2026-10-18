@@ -138,7 +138,7 @@ reference filtered to those topics.
 | Normal | `v`, `V` | Start characterwise/linewise Visual selection |
 | Visual | Motions, `o`, `d c y` | Extend selection, swap anchor, operate on selection |
 | Normal | `u`, `Ctrl-r` | Undo/redo; counts are supported |
-| Insert | Text, Enter, Tab | Insert text, newline, literal tab |
+| Insert | Text, Enter, Tab | Insert text, automatically indented newline, literal tab |
 | Insert | Backspace, Delete; arrows, Home, End | Delete/join lines; move and start a new undo group |
 | Editing/prompt | Escape, `Ctrl-[`, `Ctrl-c` | Cancel pending input or leave the current mode |
 
@@ -153,7 +153,19 @@ An Insert session or change plus replacement is one undo step; movement and
 bracketed paste create separate groups. History retains up to 1,000 groups per
 buffer. Bracketed paste is accepted only in Insert and cannot execute commands.
 Registers are shared across buffers and pasted line endings adapt to the target.
-Tabs display at four-cell stops; no autoindent is applied.
+Tabs display at four-cell stops. **Enter**, **o** and **O** inherit the current
+line's spaces/tabs. For Rust, Java, Kotlin, C#, JSON, YAML and TOML, opening
+delimiters add one indentation level; YAML mapping colons do too. Enter between
+paired delimiters leaves an indented blank line with the closing delimiter on
+the following line. `O` above a closing delimiter opens an indented line inside
+the block. Delimiters in strings/comments do not trigger block indentation.
+
+The indentation unit is inferred from up to 200 nearby lines, preserving tabs
+and existing space widths. With no evidence, code uses four spaces and
+JSON/YAML/TOML use two. Plain text, Markdown and files without available syntax
+inherit whitespace only. Indentation uses local text and language defaults;
+framework settings and `.editorconfig` are not read. Tab inserts a literal tab;
+bracketed paste and register puts keep their supplied indentation.
 
 ## Search and navigation
 

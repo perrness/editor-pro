@@ -657,8 +657,12 @@ impl Editor {
                 self.enter_insert();
             }
             Key::Char('o' | 'O') => {
-                if self.has_room(2) {
-                    self.document.buffer.open_line(key == Key::Char('O'));
+                let kind = if key == Key::Char('O') {
+                    crate::indent::NewlineKind::Above
+                } else {
+                    crate::indent::NewlineKind::Below
+                };
+                if self.insert_newline(kind) {
                     self.enter_insert();
                 }
             }
@@ -890,9 +894,7 @@ impl Editor {
                 self.insert_text(&character.to_string());
             }
             Key::Enter => {
-                if self.has_room(2) {
-                    self.document.buffer.insert_newline();
-                }
+                self.insert_newline(crate::indent::NewlineKind::Split);
             }
             Key::Tab => self.insert_text("\t"),
             Key::Backspace => self.document.buffer.backspace(),
@@ -917,6 +919,23 @@ impl Editor {
         {
             self.schedule_completion(key, incomplete);
         }
+    }
+
+    fn insert_newline(&mut self, kind: crate::indent::NewlineKind) -> bool {
+        self.document.sync_syntax();
+        let edit = crate::indent::newline(&self.document.buffer, &self.document.syntax, kind);
+        let removed = self
+            .document
+            .buffer
+            .text()
+            .slice(edit.range.clone())
+            .len_bytes();
+        if !self.has_room(edit.text.len().saturating_sub(removed)) {
+            return false;
+        }
+        self.document.buffer.replace_range(edit.range, &edit.text);
+        self.document.buffer.set_cursor(edit.cursor, true);
+        true
     }
 
     fn has_room(&mut self, bytes: usize) -> bool {

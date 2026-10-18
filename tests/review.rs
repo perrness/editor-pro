@@ -1031,6 +1031,33 @@ fn bounded_context_and_note_limits_do_not_persist_an_unsaved_source_copy() {
     assert!(bytes.len() < 8000);
     assert_eq!(fs::read_to_string(r.path("a")).unwrap(), "new\n");
 }
+
+#[test]
+fn automatic_indentation_obeys_note_size_limit_without_partial_edits() {
+    let (r, _) = fixture();
+    let mut e = editor(&r);
+    act(&mut e, "diff");
+    e.execute_command("note file").unwrap();
+    let original = format!("    {}", "x".repeat(editor_pro::review::MAX_NOTE - 7));
+    e.document.buffer = editor_pro::buffer::Buffer::new(&original);
+    for command in ['A', 'o', 'O'] {
+        let before = e.document.buffer.cursor();
+        e.handle_key(Key::Char(command));
+        if command == 'A' {
+            e.handle_key(Key::Enter);
+            assert_eq!(e.document.buffer.cursor(), original.len());
+        } else {
+            assert_eq!(e.mode, editor_pro::editor::Mode::Normal);
+            assert_eq!(e.document.buffer.cursor(), before);
+        }
+        assert!(e.message.contains("Size limit"), "{command}: {}", e.message);
+        assert_eq!(e.document.buffer.text().to_string(), original);
+        assert!(!e.document.buffer.is_modified());
+        if e.mode == editor_pro::editor::Mode::Insert {
+            e.handle_key(Key::Escape);
+        }
+    }
+}
 #[cfg(unix)]
 #[test]
 fn executable_mode_changes_invalidate_and_export_symlinks_do_not_clobber() {

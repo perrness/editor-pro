@@ -154,6 +154,30 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         session_settings.cleanup()
 
 
+def run_autoindent_sessions(binary, directory, resize, capture_dir=None):
+    source = Path(directory) / "Autoindent.java"
+    original = "class Café {\r\n    void 界() {}\r\n}\r\n".encode()
+    expected = "class Café {\r\n    void 界() {\r\n        int café = 1;\r\n    }\r\n}\r\n".encode()
+    source.write_bytes(original)
+    output = run_session(binary, source, [
+        b"j$i", b"\r", "int café = 1;".encode(), b"\x1b", b":w\r",
+        (lambda: source.read_bytes() == expected, 10),
+        b"u", b":w\r", (lambda: source.read_bytes() == original, 10),
+        b"\x12", b":w\r", (lambda: source.read_bytes() == expected, 10),
+        resize(8, 30), resize(24, 80), b":q\r",
+    ], expected)
+    if capture_dir:
+        (Path(capture_dir) / "autoindent-java-crlf.ansi").write_bytes(output)
+
+    source = Path(directory) / "Tabs.java"
+    source.write_bytes(b"class Tabs {\n\tvoid run() {\n\t}\n}\n")
+    output = run_session(binary, source, [
+        b"joone();", b"\x1b", b"jOtwo();", b"\x1b", b":wq\r",
+    ], b"class Tabs {\n\tvoid run() {\n\t\tone();\n\t\ttwo();\n\t}\n}\n")
+    if capture_dir:
+        (Path(capture_dir) / "autoindent-tabs-open-lines.ansi").write_bytes(output)
+
+
 def run_splash_sessions(binary, directory, resize, capture_dir=None):
     root = Path(directory) / "splash-project"
     root.mkdir()
@@ -985,6 +1009,7 @@ def main():
         output = run_session(binary, history_path, history_commands, history_states[-1].encode())
         if capture_dir:
             (Path(capture_dir) / "multi-step-undo-redo.ansi").write_bytes(output)
+        run_autoindent_sessions(binary, directory, resize, capture_dir)
         run_splash_sessions(binary, directory, resize, capture_dir)
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
@@ -992,7 +1017,7 @@ def main():
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
-    print("PASS: 55 PTY sessions; ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 57 PTY sessions; automatic indentation, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

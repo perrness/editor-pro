@@ -16,6 +16,7 @@ config.rs    optional bounded user settings and native configuration paths
 input.rs     Crossterm events -> terminal-independent Key values
 help.rs      shared shortcut metadata, bounded search and read-only help overlay
 editor.rs    editing modes, pending counts/operators, prompts, unnamed register
+indent.rs    bounded local indentation inference and syntax-aware newline plans
 buffer.rs    Rope, grapheme cursor, bounded undo, edit descriptions and generation
 motion.rs    motions and text-object ranges in Unicode scalar coordinates
 file.rs      Document, file identity/baseline, guarded loading/saving
@@ -161,6 +162,18 @@ long/minified lines require later profiling and chunk-aware segmentation. Text
 width is shared by movement and rendering. Tree-sitter byte offsets are explicitly
 converted at the mutation boundary; they never become the core cursor representation.
 LSP UTF-16 conversion lives in `lsp.rs`, outside the core.
+
+Typed Enter and Normal `o`/`O` synchronize derived syntax and ask `indent.rs`
+for one replacement in scalar coordinates plus the resulting cursor. The editor
+checks the complete replacement's size before applying it in the existing Insert
+transaction. Buffer splices, paste and server edits remain literal. The planner
+copies leading spaces/tabs and recognizes code delimiters using Tree-sitter
+tokens, skipping trailing comments. Paired delimiters split onto separate lines;
+new lines before closing delimiters use their opening line's indentation.
+Style inference samples at most 200 nearby lines and 256 indentation characters
+per line, excluding comment-only lines. Language defaults apply when no local
+convention is found; unavailable syntax falls back to copying whitespace. No
+project configuration or language server request participates in newline editing.
 
 ## Derived syntax, search and background navigation
 
