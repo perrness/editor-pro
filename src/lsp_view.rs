@@ -4,6 +4,7 @@ use crate::{
     input::Key,
     lsp::{self, Config, Event, Language, Request, ServerKey, Snapshot, Stamp, Versioned},
     lsp_edit::EditPlan,
+    lsp_source,
     lsp_worker::{Control, Worker},
 };
 use lsp_types::{Diagnostic, Position};
@@ -826,7 +827,7 @@ impl Editor {
         if self.document.buffer.is_read_only()
             && matches!(name, "Complete" | "Rename" | "CodeAction" | "Format")
         {
-            return Err(error("Generated/decompiled source is read only"));
+            return Err(error("Server source is read only"));
         }
         let uri = if let Some(uri) = self.document.virtual_uri() {
             uri.to_owned()
@@ -995,11 +996,11 @@ impl Editor {
         context: Context,
         versions: Vec<Versioned>,
     ) -> io::Result<()> {
+        if context.virtual_target.is_some() {
+            return self.open_virtual_result(result, context);
+        }
         let mut panel = Panel::text(method.trim_start_matches("textDocument/"), "");
         match method {
-            "csharp/metadata" => {
-                return self.open_virtual_result(result, context);
-            }
             "textDocument/hover" => {
                 panel = Panel::text("Documentation", &markup(&result["contents"]))
             }
@@ -1103,7 +1104,13 @@ impl Editor {
             }
             "textDocument/documentSymbol" => {
                 panel.title = "Symbol outline".into();
-                let truncated = symbols(&result, &context.path, &mut panel.rows, 0)?;
+                let truncated = symbols(
+                    &result,
+                    &context.path,
+                    &mut panel.rows,
+                    0,
+                    context.key.language,
+                )?;
                 if truncated {
                     panel.title.push_str(" (outline truncated)");
                 }
@@ -1143,25 +1150,35 @@ impl Editor {
                     crate::git::display_path(&context.key.root)
                 );
                 for item in result_items(&result)? {
-                    panel.rows.push(workspace_symbol_row(item.clone())?);
+                    panel
+                        .rows
+                        .push(workspace_symbol_row(item.clone(), context.key.language)?);
                 }
                 if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
                     panel.title.push_str(" (4096 result limit)");
                 }
             }
             "workspaceSymbol/resolve" => {
-                let row = workspace_symbol_row(result)?;
-                if let Item::Jump { path, position, .. } = row.action {
-                    return self.jump_lsp_location(&path, position, None);
+                let row = workspace_symbol_row(result, context.key.language)?;
+                match row.action {
+                    Item::Jump { path, position, .. } => {
+                        return self.jump_lsp_location(&path, position, None);
+                    }
+                    Item::VirtualJump { uri, position } => {
+                        return self.request_virtual_location(uri, position, context);
+                    }
+                    _ => {}
                 }
                 return Err(error(
-                    "Server did not resolve a local workspace symbol range",
+                    "Server did not resolve a supported workspace symbol range",
                 ));
             }
             "textDocument/prepareCallHierarchy" => {
                 panel.title = "Call hierarchy · i incoming · o outgoing · Enter source".into();
                 for item in result_items(&result)? {
-                    panel.rows.push(call_row(item.clone(), "")?);
+                    panel
+                        .rows
+                        .push(call_row(item.clone(), "", context.key.language)?);
                 }
                 if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
                     panel.title.push_str(" (4096 result limit)");
@@ -1210,7 +1227,9 @@ impl Editor {
                         sites,
                         if ranges.len() > 16 { "…" } else { "" }
                     );
-                    panel.rows.push(call_row(item.clone(), &detail)?);
+                    panel
+                        .rows
+                        .push(call_row(item.clone(), &detail, context.key.language)?);
                 }
                 if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
                     panel.title.push_str(" (4096 result limit)");
@@ -1550,11 +1569,15 @@ impl Editor {
             Item::Call(value) => {
                 let item: lsp_types::CallHierarchyItem =
                     serde_json::from_value(value).map_err(io::Error::other)?;
-                self.jump_lsp_location(
-                    &lsp::uri_path(item.uri.as_str())?,
-                    item.selection_range.start,
-                    None,
-                )?;
+                if let Ok(path) = lsp::uri_path(item.uri.as_str()) {
+                    self.jump_lsp_location(&path, item.selection_range.start, None)?;
+                } else {
+                    self.request_virtual_location(
+                        item.uri.to_string(),
+                        item.selection_range.start,
+                        context.ok_or_else(|| error("Missing navigation context"))?,
+                    )?;
+                }
             }
             Item::Completion { value, resolved } => {
                 let mut context = context.ok_or_else(|| error("Missing completion context"))?;
@@ -1595,6 +1618,16 @@ impl Editor {
         if self.document.virtual_uri().is_some()
             && lsp_identity(&self.document).as_deref() == Some(path)
         {
+            let position = if let Some(original) = self
+                .lsp
+                .virtual_sources
+                .get(&self.document.buffer.instance())
+                .and_then(|source| source.protocol_text.as_ref())
+            {
+                lsp_source::map_position(original, self.document.buffer.text(), position)?
+            } else {
+                position
+            };
             let scalar = lsp::scalar(self.document.buffer.text(), position)?;
             let origin = self.source_location();
             self.reset_context();
@@ -1644,8 +1677,15 @@ impl Editor {
         position: Position,
         mut context: Context,
     ) -> io::Result<()> {
-        if context.key.language != Language::CSharp || !lsp::is_csharp_metadata_uri(&uri) {
-            return Err(error("Unsupported virtual source URI"));
+        let (method, params) = lsp_source::request(context.key.language, &uri)?;
+        if context.key.language == Language::Kotlin
+            && !self.lsp.servers[&context.key].capabilities["executeCommandProvider"]["commands"]
+                .as_array()
+                .is_some_and(|commands| commands.iter().any(|c| c == "decompile"))
+        {
+            return Err(error(
+                "Kotlin server does not advertise the decompile source command; :LspInfo",
+            ));
         }
         if self.lsp.virtual_sources.len() >= 32
             && self
@@ -1653,15 +1693,11 @@ impl Editor {
                 .is_none()
         {
             return Err(error(
-                "Virtual source limit (32); close a generated/decompiled buffer and retry",
+                "Virtual source limit (32); close a dependency/generated buffer and retry",
             ));
         }
         context.virtual_target = Some((uri.clone(), position));
-        self.send_lsp(
-            "csharp/metadata",
-            json!({"textDocument":{"uri":uri}}),
-            Some(context),
-        )
+        self.send_lsp(method, params, Some(context))
     }
 
     fn virtual_buffer(&self, uri: &str, key: &ServerKey, epoch: u64) -> Option<usize> {
@@ -1682,16 +1718,25 @@ impl Editor {
         let (uri, position) = context
             .virtual_target
             .ok_or_else(|| error("Missing virtual source target"))?;
-        let text = result["source"].as_str().filter(|s| !s.is_empty())
-            .ok_or_else(|| error("Language server returned no source text for this generated/decompiled location"))?;
-        if text.len() > lsp::MAX_DOCUMENT_BYTES {
-            return Err(error("Virtual source exceeds 2 MiB"));
-        }
-        let document =
-            crate::file::Document::virtual_source(uri.clone(), text, Path::new("source.cs"))?;
+        let content = lsp_source::content(context.key.language, &uri, &result)?;
+        let description = content.kind.label();
+        let document = crate::file::Document::virtual_source(
+            uri.clone(),
+            content.text,
+            content.syntax_path,
+            description,
+        )?;
         // Validate before changing the active buffer or its navigation history.
+        let protocol_text = content.protocol_text.map(ropey::Rope::from_str);
+        let position = if let Some(original) = &protocol_text {
+            lsp_source::map_position(original, document.buffer.text(), position)?
+        } else {
+            position
+        };
         let scalar = lsp::scalar(document.buffer.text(), position)?;
         let source = lsp::VirtualSource {
+            protocol_text,
+            protocol_language: content.protocol_language,
             uri,
             key: context.key,
             epoch: context.epoch,
@@ -1700,9 +1745,19 @@ impl Editor {
         let origin = self.source_location();
         if let Some(id) = existing {
             self.switch_buffer_unrecorded(id)?;
-            // Ask the server on each jump: source generators can change their
-            // output within one session. Reuse the slot, refreshing its snapshot.
-            if self.document.buffer.text() != document.buffer.text() {
+            // The worker revalidates JVM caches and always refetches C# output.
+            // Reuse the slot while refreshing changed source and provenance.
+            if self.document.buffer.text() != document.buffer.text()
+                || self.document.display_name() != document.display_name()
+                || self
+                    .lsp
+                    .virtual_sources
+                    .get(&self.document.buffer.instance())
+                    .is_some_and(|old| {
+                        old.protocol_text != source.protocol_text
+                            || old.protocol_language != source.protocol_language
+                    })
+            {
                 self.lsp
                     .virtual_sources
                     .remove(&self.document.buffer.instance());
@@ -1718,7 +1773,10 @@ impl Editor {
         self.lsp.routes.insert(identity, source.key);
         self.document.buffer.set_cursor(scalar, false);
         self.record_navigation(origin);
-        self.info("Read-only generated/decompiled source; Ctrl-o returns");
+        self.info(&format!(
+            "Read-only {}; Ctrl-o returns",
+            description.to_lowercase()
+        ));
         Ok(())
     }
     fn expand_calls(&mut self, incoming: bool) -> io::Result<()> {
@@ -2131,14 +2189,14 @@ fn uri_location_row(uri: &str, position: Position, label: &str, language: Langua
     if let Ok(path) = lsp::uri_path(uri) {
         return location_row(path, position, label, None);
     }
-    if language == Language::CSharp && lsp::is_csharp_metadata_uri(uri) {
+    if lsp_source::supports_uri(language, uri) {
         return Row {
             label: format!(
                 "{uri}:{}:{} {label}",
                 position.line.saturating_add(1),
                 position.character.saturating_add(1)
             ),
-            detail: "Generated/decompiled source · Enter opens read only".into(),
+            detail: "Dependency/generated source · Enter opens read only".into(),
             action: Item::VirtualJump {
                 uri: uri.into(),
                 position,
@@ -2162,7 +2220,7 @@ fn result_items(value: &Value) -> io::Result<impl Iterator<Item = &Value>> {
     };
     Ok(items.iter().take(lsp::MAX_ITEMS))
 }
-fn workspace_symbol_row(value: Value) -> io::Result<Row> {
+fn workspace_symbol_row(value: Value, language: Language) -> io::Result<Row> {
     let name = value["name"]
         .as_str()
         .ok_or_else(|| error("Missing workspace symbol name"))?;
@@ -2170,35 +2228,32 @@ fn workspace_symbol_row(value: Value) -> io::Result<Row> {
         .as_str()
         .ok_or_else(|| error("Missing workspace symbol URI"))?;
     let label = format!("{} {}", name, value["containerName"].as_str().unwrap_or(""));
-    let Ok(path) = lsp::uri_path(uri) else {
+    if lsp::uri_path(uri).is_err() && !lsp_source::supports_uri(language, uri) {
         return Ok(Row {
             label,
             detail: format!("Unsupported virtual/decompiled location: {uri}"),
             action: Item::Text,
         });
-    };
+    }
     if let Some(range) = value["location"].get("range") {
         let range: lsp_types::Range =
             serde_json::from_value(range.clone()).map_err(io::Error::other)?;
         if range.start > range.end {
             return Err(error("Invalid symbol range"));
         }
-        let mut row = location_row(path, range.start, &label, None);
+        let mut row = uri_location_row(uri, range.start, &label, language);
         row.detail = row.label;
         row.label = label;
         Ok(row)
     } else {
         Ok(Row {
             label,
-            detail: format!(
-                "{} · Enter resolves location",
-                crate::git::display_path(&path)
-            ),
+            detail: format!("{uri} · Enter resolves location"),
             action: Item::WorkspaceSymbol(value),
         })
     }
 }
-fn call_row(value: Value, sites: &str) -> io::Result<Row> {
+fn call_row(value: Value, sites: &str, language: Language) -> io::Result<Row> {
     let item: lsp_types::CallHierarchyItem =
         serde_json::from_value(value.clone()).map_err(io::Error::other)?;
     if item.range.start > item.selection_range.start
@@ -2215,7 +2270,9 @@ fn call_row(value: Value, sites: &str) -> io::Result<Row> {
         item.detail.as_deref().unwrap_or(""),
         sites
     );
-    if lsp::uri_path(item.uri.as_str()).is_err() {
+    if lsp::uri_path(item.uri.as_str()).is_err()
+        && !lsp_source::supports_uri(language, item.uri.as_str())
+    {
         return Ok(Row {
             label: item.name,
             detail: format!("Unsupported virtual/decompiled location: {}", item.uri),
@@ -2228,7 +2285,13 @@ fn call_row(value: Value, sites: &str) -> io::Result<Row> {
         action: Item::Call(value),
     })
 }
-fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io::Result<bool> {
+fn symbols(
+    value: &Value,
+    path: &Path,
+    rows: &mut Vec<Row>,
+    depth: usize,
+    language: Language,
+) -> io::Result<bool> {
     if depth > 32 {
         return Ok(value.as_array().is_some_and(|items| !items.is_empty()));
     }
@@ -2240,11 +2303,23 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
             }
             let location = item.get("location");
             let target = if let Some(location) = location {
-                lsp::uri_path(
-                    location["uri"]
-                        .as_str()
-                        .ok_or_else(|| error("Invalid symbol URI"))?,
-                )?
+                let uri = location["uri"]
+                    .as_str()
+                    .ok_or_else(|| error("Invalid symbol URI"))?;
+                match lsp::uri_path(uri) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        let position = serde_json::from_value(location["range"]["start"].clone())
+                            .map_err(io::Error::other)?;
+                        rows.push(uri_location_row(
+                            uri,
+                            position,
+                            item["name"].as_str().unwrap_or(""),
+                            language,
+                        ));
+                        continue;
+                    }
+                }
             } else {
                 path.to_path_buf()
             };
@@ -2278,7 +2353,7 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
                 item["name"].as_str().unwrap_or("")
             );
             rows.push(row);
-            truncated |= symbols(&item["children"], path, rows, depth + 1)?;
+            truncated |= symbols(&item["children"], path, rows, depth + 1, language)?;
         }
     }
     Ok(truncated)

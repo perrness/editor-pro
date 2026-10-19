@@ -739,7 +739,11 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
         String::new()
     };
     let modified = if editor.document.buffer.is_read_only() {
-        " [RO]"
+        match editor.document.virtual_description() {
+            Some("Decompiled source") => " [RO] Decompiled",
+            Some("Dependency source") => " [RO] Source",
+            _ => " [RO]",
+        }
     } else if editor.document.buffer.is_modified() {
         " [+]"
     } else {

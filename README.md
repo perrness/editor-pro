@@ -658,7 +658,7 @@ that override are refused. `:LspRestart` rediscovers and reopens unsaved documen
 | `:Hover` | Read documentation at the cursor |
 | `:Signature` | Show signatures and the active parameter |
 | Normal `gd`, `gr` | Request definitions or references at the cursor; jump directly to a single location, or choose from multiple results |
-| `:Definition`, `:References` | List locations; Enter opens source, including read-only C# generated/decompiled documents |
+| `:Definition`, `:References` | List locations; Enter opens source, including read-only JVM dependencies and C# generated/decompiled documents |
 | `:Diagnostics` | List current diagnostics across open sources; Enter jumps |
 | `:Dnext`, `:Dprev` | Navigate diagnostics in the current buffer, wrapping |
 | `:Rename NEW_NAME` | Propose a symbol rename, including edits to other files |
@@ -678,18 +678,55 @@ locations; `Ctrl-o` returns after a jump, and `Ctrl-i`/Tab goes forward again.
 These shortcuts require a ready language server for the current source file.
 Escape cancels a pending request; moving, editing or switching buffers discards
 obsolete results. No matches or unavailable targets leave the source in place.
-C# enables `csharp-ls` metadata URIs, so `gd` can open classes and members in
-compiled assemblies and source-generator output. These buffers show `[RO]`,
-support searching, copying, further `gd`/`gr` navigation and history, and cannot
-be edited or saved. The editor fetches source from the owning server, preserving
-its URI and UTF-16 location; it does not create a temporary project file.
-Repeated jumps refresh generated output in the same buffer. After a server
-restart, return to project source and jump again to obtain a current snapshot.
-Virtual source is limited to 2 MiB per document and 32 open buffers.
-The server still needs a successfully imported project and resolved references;
-project-reference source generators may need to be built first. Empty definitions
-include a hint to check `:LspInfo` and `:LspLog`. Exact overload/constructor
-locations depend on the server; some decompiled targets point to the file start.
+Java and Kotlin dependencies open in read-only buffers with syntax highlighting,
+scrolling, search, copying, normal Vim motions and `Ctrl-o`/`Ctrl-i` history.
+Further definitions/references, workspace symbols and call-hierarchy targets use
+the original URI and owning language-server session, including navigation back
+into project code. These documents show `[RO]` and cannot be edited or saved;
+no source file is created in the project. Full-bytecode fallback uses private temporary
+helper/bytecode/output files, removed after its bounded child process exits.
+
+For Java, `jdt://contents/` locations use JDT LS's `java/classFileContents`
+extension. JDT prefers source attachments from the imported Maven/Gradle project
+or JDK, and falls back to its bundled FernFlower decompiler. The pinned JDT LS
+1.60 distribution needs no extra decompiler installation. For Kotlin, `jar:` and
+`jrt:` locations use the official server's advertised `decompile` command,
+which returns attached source or its decompiled representation. Original Kotlin
+source keeps Kotlin highlighting. When the server returns compiled-code placeholders,
+a pinned Vineflower 1.12.0 fallback decompiles the class family into Java, including
+Kotlin bytecode. The editor downloads the checksum-verified decompiler into managed
+LSP storage under the existing `lsp.auto_install` policy; `:LspInstall kotlin` also
+installs it explicitly. It uses Kotlin's bundled Java runtime or an installed Java
+17+ runtime. No manual JAR extraction or decompiler command is needed.
+Dependency source and decompiled code have distinct buffer and `[RO]` status labels.
+
+Kotlin virtual documents open with the server's original text and language.
+When full Java decompilation changes the layout, declaration positions are mapped
+between that text and the visible code. Ambiguous positions and method-body symbols
+absent from the server's declaration view report an unavailable location instead of
+navigating with incorrect coordinates. Definition precision still depends on the server.
+The pinned Kotlin server resolves some attached-source references but returns no
+target from some compiled declaration views; those jumps leave the buffer in place.
+Kotlin built-in declaration documents without a JVM class cannot be fully decompiled.
+
+The editor reuses bounded JVM content caches while the backing archive/runtime
+is unchanged. Cache entries expire after 30 seconds and clear on project import/build
+or content-refresh notifications and server restart. Local archive/runtime and
+conventional source-archive metadata are checked off the UI thread on each jump;
+unknown backing paths are fetched again. Original JDT source is revalidated by
+the server on every jump because arbitrary source attachments are opaque to the
+client. Project reimports and the server's own caches still determine when changed
+classpath/source attachments become available; use `:LspRestart` after changing
+dependencies if the server keeps an old model.
+
+C# `csharp:/` locations continue to use `csharp/metadata` and refresh generated
+output on every jump. Repeated jumps reuse the same session/URI buffer slot.
+After a server restart, return to project source and jump again to obtain a current
+snapshot. Virtual source is limited to 2 MiB per document and 32 open buffers.
+The server needs an imported project and resolved references; project-reference
+source generators may need to be built first. Unsupported schemes/extensions,
+missing source and invalid locations leave the current source and history intact.
+Empty definitions include a hint to check `:LspInfo` and `:LspLog`.
 Documentation is displayed as plain text, including Markdown source.
 In Insert mode, typing an identifier or a server-advertised trigger such as `.`
 requests suggestions after a 120 ms pause. The popup keeps the source and cursor
@@ -751,8 +788,8 @@ are discarded on shutdown, so warm indexes do not survive editor restarts.
 File create/rename/delete operations, annotated edits, duplicate edit entries for
 one URI, edits outside the root, edits to virtual sources, dynamic capability
 registration and watched-file registration are unsupported. Virtual navigation
-currently supports C# `csharp:/` definition/reference results; Kotlin/Java custom
-source schemes and virtual workspace-symbol/call-hierarchy targets remain unsupported. Unopened,
+supports Java `jdt://contents/`, official Kotlin `jar:`/`jrt:` and C# `csharp:/`
+locations through their respective server extensions. Other schemes are unsupported. Unopened,
 unversioned edit targets are read when a proposal arrives; external changes
 before that point cannot be proven absent. Subsequent disk/buffer changes reject
 the entire proposal. Server-specific import extensions and framework support

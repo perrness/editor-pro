@@ -2461,3 +2461,66 @@ build/version check, formatting and whitespace checks.
 The v0.2.19 tag is preserved; v0.2.20 reruns the existing release gates with the
 corrected harness. Logs are `/tmp/editor-pro-v0.2.20-{prepare,diagnostics}.log`;
 the corrected capture is `/tmp/editor-pro-v0.2.20-terminal/lsp-diagnostics.ansi`.
+
+## Issue 27 — JVM dependency sources and bytecode
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0, 2026-10-19. Java `jdt://contents/`
+and official Kotlin `jar:`/`jrt:` targets now share read-only virtual buffers,
+history, syntax selection, guarded navigation and bounded content caches. JDT LS
+prefers its source attachments and uses bundled FernFlower when source is missing.
+Kotlin's declaration-only responses trigger checksum-pinned Vineflower 1.12.0 slim;
+the resulting Java includes actual method bodies for Java and Kotlin bytecode.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed. |
+| `cargo test --locked --all-targets` | 437 tests passed; 17 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| Python unittest discovery in `tools` and `tools/kotlin-lsp` | Six and eight tests passed. |
+| `python3 tools/terminal_smoke.py` | All 71 PTY sessions passed against the final debug build. |
+| `cargo test --locked --test lsp_real dependency_sources_and_bytecode -- --ignored --nocapture --test-threads=1` | All four Java/Kotlin Maven/Gradle fixtures passed in 174.36 seconds, with the Kotlin navigation limit below recorded separately. |
+
+The real fixtures use JDT LS 1.60.0, official Kotlin LSP 263.6379.0, JDK 21/25,
+Maven and Gradle 9.1.0. They compile a Java/Kotlin dependency outside the imported
+project and expose only its binary JAR and a partial sources JAR. A content-derived
+artifact version prevents stale build-tool caches from hiding fixture changes.
+They require source-only comments in attached Java/Kotlin source and actual
+`JAVA_BYTECODE`/`KOTLIN_BYTECODE` strings in decompiled method bodies, precise class
+and Java method targets, read-only guards, buffer reuse, history and unchanged
+project bytes. Each run uses fresh temporary projects with cached server/build
+artifacts; no user project is opened.
+
+JDT navigates from decompiled `HashMap` to `AbstractMap`. Kotlin navigates from
+attached Kotlin source to a qualified JDK type. The pinned Kotlin server returns
+no definition for that type from a compiled Kotlin declaration view; this is
+recorded as `server_returned_no_result`, not successful navigation. An earlier
+Java-in-Kotlin probe also returned no definition for `HashMap`'s `AbstractMap`.
+Those cases preserve source/history. Kotlin built-in declaration documents without
+a JVM class report an unavailable target instead of pretending placeholders are
+full decompilation. The host lacks JDK source archives, so `HashMap` uses bytecode;
+its large Kotlin/Vineflower output can hit the existing syntax parse budget.
+Small dependency sources require successful highlighting. Maximum observed editor
+ticks were 50 ms for Java and 253 ms for Kotlin; decompiler execution is off-thread.
+
+Protocol regressions cover Unicode/CRLF and opaque URIs, single/multiple/lazy
+locations, workspace symbols and call hierarchy, missing/invalid/oversized content,
+unsupported commands, timeouts, cancellation, stale sessions, unauthorized edits,
+refresh in place and backing-free virtual sources. Cache tests distinguish binary
+replacement, source downloads, import/build invalidation and ordinary indexing;
+unit checks cover expiry, memory bounds, UTF-16 declaration mapping, absent built-in
+bytecode and missing/corrupt decompiler artifacts. Existing local and C# navigation
+remain covered by the full suite.
+
+Reports are `/tmp/editor-pro-issue27-reports/*dependencies*.json`. Logs are
+`/tmp/editor-pro-issue27-{real-complete,rust-verified,clippy-complete,build-verified,python-final,smoke-verified}.log`.
+Terminal captures are `/tmp/editor-pro-issue27-terminal/jvm-java-decompiled.ansi`
+and `jvm-kotlin-original.ansi` in the same directory.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Earlier overlapping runs
+were interrupted by a stalled validation environment and are not acceptance
+evidence; the real-server cases above ran serially. Commands required normal
+process access because the sandbox could not initialize its loopback interface.
+macOS, hosted CI, minimum Rust 1.88 and physical-terminal appearance were not
+tested here. No release version or workflow changed.

@@ -1106,6 +1106,31 @@ def main():
         ], b"class Main { Library value; }\n", environment)
         if capture_dir:
             (Path(capture_dir) / "csharp-metadata.ansi").write_bytes(output)
+        # JVM virtual source uses the same read-only navigation and worker cache.
+        for language, scenario, suffix, label in (
+            ("JAVA", "jvm-java-decompiled", "java", b"Read-only decompiled source"),
+            ("KOTLIN", "jvm-kotlin-original", "kt", b"Read-only dependency source"),
+        ):
+            source = lsp_root / f"Main.{suffix}"
+            source.write_text("class Main { Library value; }\n")
+            (lsp_root / "dependency + 界.jar").write_bytes(b"fixture archive")
+            log = lsp_root / f"{scenario}.jsonl"
+            environment = {f"EDITOR_PRO_{language}_LSP": json.dumps([
+                sys.executable, str(fake.resolve()), "--log", str(log), "--scenario", scenario,
+            ])}
+            output = run_session(binary, source, [
+                (server_ready, 10), b"gd", resize(24, 100), (label, 10),
+                resize(24, 101), (b"[RO]", 10), b"i", resize(24, 100), (b"source is read only", 10),
+                b"/method\r", resize(24, 101), b"\x0f", resize(24, 100),
+                b"gd", resize(24, 101), (label, 10),
+                b"\x0f", resize(24, 100), (b"Earlier location", 10), b":q\r",
+            ], b"class Main { Library value; }\n", environment)
+            requests = [json.loads(line) for line in log.read_text().splitlines()]
+            retrievals = [m for m in requests if m.get("method") == "java/classFileContents"
+                          or (m.get("method") == "workspace/executeCommand" and m.get("params", {}).get("command") == "decompile")]
+            assert len(retrievals) == 1, retrievals
+            if capture_dir:
+                (Path(capture_dir) / f"{scenario}.ansi").write_bytes(output)
         # M7: immutable checkpoints, live external revisions, and retained source.
         repo = Path(directory) / "snapshot project"
         repo.mkdir()
@@ -1223,7 +1248,7 @@ def main():
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 69 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 71 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including Java/Kotlin dependency sources and C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

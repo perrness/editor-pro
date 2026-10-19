@@ -491,7 +491,7 @@ impl Editor {
             ) || (key == Key::Char('o') && self.selection_anchor.is_none()))
         {
             self.pending = Pending::default();
-            self.error("Generated/decompiled source is read only");
+            self.error("Server source is read only");
             return;
         }
         let motion = match key {

@@ -21,7 +21,9 @@ use std::{
 use tokio::sync::watch;
 
 mod archive;
+mod decompiler;
 mod http;
+pub(crate) use decompiler::decompile;
 #[cfg(test)]
 mod tests;
 
@@ -697,6 +699,9 @@ fn install(
     // OS file locks release on process exit; an interrupted editor cannot leave a stale lock.
     let destination = recipe.destination(root, language);
     if installed(&destination, recipe)? && managed_launch(&destination, language, recipe).is_ok() {
+        if language == Language::Kotlin && recipe.version == KOTLIN_VERSION {
+            decompiler::ensure(root, true, guard, progress)?;
+        }
         return Ok(());
     }
     if destination.exists() {
@@ -738,6 +743,9 @@ fn install(
     receipt.sync_all()?;
     guard.check()?;
     fs::rename(payload, &destination)?;
+    if language == Language::Kotlin && recipe.version == KOTLIN_VERSION {
+        decompiler::ensure(root, true, guard, progress)?;
+    }
     File::open(&parent)?.sync_all()?;
     Ok(())
 }

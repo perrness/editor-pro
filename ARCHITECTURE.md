@@ -38,6 +38,7 @@ review_store.rs bounded loading, record CAS, atomic persistence and Markdown wor
 review_view.rs  review commands, progress/navigation and contextual record list
 lsp.rs         protocol positions, immutable document stamps, capabilities and roots
 lsp_worker.rs  bounded multi-project server lifecycle, transport and synchronization
+lsp_source.rs  server-owned source protocols, provenance labels and bounded JVM cache
 lsp_warmup.rs  bounded cancellable project hints for the existing session manager
 lsp_install.rs pinned per-user server provisioning, runtime selection and installation jobs
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
@@ -775,27 +776,72 @@ Multiple results use the contextual chooser; explicit `:Definition` and
 `:References` retain their lists. Both paths use the same guarded location jump
 and session navigation history. The request marker is subject to the existing
 serial, session, cursor and document guards, so obsolete replies cannot navigate.
-C# definition/reference targets using `csharp:/` are fetched with `csharp/metadata`
-on the same worker, with the existing serial, epoch, document, cursor, cancellation
-and deadline guards. A null/invalid/oversized response or invalid UTF-16 position
-leaves the source/history untouched. `Document` stores the original virtual URI,
-no disk path or baseline, and a read-only Buffer. Mutation entry points and saving
-refuse changes; ordinary movement, search, copy, syntax, buffer switching and
-back/forward history remain available. No temporary source files are created.
+Virtual definition/reference, workspace-symbol and call-hierarchy targets use
+`lsp_source.rs` for language-scoped URI validation, retrieval payloads and content
+interpretation. C# uses `csharp/metadata`; Java negotiates
+`extendedClientCapabilities.classFileContentsSupport` and uses `java/classFileContents`;
+official Kotlin requires the advertised `decompile` execute command for `jar:`/`jrt:`.
+JDT's source-first provider chain supplies attachments then bundled FernFlower.
+Kotlin returns text plus syntax language. Its compiled-code stubs trigger the pinned
+Vineflower 1.12.0 fallback in `lsp_install/decompiler.rs`, using the existing HTTP,
+checksum, private storage, locking, runtime discovery and bounded process helpers.
+The 1.2 MiB slim JAR is verified before execution; downloads cap at 8 MiB and honor
+`auto_install`. Explicit Kotlin installation includes it. Two semaphore permits,
+retained until blocking tasks exit, bound cancelled as well as active fallbacks.
+The request deadline covers download, Java source-mode helper execution and output.
+Cancellation, changed snapshots and session shutdown cancel the child process group.
+The helper reads at most 128 related classes/8 MiB from one local archive or JDK
+module, never loads dependency classes, ignores decompiler-selected output paths,
+and writes at most 2 MiB of Java to one private temporary output. Temporary bytecode,
+helper and output files are removed after the child exits. No new Cargo dependency
+or dependency resolver is added. The checksum and artifact URL are pinned in code.
 
-The LSP view binds each virtual buffer instance to its owning server and epoch.
-Snapshots use an opaque relative routing token distinct from absolute file paths;
-`Snapshot::uri()` supplies the original URI. Manager routing bypasses filesystem
-root discovery for these snapshots. The worker tracks them for request freshness
-and session lifetime without sending didOpen/didChange/didSave, pull diagnostics
-or edits to the server-owned source. Definition/reference requests from them use
-the original URI. Ordinary disk, Git, edit guards and recent-file discovery see
-no path. At most 32 virtual buffers retain 2 MiB each. Repeated jumps fetch again
-and reuse the same session/URI buffer slot, replacing changed generated text.
-Old-epoch buffers remain readable after restart but cannot issue navigation
-requests; a fresh jump from source obtains a new snapshot. Closed virtual buffers
-cannot be reopened through file history. Other virtual URI schemes, workspace
-symbols and call-hierarchy virtual targets remain explicitly unsupported.
+Original source and full server-provided decompilation always win. The known JDT
+header and Kotlin source/class URI identify provenance without adding display lines.
+Full Kotlin fallback retains up to 2 MiB of original server declarations alongside
+its Java display text. A bounded identifier/context map excludes comments/literals,
+converts UTF-16 in both directions, and refuses ambiguous or absent symbols. The
+server cannot resolve new method-body positions absent from its declaration view.
+Unknown/absent methods fail through the normal request path.
+
+Retrieval uses existing serial, epoch, document, cursor, cancellation and deadline
+guards. The Kotlin command is explicitly excluded from server-edit authorization,
+including any remaining authorization from an earlier code action. A null, invalid,
+oversized response or invalid UTF-16 position leaves source/history untouched.
+`Document` stores the original URI and a display label, no disk path or baseline,
+and a read-only Buffer. Mutation entry points and saving refuse changes; ordinary
+movement, search, copy, syntax, switching and back/forward history remain available.
+Virtual documents have no persistent source files.
+
+Each virtual buffer instance belongs to its original server and epoch. Snapshots
+use opaque relative routing tokens distinct from absolute file paths;
+`Snapshot::uri()` supplies the original URI. Routing bypasses filesystem root
+discovery. JDT/C# virtual documents need no open notifications. Kotlin's official
+client contract requires didOpen/didClose for jar/jrt documents; the worker supplies
+the original declaration text and its Java/Kotlin language, never Vineflower's
+changed layout. No virtual document sends didChange/didSave, pull diagnostics or
+edits. Ordinary disk, Git,
+edit guards and recent-file discovery see no path. At most 32 virtual buffers
+retain 2 MiB each. Repeated jumps reuse the same session/URI buffer slot and replace
+changed snapshots; C# generated output is fetched every time. Old-epoch buffers
+stay readable but cannot issue requests. Closed virtual buffers cannot reopen
+through file history.
+
+Each worker session additionally caches at most 32 JVM responses/16 MiB for 30
+seconds with least-recently-used eviction. Display plus retained server-declaration
+bytes count against that budget. Archive/runtime paths, when recognizable
+in server URIs, supply file identity, size and modification/change timestamps;
+JDK modules/source archives, sibling source archives and archive-parent metadata
+also participate. Metadata checks run on a blocking task, never on the UI thread.
+Unobservable dependencies are not cached. A binary change during retrieval
+rejects the response. Source downloads during retrieval remain viewable but are not
+cached until a stable observation. Project import/build and content-refresh
+notifications clear the cache; ordinary indexing does not evict unchanged bytecode.
+Responses crossing invalidation notifications are not inserted. Session teardown clears
+all entries. Original JDT source bypasses this client cache because nonstandard
+source attachment locations are opaque; JDT revalidates them. The server still
+owns project reimport and its internal caches; restart is the recovery for stale
+server models, and existing buffers are immutable snapshots until another jump.
 
 M6 reuses that list for the nested symbol outline, workspace symbols and call
 hierarchy. Workspace symbols use the active project/language session and negotiate
@@ -804,7 +850,7 @@ through incoming/outgoing requests; recursive browsing retains at most 16 parent
 panels and restores their selection/scroll. Enter jumps to declarations; call-site
 ranges are displayed in caller coordinates. Existing session/request/source/open-
 document guards apply before expansion, resolution or navigation. Capability
-absence and virtual/decompiled locations remain explicit. These are read-only
+absence and unsupported virtual locations remain explicit. These are read-only
 features, with no new server-edit authorization path.
 
 Rename, formatting and quick fixes create an edit

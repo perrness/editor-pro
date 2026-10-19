@@ -19,6 +19,7 @@ pub mod input;
 pub mod lsp;
 pub mod lsp_edit;
 pub mod lsp_install;
+mod lsp_source;
 pub mod lsp_view;
 pub mod lsp_worker;
 pub mod motion;

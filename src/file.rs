@@ -25,6 +25,7 @@ pub struct Document {
     pub buffer: Buffer,
     path: Option<PathBuf>,
     virtual_uri: Option<String>,
+    virtual_description: Option<&'static str>,
     baseline: Option<Arc<[u8]>>,
     pub(crate) baseline_generation: u64,
     pub(crate) disk_observation: Option<DiskObservation>,
@@ -39,6 +40,7 @@ impl Default for Document {
             buffer: Buffer::new(""),
             path: None,
             virtual_uri: None,
+            virtual_description: None,
             baseline: None,
             baseline_generation: 0,
             disk_observation: None,
@@ -69,6 +71,7 @@ impl Document {
             syntax: Syntax::for_path(Some(&path)),
             path: Some(path),
             virtual_uri: None,
+            virtual_description: None,
             baseline,
             baseline_generation: 0,
             disk_observation: None,
@@ -82,7 +85,12 @@ impl Document {
     }
 
     /// Server-owned source has no disk path or save baseline.
-    pub(crate) fn virtual_source(uri: String, text: &str, syntax_path: &Path) -> io::Result<Self> {
+    pub(crate) fn virtual_source(
+        uri: String,
+        text: &str,
+        syntax_path: &Path,
+        description: &'static str,
+    ) -> io::Result<Self> {
         if text.contains('\0') {
             return Err(io::Error::other("Virtual source contains NUL bytes"));
         }
@@ -91,9 +99,14 @@ impl Document {
         Ok(Self {
             buffer,
             virtual_uri: Some(uri),
+            virtual_description: Some(description),
             syntax: Syntax::for_path(Some(syntax_path)),
             ..Self::default()
         })
+    }
+
+    pub fn virtual_description(&self) -> Option<&'static str> {
+        self.virtual_description
     }
 
     pub fn virtual_uri(&self) -> Option<&str> {
@@ -115,7 +128,10 @@ impl Document {
 
     pub fn display_name(&self) -> String {
         if let Some(uri) = &self.virtual_uri {
-            return format!("[Read only] {uri}");
+            return format!(
+                "[Read only] {} · {uri}",
+                self.virtual_description.unwrap_or("Server source")
+            );
         }
         self.path
             .as_ref()
@@ -135,7 +151,7 @@ impl Document {
     /// are only replaceable when this document has an exact disk baseline.
     pub fn save(&mut self, destination: Option<&Path>) -> io::Result<()> {
         if self.buffer.is_read_only() {
-            return Err(io::Error::other("Generated/decompiled source is read only"));
+            return Err(io::Error::other("Server source is read only"));
         }
         self.buffer.commit();
         let path = match destination {

@@ -2,6 +2,7 @@
 //! work run on its runtime thread; the editor submits cheap immutable snapshots.
 use crate::lsp::*;
 use crate::lsp_install::{self, Installer, Launch, State as InstallState};
+use crate::lsp_source;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1034,6 +1035,8 @@ struct Pending {
     request: Request,
     documents: Vec<Versioned>,
     deadline: Instant,
+    source_fingerprint: Option<lsp_source::Fingerprint>,
+    source_revision: u64,
 }
 
 async fn run(
@@ -1051,7 +1054,12 @@ async fn run(
     wire.request(1, "initialize", json!({
         "processId":std::process::id(),"clientInfo":{"name":"editor-pro","version":env!("CARGO_PKG_VERSION")},
         "rootUri":root,"workspaceFolders":[{"uri":root,"name":key.root.file_name().unwrap_or_default().to_string_lossy()}],
-        "initializationOptions":{"settings":settings(key.language)},
+        "initializationOptions":{
+            "settings":settings(key.language),
+            "extendedClientCapabilities": if key.language == Language::Java {
+                json!({"classFileContentsSupport":true})
+            } else { json!({}) }
+        },
         "capabilities":{
             "experimental": if key.language == Language::CSharp {
                 json!({"csharp":{"metadataUris":true}})
@@ -1135,6 +1143,9 @@ async fn run(
     let mut awaiting_edit: Option<u64> = None;
     let mut timer = tokio::time::interval(Duration::from_millis(50));
     let mut first_sync = true;
+    let mut source_cache = lsp_source::Cache::default();
+    let mut source_revision = 0;
+    let mut deferred_control = None;
     loop {
         let snapshots = source.borrow_and_update().clone();
         let sync_started = Instant::now();
@@ -1209,6 +1220,8 @@ async fn run(
                         request,
                         documents: open.values().cloned().collect(),
                         deadline: Instant::now() + config.request_timeout,
+                        source_fingerprint: None,
+                        source_revision,
                     },
                 );
                 next_id += 1;
@@ -1216,9 +1229,9 @@ async fn run(
         }
         tokio::select! {
             changed = source.changed() => { changed.map_err(io::Error::other)?; }
-            command = commands.recv() => {
+            command = async { if deferred_control.is_some() { deferred_control.take() } else { commands.recv().await } } => {
                 match command.ok_or_else(|| io::Error::other("LSP command channel closed"))? {
-                    Control::Request(request) => {
+                    Control::Request(mut request) => {
                         awaiting_edit = None;
                         // The watch channel may have changed since the top of the loop.
                         let snapshots = source.borrow_and_update().clone();
@@ -1238,14 +1251,39 @@ async fn run(
                             emit(events, Event::Response { key:key.clone(), epoch, request, documents:Vec::new(), result:Err(error) }).await?;
                             continue;
                         }
+                        if request.params.get("position").is_some()
+                            && let Some(document) = open.get(&request.path)
+                            && let Some(original) = document.snapshot.virtual_source.as_ref().and_then(|s| s.protocol_text.as_ref()) {
+                            let mapped = serde_json::from_value(request.params["position"].clone()).map_err(io::Error::other)
+                                .and_then(|position| lsp_source::map_position(&document.snapshot.text, original, position));
+                            match mapped {
+                                Ok(position) => request.params["position"] = json!(position),
+                                Err(error) => {
+                                    emit(events, Event::Response { key:key.clone(), epoch, request, documents:open.values().cloned().collect(), result:Err(error.to_string()) }).await?;
+                                    continue;
+                                }
+                            }
+                        }
                         let previous: Vec<_> = pending.iter().filter(|(_, p)| p.request.serial != 0).map(|(id,_)| *id).collect();
                         for id in previous { wire.notify("$/cancelRequest",json!({"id":id})).await?; pending.remove(&id); }
                         let documents: Vec<_> = open.values().cloned().collect();
-                        if request.method == "workspace/executeCommand" {
-                            action = Some(Pending { request:request.clone(), documents:documents.clone(), deadline:Instant::now()+config.request_timeout });
+                        let source_uri = lsp_source::request_uri(key.language, &request);
+                        let source_fingerprint = if let Some(uri) = source_uri {
+                            // Retrieval commands cannot grant edit authority, even
+                            // if a preceding code action still has time remaining.
+                            action = None;
+                            let fingerprint = lsp_source::fingerprint(uri).await;
+                            if let Some(result) = source_cache.get(uri, fingerprint.as_ref()) {
+                                emit(events, Event::Response { key:key.clone(), epoch, request, documents, result:Ok(result) }).await?;
+                                continue;
+                            }
+                            fingerprint
+                        } else { None };
+                        if request.method == "workspace/executeCommand" && source_uri.is_none() {
+                            action = Some(Pending { request:request.clone(), documents:documents.clone(), deadline:Instant::now()+config.request_timeout, source_fingerprint:None, source_revision });
                         }
                         wire.request(next_id, &request.method, request.params.clone()).await?;
-                        pending.insert(next_id, Pending { request, documents, deadline:Instant::now()+config.request_timeout });
+                        pending.insert(next_id, Pending { request, documents, deadline:Instant::now()+config.request_timeout, source_fingerprint, source_revision });
                         next_id += 1;
                     }
                     Control::ApplyReply { epoch: reply_epoch, id, applied, reason, .. } if reply_epoch == epoch => {
@@ -1275,7 +1313,23 @@ async fn run(
                         && let Some(p) = &action && p.deadline > Instant::now() && documents_match(&p.documents,&open) {
                         awaiting_edit = Some(p.request.serial);
                     }
-                    if activity.observe(key.language, &frame) {
+                    // Opening a dependency can start ordinary indexing. Evict
+                    // for project imports/builds, not every indexing percentage.
+                    let import_progress = frame["method"] == "$/progress"
+                        && matches!(frame["params"]["value"]["kind"].as_str(), Some("begin" | "end"))
+                        && frame["params"]["value"]["title"].as_str()
+                            .or_else(|| activity.tasks.get(&frame["params"]["token"].to_string()).map(|task| task.title.as_str()))
+                            .is_some_and(|title| {
+                                let title = title.to_lowercase();
+                                title.contains("import") || title.contains("build")
+                            });
+                    let activity_changed = activity.observe(key.language, &frame);
+                    if frame["method"] == "workspace/textDocumentContent/refresh"
+                        || (activity_changed && (import_progress || frame["method"] == "language/status")) {
+                        source_cache.clear();
+                        source_revision += 1;
+                    }
+                    if activity_changed {
                         activity.publish(key, epoch, events, None).await?;
                     }
                     server_message(wire,key,epoch,&frame,&open,action.as_ref(),events).await?;
@@ -1292,7 +1346,7 @@ async fn run(
                     }
                 } else if let Some(id) = frame["id"].as_u64() && let Some(p) = pending.remove(&id) {
                     if !documents_match(&p.documents, &open) { continue; }
-                    let result = frame.get("error").map_or_else(|| Ok(frame["result"].clone()), |e| Err(format!("LSP error: {e}")));
+                    let mut result = frame.get("error").map_or_else(|| Ok(frame["result"].clone()), |e| Err(format!("LSP error: {e}")));
                     if p.request.method == "textDocument/diagnostic" {
                         if let (Ok(value), Some(document)) = (result, open.get(&p.request.path))
                             && value["kind"] == "full" {
@@ -1303,6 +1357,30 @@ async fn run(
                             emit(events, Event::Diagnostics { key:key.clone(),epoch,document:document.clone(),dependencies,versioned:true,items }).await?;
                         }
                     } else {
+                        if key.language == Language::Kotlin
+                            && let (Ok(value), Some(uri)) = (&result, lsp_source::request_uri(key.language, &p.request)) {
+                            let remaining = p.deadline.saturating_duration_since(Instant::now());
+                            result = tokio::select! {
+                                prepared = timeout(remaining, lsp_source::prepare(config, uri, value.clone(), remaining)) => {
+                                    prepared.map_err(|_| "Bytecode retrieval timed out".to_owned()).and_then(|r| r.map_err(|e| e.to_string()))
+                                }
+                                command = commands.recv() => {
+                                    deferred_control = command;
+                                    Err("Bytecode retrieval cancelled".into())
+                                }
+                                _ = source.changed() => Err("Bytecode retrieval became stale".into()),
+                            };
+                        }
+                        if let (Ok(value), Some(uri)) = (&result, lsp_source::request_uri(key.language, &p.request)) {
+                            let current = lsp_source::fingerprint(uri).await;
+                            if p.source_fingerprint.as_ref().is_some_and(|before| !before.same_binary(current.as_ref())) {
+                                result = Err("Dependency changed while loading source; retry navigation".into());
+                            } else if p.source_revision == source_revision && current == p.source_fingerprint {
+                                // A server may download sources during retrieval.
+                                // Show that result, but cache only stable observations.
+                                source_cache.insert(key.language, uri, value, current);
+                            }
+                        }
                         emit(events, Event::Response { key:key.clone(),epoch,request:p.request,documents:p.documents,result }).await?;
                     }
                 }
@@ -1359,20 +1437,45 @@ async fn synchronize(
         .cloned()
         .collect();
     for path in closed {
-        if open_close && open[&path].snapshot.virtual_source.is_none() {
+        if open_close
+            && open[&path]
+                .snapshot
+                .virtual_source
+                .as_ref()
+                .is_none_or(|s| s.key.language == Language::Kotlin)
+        {
             wire.notify(
                 "textDocument/didClose",
-                json!({"textDocument":{"uri":file_uri(&path)?}}),
+                json!({"textDocument":{"uri":open[&path].snapshot.uri()?}}),
             )
             .await?;
         }
         open.remove(&path);
     }
     for snapshot in snapshots {
-        // Metadata/generated documents belong to the server's workspace. Track
-        // their lifetime for routing/staleness without opening editable copies
-        // or sending didChange/didSave back to the server.
-        if snapshot.virtual_source.is_some() {
+        // JDT/C# own their virtual text without synchronization. The official
+        // Kotlin client opens jar/jrt documents so feature providers can find
+        // them. Send its exact declaration text and language, never the fuller
+        // bytecode layout or didChange/didSave from these read-only buffers.
+        if let Some(source) = &snapshot.virtual_source {
+            if source.key.language == Language::Kotlin
+                && open_close
+                && open
+                    .get(&snapshot.path)
+                    .is_none_or(|previous| previous.snapshot.stamp != snapshot.stamp)
+            {
+                if let Some(previous) = open.get(&snapshot.path) {
+                    wire.notify(
+                        "textDocument/didClose",
+                        json!({"textDocument":{"uri":previous.snapshot.uri()?}}),
+                    )
+                    .await?;
+                }
+                wire.notify("textDocument/didOpen", json!({"textDocument":{
+                    "uri":snapshot.uri()?, "languageId":source.protocol_language.id(), "version":0,
+                    "text":source.protocol_text.as_ref().unwrap_or(&snapshot.text).to_string()
+                }})).await?;
+            }
             open.insert(
                 snapshot.path.clone(),
                 Versioned {
