@@ -2703,3 +2703,34 @@ Logs are `/tmp/editor-pro-issue25-{clippy,rust-tests,build,python,terminal-tests
 Commands needed normal process access because the sandbox could not initialize
 its loopback interface. macOS, hosted CI, physical terminals and real language
 servers were not tested locally. No release version or workflow changed.
+
+### Main integration and v0.2.21 acceptance
+
+After approval to merge, push and release, the issue 25 implementation was
+integrated with main at `78d57b2`, preserving mouse support, JVM dependency
+navigation and diagnostic debouncing. Reference-list mouse hit regions now stop
+at the split; failed clicks refresh the selected preview. Cached virtual previews
+use the document's syntax language and map declaration positions into decompiled
+text. Two additional Rust regressions cover mouse hit boundaries/failed targets
+and cached Java/Kotlin previews without retrieval or navigation.
+
+Validated the integrated v0.2.21 tree on Linux x86_64, 2026-10-19:
+
+- `cargo fmt --check`, `git diff --check` and Clippy with `-D warnings`: passed.
+- `cargo test --locked --offline --all-targets`: 469 passed; 17 opt-in tests ignored.
+- `cargo build --locked --offline`: passed; `editor-pro --version` reports 0.2.21.
+- Python unittest discovery in `tools` and `tools/kotlin-lsp`: seven and eight passed.
+- `python3 tools/terminal_smoke.py /tmp/editor-pro-issue25-target/debug/editor-pro`:
+  all 75 PTY sessions passed.
+- `python3 tools/release.py --tag v0.2.21 check-version`: passed. Cargo updated the
+  root package version in the lockfile; dependencies and release workflows are unchanged.
+
+The isolated target and low-disk build settings above were retained. The version
+change left obsolete test executables; a link exhausted disk space before these
+task-owned files were removed. The full rerun passed. Logs are
+`/tmp/editor-pro-issue25-integrated-{clippy,tests,build,python,terminal}.log`.
+Captures, including `references-preview.ansi`, its readable SVG and text
+reconstruction, are in `/tmp/editor-pro-issue25-integrated-captures`.
+Native macOS, Homebrew and real language servers were not retested locally.
+The tag-triggered release workflow runs Linux/macOS CI and Homebrew acceptance
+before publication, then updates the tap from the published assets.
