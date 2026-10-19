@@ -10,6 +10,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     editor::{Editor, Mode, View},
+    mouse::{HitMap, SourceArea, Target},
     search::SearchMatch,
     syntax::{HighlightSpan, highlight_at},
     text::{cell_width, display_column, display_grapheme, visible_text},
@@ -33,7 +34,7 @@ pub fn render_splash(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme) {
     }
     let height = area.height - 2;
     crate::splash::render(frame, Rect::new(area.x, area.y, area.width, height), theme);
-    render_status(
+    let _ = render_status(
         frame,
         editor,
         theme,
@@ -48,6 +49,7 @@ pub fn render_splash(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme) {
 }
 
 pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
+    editor.mouse.map.clear();
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -55,7 +57,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     let base = Style::default().fg(theme.foreground).bg(theme.background);
     frame.render_widget(Block::default().style(base), area);
     if let Some(help) = &mut editor.help {
-        crate::help::render(frame, help, theme);
+        crate::help::render(frame, help, theme, &mut editor.mouse.map);
         return;
     }
     if editor.disk.view.is_some() {
@@ -105,21 +107,32 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         (buffer.line_count().to_string().len() as u16 + 2).min(area.width.saturating_sub(1));
     let text_width = usize::from(area.width - gutter);
 
-    editor.viewport.top = editor.viewport.top.min(cursor_line);
-    if height > 0 && cursor_line >= editor.viewport.top + usize::from(height) {
-        editor.viewport.top = cursor_line + 1 - usize::from(height);
+    if !editor.mouse.scrolled {
+        editor.viewport.top = editor.viewport.top.min(cursor_line);
+        if height > 0 && cursor_line >= editor.viewport.top + usize::from(height) {
+            editor.viewport.top = cursor_line + 1 - usize::from(height);
+        }
+        // Keep an entire wide grapheme visible when there is enough room.
+        let grapheme = cursor_text
+            .char_indices()
+            .nth(cursor_column)
+            .map(|(byte, _)| &cursor_text[byte..])
+            .and_then(|tail| tail.graphemes(true).next())
+            .unwrap_or(" ");
+        let cursor_width = cell_width(grapheme, cursor_cell).min(text_width).max(1);
+        editor.viewport.left = editor.viewport.left.min(cursor_cell);
+        if cursor_cell + cursor_width > editor.viewport.left + text_width {
+            editor.viewport.left = cursor_cell + cursor_width - text_width;
+        }
     }
-    // Keep an entire wide grapheme visible when there is enough room.
-    let grapheme = cursor_text
-        .char_indices()
-        .nth(cursor_column)
-        .map(|(byte, _)| &cursor_text[byte..])
-        .and_then(|tail| tail.graphemes(true).next())
-        .unwrap_or(" ");
-    let cursor_width = cell_width(grapheme, cursor_cell).min(text_width).max(1);
-    editor.viewport.left = editor.viewport.left.min(cursor_cell);
-    if cursor_cell + cursor_width > editor.viewport.left + text_width {
-        editor.viewport.left = cursor_cell + cursor_width - text_width;
+    editor.viewport.top = editor.viewport.top.min(buffer.line_count() - 1);
+    if editor.view == View::Editing {
+        editor.mouse.map.source = Some(SourceArea {
+            area: Rect::new(area.x, area.y, area.width, height),
+            gutter,
+            top: editor.viewport.top,
+            left: editor.viewport.left,
+        });
     }
 
     let first_byte = buffer.text().line_to_byte(editor.viewport.top);
@@ -194,6 +207,9 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
         let line_diagnostics = diagnostics::on_line(editor, line_index);
+        let diagnostic_position = line_diagnostics
+            .first()
+            .and_then(|diagnostic| crate::lsp::scalar(buffer.text(), diagnostic.range.start).ok());
         if gutter >= 2
             && let Some(diagnostic) = line_diagnostics.first()
         {
@@ -231,7 +247,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             let start = end.saturating_sub(editor.viewport.left) + 2;
             if start < text_width {
                 let versioned = editor
-                    .current_diagnostics()
+                    .visible_diagnostics()
                     .is_some_and(|set| set.versioned);
                 let message = diagnostics::summary(
                     diagnostic,
@@ -250,9 +266,41 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
                 );
             }
         }
+        if editor.view == View::Editing
+            && let Some(position) = diagnostic_position
+        {
+            let end = display_column(&source, usize::MAX);
+            let start = end.saturating_sub(editor.viewport.left) + 2;
+            if start < text_width {
+                editor.mouse.map.add(
+                    Rect::new(
+                        area.x + gutter + start as u16,
+                        area.y + row,
+                        (text_width - start) as u16,
+                        1,
+                    ),
+                    Target::Diagnostic(position),
+                );
+            }
+            if gutter >= 2 {
+                editor.mouse.map.add(
+                    Rect::new(area.x + gutter - 1, area.y + row, 1, 1),
+                    Target::Diagnostic(position),
+                );
+            }
+        }
     }
 
     if !diagnostic_panel.is_empty() {
+        editor.mouse.map.add(
+            Rect::new(
+                area.x,
+                area.y + height,
+                area.width,
+                area.height - height - 2,
+            ),
+            Target::Command("Diagnostics"),
+        );
         frame.render_widget(
             Paragraph::new(diagnostic_panel).style(base.bg(theme.panel)),
             Rect::new(
@@ -265,12 +313,16 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
     }
 
     let status_y = area.y + area.height.saturating_sub(2);
-    render_status(
+    if let Some(rect) = render_status(
         frame,
         editor,
         theme,
         Rect::new(area.x, status_y, area.width, 1),
-    );
+    ) && editor.view == View::Editing
+        && editor.note_edit.is_none()
+    {
+        editor.mouse.map.add(rect, Target::Command("ls"));
+    }
     if area.height >= 2 {
         let command_area = Rect::new(area.x, status_y + 1, area.width, 1);
         if matches!(editor.mode, Mode::Command | Mode::Search) {
@@ -312,6 +364,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         && !matches!(editor.mode, Mode::Command | Mode::Search)
         && height > 0
         && text_width > 0
+        && cursor_line >= editor.viewport.top
+        && cursor_line < editor.viewport.top + usize::from(height)
+        && cursor_cell >= editor.viewport.left
+        && cursor_cell < editor.viewport.left + text_width
     {
         let cursor = (
             area.x + gutter + (cursor_cell - editor.viewport.left) as u16,
@@ -354,6 +410,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             picker,
             theme,
             Rect::new(area.x, area.y, area.width, height),
+            &mut editor.mouse.map,
         );
         if area.height >= 2 && !editor.message_is_error {
             frame.render_widget(
@@ -367,6 +424,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             );
         }
     }
+    crate::lsp_view::render_mouse_hover(frame, editor, theme);
 }
 
 fn render_message(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Rect) {
@@ -502,6 +560,7 @@ fn render_picker(
     picker: &crate::picker::FilePicker,
     theme: &Theme,
     area: Rect,
+    hits: &mut HitMap,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -550,6 +609,10 @@ fn render_picker(
         } else {
             style
         };
+        hits.add(
+            Rect::new(area.x, area.y + prompt_row + 1 + row, area.width, 1),
+            Target::File(index),
+        );
         frame.render_widget(
             Paragraph::new(clipped_line(
                 vec![
@@ -586,7 +649,7 @@ fn render_picker(
 
 fn render_buffers(
     frame: &mut Frame<'_>,
-    editor: &Editor,
+    editor: &mut Editor,
     theme: &Theme,
     area: Rect,
     selected: usize,
@@ -612,6 +675,10 @@ fn render_buffers(
     let rows = usize::from(area.height - header);
     let top = selected.saturating_sub(rows.saturating_sub(1));
     for (row, info) in infos.iter().skip(top).take(rows).enumerate() {
+        editor.mouse.map.add(
+            Rect::new(area.x, area.y + header + row as u16, area.width, 1),
+            Target::Buffer(info.id),
+        );
         let style = if row + top == selected {
             style.bg(theme.selection).add_modifier(Modifier::BOLD)
         } else {
@@ -717,7 +784,12 @@ pub(crate) fn styled_text(
     Line::from(spans)
 }
 
-fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Rect) {
+fn render_status(
+    frame: &mut Frame<'_>,
+    editor: &Editor,
+    theme: &Theme,
+    area: Rect,
+) -> Option<Rect> {
     let style = Style::default().fg(theme.foreground).bg(theme.status);
     frame.render_widget(Block::default().style(style), area);
     let label = if area.width >= 28 {
@@ -738,8 +810,14 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
     } else {
         String::new()
     };
+    let buffer_area = (!identity.is_empty())
+        .then(|| Rect::new(area.x + mode.len() as u16, area.y, identity.len() as u16, 1));
     let modified = if editor.document.buffer.is_read_only() {
-        " [RO]"
+        match editor.document.virtual_description() {
+            Some("Decompiled source") => " [RO] Decompiled",
+            Some("Dependency source") => " [RO] Source",
+            _ => " [RO]",
+        }
     } else if editor.document.buffer.is_modified() {
         " [+]"
     } else {
@@ -918,4 +996,5 @@ fn render_status(frame: &mut Frame<'_>, editor: &Editor, theme: &Theme, area: Re
             Rect::new(area.right() - right_width, area.y, right_width, 1),
         );
     }
+    buffer_area
 }

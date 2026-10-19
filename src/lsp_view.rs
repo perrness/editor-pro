@@ -4,6 +4,7 @@ use crate::{
     input::Key,
     lsp::{self, Config, Event, Language, Request, ServerKey, Snapshot, Stamp, Versioned},
     lsp_edit::EditPlan,
+    lsp_source,
     lsp_worker::{Control, Worker},
 };
 use lsp_types::{Diagnostic, Position};
@@ -12,13 +13,19 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+const DIAGNOSTIC_DELAY: Duration = Duration::from_millis(750);
 
 #[path = "lsp_completion.rs"]
 mod completion;
+#[path = "lsp_hover.rs"]
+mod hover;
 pub use completion::CompletionMenu;
 pub(crate) use completion::render as render_completion;
+pub use hover::HoverState;
+pub(crate) use hover::render as render_mouse_hover;
 
 #[path = "lsp_preview.rs"]
 mod preview;
@@ -37,8 +44,10 @@ pub struct LspState {
     pub unavailable: BTreeMap<PathBuf, String>,
     pub servers: BTreeMap<ServerKey, ServerInfo>,
     pub diagnostics: BTreeMap<PathBuf, DiagnosticSet>,
+    diagnostic_delays: BTreeMap<PathBuf, Instant>,
     pub panel: Option<Panel>,
     pub completion: Option<CompletionMenu>,
+    pub mouse_hover: HoverState,
     completion_due: Option<completion::Scheduled>,
     call_history: Vec<Panel>,
     context: Option<Context>,
@@ -72,6 +81,7 @@ struct Context {
     epoch: u64,
     apply_resolved: bool,
     inline_completion: bool,
+    mouse_hover: Option<u64>,
     // Insertion position after the primary edit, before a completion command.
     // Unlike the visible Normal-mode cursor, this may be at the end of a line.
     completion_command: Option<usize>,
@@ -147,6 +157,24 @@ impl Panel {
     }
 }
 impl LspState {
+    fn update_diagnostic_delays(&mut self, snapshots: &[Snapshot], now: Instant) -> bool {
+        for snapshot in snapshots {
+            if self
+                .snapshots
+                .iter()
+                .any(|old| old.path == snapshot.path && old.stamp != snapshot.stamp)
+            {
+                self.diagnostic_delays
+                    .insert(snapshot.path.clone(), now + DIAGNOSTIC_DELAY);
+            }
+        }
+        let pending = self.diagnostic_delays.len();
+        self.diagnostic_delays
+            .retain(|path, due| *due > now && snapshots.iter().any(|s| &s.path == path));
+        // Expiry must repaint even when no new server event or key arrives.
+        self.diagnostic_delays.len() != pending
+    }
+
     fn cancel_request(&mut self) {
         if let Some(context) = &self.context
             && let Some(worker) = &self.worker
@@ -158,6 +186,7 @@ impl LspState {
         self.pending = false;
     }
     pub fn cancel(&mut self) {
+        self.mouse_hover.clear();
         self.cancel_request();
         self.completion = None;
         self.completion_due = None;
@@ -313,6 +342,9 @@ impl Editor {
             && self.document.buffer.generation() == context.stamp.generation
             && lsp_identity(&self.document).as_ref() == Some(&context.path)
             && self.document.buffer.cursor() == context.cursor
+            && context
+                .mouse_hover
+                .is_none_or(|id| self.mouse_hover_current(id))
             && self.lsp_edit_guards() == context.guards
             && self
                 .lsp
@@ -337,6 +369,9 @@ impl Editor {
                 .retain(|instance, _| instances.contains(instance));
         }
         let snapshots = self.lsp_snapshots();
+        let diagnostics_ready = self
+            .lsp
+            .update_diagnostic_delays(&snapshots, Instant::now());
         if self.lsp.worker.is_none() && !snapshots.is_empty() {
             match Worker::new(self.lsp.config.clone()) {
                 Ok(worker) => self.lsp.worker = Some(worker),
@@ -373,7 +408,7 @@ impl Editor {
                     .retain(|key, _| self.lsp.warm_sessions.contains(key));
             }
         }
-        let mut redraw = changed;
+        let mut redraw = changed || diagnostics_ready;
         if self.lsp.context.as_ref().is_some_and(|c| {
             !self.lsp_context_current(c)
                 || (self.lsp.pending && self.view == View::Editing && self.mode != c.mode)
@@ -440,11 +475,9 @@ impl Editor {
                 t.elapsed() > self.lsp.config.request_timeout + std::time::Duration::from_secs(3)
             })
         {
-            let quiet = self
-                .lsp
-                .context
-                .as_ref()
-                .is_some_and(|c| c.inline_completion && !c.apply_resolved);
+            let quiet = self.lsp.context.as_ref().is_some_and(|c| {
+                (c.inline_completion && !c.apply_resolved) || c.mouse_hover.is_some()
+            });
             self.lsp.cancel_request();
             if !quiet {
                 self.error("LSP request expired; :LspInfo or :LspRestart");
@@ -452,7 +485,7 @@ impl Editor {
             redraw = true;
         }
         self.tick_completion();
-        redraw
+        self.tick_mouse_hover() || redraw
     }
     fn lsp_event(&mut self, event: Event) -> io::Result<()> {
         match event {
@@ -598,8 +631,8 @@ impl Editor {
                     return Ok(());
                 };
                 self.lsp.pending = false;
-                if context.inline_completion
-                    && !context.apply_resolved
+                if ((context.inline_completion && !context.apply_resolved)
+                    || context.mouse_hover.is_some())
                     && let Err(message) = &result
                 {
                     self.lsp.cancel_request();
@@ -832,7 +865,7 @@ impl Editor {
         if self.document.buffer.is_read_only()
             && matches!(name, "Complete" | "Rename" | "CodeAction" | "Format")
         {
-            return Err(error("Generated/decompiled source is read only"));
+            return Err(error("Server source is read only"));
         }
         let uri = if let Some(uri) = self.document.virtual_uri() {
             uri.to_owned()
@@ -931,7 +964,7 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| error("LSP unavailable"))?
             .submit(Control::Request(request))?;
-        if !context.inline_completion {
+        if !context.inline_completion && context.mouse_hover.is_none() {
             self.info(&format!("LSP {method}…"));
         }
         self.lsp.context = Some(context);
@@ -986,6 +1019,7 @@ impl Editor {
             epoch: info.epoch,
             apply_resolved: false,
             inline_completion: false,
+            mouse_hover: None,
             completion_command: None,
             jump_to_single_location: false,
             ai_question: None,
@@ -1001,12 +1035,16 @@ impl Editor {
         context: Context,
         versions: Vec<Versioned>,
     ) -> io::Result<()> {
+        if context.virtual_target.is_some() {
+            return self.open_virtual_result(result, context);
+        }
         let mut panel = Panel::text(method.trim_start_matches("textDocument/"), "");
         match method {
-            "csharp/metadata" => {
-                return self.open_virtual_result(result, context);
-            }
             "textDocument/hover" => {
+                if context.mouse_hover.is_some() {
+                    self.show_mouse_hover(&result);
+                    return Ok(());
+                }
                 panel = Panel::text("Documentation", &markup(&result["contents"]))
             }
             "textDocument/signatureHelp" => {
@@ -1111,7 +1149,13 @@ impl Editor {
             }
             "textDocument/documentSymbol" => {
                 panel.title = "Symbol outline".into();
-                let truncated = symbols(&result, &context.path, &mut panel.rows, 0)?;
+                let truncated = symbols(
+                    &result,
+                    &context.path,
+                    &mut panel.rows,
+                    0,
+                    context.key.language,
+                )?;
                 if truncated {
                     panel.title.push_str(" (outline truncated)");
                 }
@@ -1151,25 +1195,35 @@ impl Editor {
                     crate::git::display_path(&context.key.root)
                 );
                 for item in result_items(&result)? {
-                    panel.rows.push(workspace_symbol_row(item.clone())?);
+                    panel
+                        .rows
+                        .push(workspace_symbol_row(item.clone(), context.key.language)?);
                 }
                 if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
                     panel.title.push_str(" (4096 result limit)");
                 }
             }
             "workspaceSymbol/resolve" => {
-                let row = workspace_symbol_row(result)?;
-                if let Item::Jump { path, position, .. } = row.action {
-                    return self.jump_lsp_location(&path, position, None);
+                let row = workspace_symbol_row(result, context.key.language)?;
+                match row.action {
+                    Item::Jump { path, position, .. } => {
+                        return self.jump_lsp_location(&path, position, None);
+                    }
+                    Item::VirtualJump { uri, position } => {
+                        return self.request_virtual_location(uri, position, context);
+                    }
+                    _ => {}
                 }
                 return Err(error(
-                    "Server did not resolve a local workspace symbol range",
+                    "Server did not resolve a supported workspace symbol range",
                 ));
             }
             "textDocument/prepareCallHierarchy" => {
                 panel.title = "Call hierarchy · i incoming · o outgoing · Enter source".into();
                 for item in result_items(&result)? {
-                    panel.rows.push(call_row(item.clone(), "")?);
+                    panel
+                        .rows
+                        .push(call_row(item.clone(), "", context.key.language)?);
                 }
                 if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
                     panel.title.push_str(" (4096 result limit)");
@@ -1218,7 +1272,9 @@ impl Editor {
                         sites,
                         if ranges.len() > 16 { "…" } else { "" }
                     );
-                    panel.rows.push(call_row(item.clone(), &detail)?);
+                    panel
+                        .rows
+                        .push(call_row(item.clone(), &detail, context.key.language)?);
                 }
                 if result.as_array().is_some_and(|a| a.len() > lsp::MAX_ITEMS) {
                     panel.title.push_str(" (4096 result limit)");
@@ -1584,11 +1640,15 @@ impl Editor {
             Item::Call(value) => {
                 let item: lsp_types::CallHierarchyItem =
                     serde_json::from_value(value).map_err(io::Error::other)?;
-                self.jump_lsp_location(
-                    &lsp::uri_path(item.uri.as_str())?,
-                    item.selection_range.start,
-                    None,
-                )?;
+                if let Ok(path) = lsp::uri_path(item.uri.as_str()) {
+                    self.jump_lsp_location(&path, item.selection_range.start, None)?;
+                } else {
+                    self.request_virtual_location(
+                        item.uri.to_string(),
+                        item.selection_range.start,
+                        context.ok_or_else(|| error("Missing navigation context"))?,
+                    )?;
+                }
             }
             Item::Completion { value, resolved } => {
                 let mut context = context.ok_or_else(|| error("Missing completion context"))?;
@@ -1629,6 +1689,16 @@ impl Editor {
         if self.document.virtual_uri().is_some()
             && lsp_identity(&self.document).as_deref() == Some(path)
         {
+            let position = if let Some(original) = self
+                .lsp
+                .virtual_sources
+                .get(&self.document.buffer.instance())
+                .and_then(|source| source.protocol_text.as_ref())
+            {
+                lsp_source::map_position(original, self.document.buffer.text(), position)?
+            } else {
+                position
+            };
             let scalar = lsp::scalar(self.document.buffer.text(), position)?;
             let origin = self.source_location();
             self.reset_context();
@@ -1678,8 +1748,15 @@ impl Editor {
         position: Position,
         mut context: Context,
     ) -> io::Result<()> {
-        if context.key.language != Language::CSharp || !lsp::is_csharp_metadata_uri(&uri) {
-            return Err(error("Unsupported virtual source URI"));
+        let (method, params) = lsp_source::request(context.key.language, &uri)?;
+        if context.key.language == Language::Kotlin
+            && !self.lsp.servers[&context.key].capabilities["executeCommandProvider"]["commands"]
+                .as_array()
+                .is_some_and(|commands| commands.iter().any(|c| c == "decompile"))
+        {
+            return Err(error(
+                "Kotlin server does not advertise the decompile source command; :LspInfo",
+            ));
         }
         if self.lsp.virtual_sources.len() >= 32
             && self
@@ -1687,15 +1764,11 @@ impl Editor {
                 .is_none()
         {
             return Err(error(
-                "Virtual source limit (32); close a generated/decompiled buffer and retry",
+                "Virtual source limit (32); close a dependency/generated buffer and retry",
             ));
         }
         context.virtual_target = Some((uri.clone(), position));
-        self.send_lsp(
-            "csharp/metadata",
-            json!({"textDocument":{"uri":uri}}),
-            Some(context),
-        )
+        self.send_lsp(method, params, Some(context))
     }
 
     fn virtual_buffer(&self, uri: &str, key: &ServerKey, epoch: u64) -> Option<usize> {
@@ -1716,16 +1789,25 @@ impl Editor {
         let (uri, position) = context
             .virtual_target
             .ok_or_else(|| error("Missing virtual source target"))?;
-        let text = result["source"].as_str().filter(|s| !s.is_empty())
-            .ok_or_else(|| error("Language server returned no source text for this generated/decompiled location"))?;
-        if text.len() > lsp::MAX_DOCUMENT_BYTES {
-            return Err(error("Virtual source exceeds 2 MiB"));
-        }
-        let document =
-            crate::file::Document::virtual_source(uri.clone(), text, Path::new("source.cs"))?;
+        let content = lsp_source::content(context.key.language, &uri, &result)?;
+        let description = content.kind.label();
+        let document = crate::file::Document::virtual_source(
+            uri.clone(),
+            content.text,
+            content.syntax_path,
+            description,
+        )?;
         // Validate before changing the active buffer or its navigation history.
+        let protocol_text = content.protocol_text.map(ropey::Rope::from_str);
+        let position = if let Some(original) = &protocol_text {
+            lsp_source::map_position(original, document.buffer.text(), position)?
+        } else {
+            position
+        };
         let scalar = lsp::scalar(document.buffer.text(), position)?;
         let source = lsp::VirtualSource {
+            protocol_text,
+            protocol_language: content.protocol_language,
             uri,
             key: context.key,
             epoch: context.epoch,
@@ -1734,9 +1816,19 @@ impl Editor {
         let origin = self.source_location();
         if let Some(id) = existing {
             self.switch_buffer_unrecorded(id)?;
-            // Ask the server on each jump: source generators can change their
-            // output within one session. Reuse the slot, refreshing its snapshot.
-            if self.document.buffer.text() != document.buffer.text() {
+            // The worker revalidates JVM caches and always refetches C# output.
+            // Reuse the slot while refreshing changed source and provenance.
+            if self.document.buffer.text() != document.buffer.text()
+                || self.document.display_name() != document.display_name()
+                || self
+                    .lsp
+                    .virtual_sources
+                    .get(&self.document.buffer.instance())
+                    .is_some_and(|old| {
+                        old.protocol_text != source.protocol_text
+                            || old.protocol_language != source.protocol_language
+                    })
+            {
                 self.lsp
                     .virtual_sources
                     .remove(&self.document.buffer.instance());
@@ -1752,7 +1844,10 @@ impl Editor {
         self.lsp.routes.insert(identity, source.key);
         self.document.buffer.set_cursor(scalar, false);
         self.record_navigation(origin);
-        self.info("Read-only generated/decompiled source; Ctrl-o returns");
+        self.info(&format!(
+            "Read-only {}; Ctrl-o returns",
+            description.to_lowercase()
+        ));
         Ok(())
     }
     fn expand_calls(&mut self, incoming: bool) -> io::Result<()> {
@@ -1934,6 +2029,18 @@ impl Editor {
                 && d.stamp.generation == self.document.buffer.generation()
         })
     }
+    /// Passive diagnostics wait for a quiet document; explicit commands still
+    /// use current reports, and synchronization/completion keep their own timing.
+    pub(crate) fn visible_diagnostics(&self) -> Option<&DiagnosticSet> {
+        if self
+            .lsp
+            .diagnostic_delays
+            .contains_key(self.document.path()?)
+        {
+            return None;
+        }
+        self.current_diagnostics()
+    }
     pub fn lsp_summary(&self) -> String {
         if self.note_edit.is_some() {
             return String::new();
@@ -1999,7 +2106,7 @@ impl Editor {
         if self.lsp.pending {
             return "LSP Ready (request pending)".into();
         }
-        if let Some(d) = self.current_diagnostics()
+        if let Some(d) = self.visible_diagnostics()
             && !d.items.is_empty()
         {
             return format!(
@@ -2166,14 +2273,14 @@ fn uri_location_row(uri: &str, position: Position, label: &str, language: Langua
     if let Ok(path) = lsp::uri_path(uri) {
         return location_row(path, position, label, None);
     }
-    if language == Language::CSharp && lsp::is_csharp_metadata_uri(uri) {
+    if lsp_source::supports_uri(language, uri) {
         return Row {
             label: format!(
                 "{uri}:{}:{} {label}",
                 position.line.saturating_add(1),
                 position.character.saturating_add(1)
             ),
-            detail: "Generated/decompiled source · Enter opens read only".into(),
+            detail: "Dependency/generated source · Enter opens read only".into(),
             action: Item::VirtualJump {
                 uri: uri.into(),
                 position,
@@ -2197,7 +2304,7 @@ fn result_items(value: &Value) -> io::Result<impl Iterator<Item = &Value>> {
     };
     Ok(items.iter().take(lsp::MAX_ITEMS))
 }
-fn workspace_symbol_row(value: Value) -> io::Result<Row> {
+fn workspace_symbol_row(value: Value, language: Language) -> io::Result<Row> {
     let name = value["name"]
         .as_str()
         .ok_or_else(|| error("Missing workspace symbol name"))?;
@@ -2205,35 +2312,32 @@ fn workspace_symbol_row(value: Value) -> io::Result<Row> {
         .as_str()
         .ok_or_else(|| error("Missing workspace symbol URI"))?;
     let label = format!("{} {}", name, value["containerName"].as_str().unwrap_or(""));
-    let Ok(path) = lsp::uri_path(uri) else {
+    if lsp::uri_path(uri).is_err() && !lsp_source::supports_uri(language, uri) {
         return Ok(Row {
             label,
             detail: format!("Unsupported virtual/decompiled location: {uri}"),
             action: Item::Text,
         });
-    };
+    }
     if let Some(range) = value["location"].get("range") {
         let range: lsp_types::Range =
             serde_json::from_value(range.clone()).map_err(io::Error::other)?;
         if range.start > range.end {
             return Err(error("Invalid symbol range"));
         }
-        let mut row = location_row(path, range.start, &label, None);
+        let mut row = uri_location_row(uri, range.start, &label, language);
         row.detail = row.label;
         row.label = label;
         Ok(row)
     } else {
         Ok(Row {
             label,
-            detail: format!(
-                "{} · Enter resolves location",
-                crate::git::display_path(&path)
-            ),
+            detail: format!("{uri} · Enter resolves location"),
             action: Item::WorkspaceSymbol(value),
         })
     }
 }
-fn call_row(value: Value, sites: &str) -> io::Result<Row> {
+fn call_row(value: Value, sites: &str, language: Language) -> io::Result<Row> {
     let item: lsp_types::CallHierarchyItem =
         serde_json::from_value(value.clone()).map_err(io::Error::other)?;
     if item.range.start > item.selection_range.start
@@ -2250,7 +2354,9 @@ fn call_row(value: Value, sites: &str) -> io::Result<Row> {
         item.detail.as_deref().unwrap_or(""),
         sites
     );
-    if lsp::uri_path(item.uri.as_str()).is_err() {
+    if lsp::uri_path(item.uri.as_str()).is_err()
+        && !lsp_source::supports_uri(language, item.uri.as_str())
+    {
         return Ok(Row {
             label: item.name,
             detail: format!("Unsupported virtual/decompiled location: {}", item.uri),
@@ -2263,7 +2369,13 @@ fn call_row(value: Value, sites: &str) -> io::Result<Row> {
         action: Item::Call(value),
     })
 }
-fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io::Result<bool> {
+fn symbols(
+    value: &Value,
+    path: &Path,
+    rows: &mut Vec<Row>,
+    depth: usize,
+    language: Language,
+) -> io::Result<bool> {
     if depth > 32 {
         return Ok(value.as_array().is_some_and(|items| !items.is_empty()));
     }
@@ -2275,11 +2387,23 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
             }
             let location = item.get("location");
             let target = if let Some(location) = location {
-                lsp::uri_path(
-                    location["uri"]
-                        .as_str()
-                        .ok_or_else(|| error("Invalid symbol URI"))?,
-                )?
+                let uri = location["uri"]
+                    .as_str()
+                    .ok_or_else(|| error("Invalid symbol URI"))?;
+                match lsp::uri_path(uri) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        let position = serde_json::from_value(location["range"]["start"].clone())
+                            .map_err(io::Error::other)?;
+                        rows.push(uri_location_row(
+                            uri,
+                            position,
+                            item["name"].as_str().unwrap_or(""),
+                            language,
+                        ));
+                        continue;
+                    }
+                }
             } else {
                 path.to_path_buf()
             };
@@ -2313,7 +2437,7 @@ fn symbols(value: &Value, path: &Path, rows: &mut Vec<Row>, depth: usize) -> io:
                 item["name"].as_str().unwrap_or("")
             );
             rows.push(row);
-            truncated |= symbols(&item["children"], path, rows, depth + 1)?;
+            truncated |= symbols(&item["children"], path, rows, depth + 1, language)?;
         }
     }
     Ok(truncated)
@@ -2355,6 +2479,10 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
     }
     for row in 0..height {
         if let Some(item) = panel.rows.get(panel.top + row as usize) {
+            editor.mouse.map.add(
+                Rect::new(area.x, area.y + 1 + row, list_width, 1),
+                crate::mouse::Target::Lsp(panel.top + row as usize),
+            );
             let selected = panel.top + row as usize == panel.selected;
             frame.render_widget(
                 Paragraph::new(line(&item.label, panel.left)).style(if selected {
@@ -2440,5 +2568,93 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
                 area.y + area.height - 1,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_delay_tests {
+    use super::*;
+
+    fn snapshot(path: &str, buffer_id: usize) -> Snapshot {
+        Snapshot {
+            stamp: Stamp {
+                buffer_id,
+                instance: buffer_id as u64,
+                generation: 0,
+            },
+            path: path.into(),
+            text: ropey::Rope::from_str("bad value\r\n界😀\r\n"),
+            saved: 0,
+            language: Language::Kotlin,
+            virtual_source: None,
+        }
+    }
+
+    fn observe(state: &mut LspState, snapshots: &[Snapshot], now: Instant) -> bool {
+        let redraw = state.update_diagnostic_delays(snapshots, now);
+        state.snapshots = snapshots.to_vec();
+        redraw
+    }
+
+    #[test]
+    fn diagnostic_delay_restarts_on_edits_and_redraws_once_after_quiet() {
+        let mut state = LspState::default();
+        let mut document = snapshot("Main.kt", 1);
+        let start = Instant::now();
+        observe(&mut state, std::slice::from_ref(&document), start);
+        assert!(state.diagnostic_delays.is_empty(), "opening is immediate");
+
+        document.stamp.generation += 1;
+        observe(&mut state, std::slice::from_ref(&document), start);
+        let second_edit = start + Duration::from_millis(500);
+        document.stamp.generation += 1;
+        observe(&mut state, std::slice::from_ref(&document), second_edit);
+        assert!(!observe(
+            &mut state,
+            std::slice::from_ref(&document),
+            start + DIAGNOSTIC_DELAY
+        ));
+        assert!(state.diagnostic_delays.contains_key(&document.path));
+
+        // Saving and ticks without edits must not postpone the second deadline.
+        document.saved += 1;
+        let due = second_edit + DIAGNOSTIC_DELAY;
+        assert!(!observe(
+            &mut state,
+            std::slice::from_ref(&document),
+            due - Duration::from_millis(1)
+        ));
+        assert!(observe(&mut state, std::slice::from_ref(&document), due));
+        assert!(state.diagnostic_delays.is_empty());
+        assert!(!observe(&mut state, &[document], due));
+    }
+
+    #[test]
+    fn diagnostic_delays_are_independent_and_discarded_with_closed_paths() {
+        let mut state = LspState::default();
+        let mut documents = [snapshot("Main.kt", 1), snapshot("Other.kt", 2)];
+        let start = Instant::now();
+        observe(&mut state, &documents, start);
+        documents[0].stamp.generation += 1;
+        observe(&mut state, &documents, start);
+        documents[1].stamp.generation += 1;
+        observe(&mut state, &documents, start + Duration::from_millis(500));
+        assert!(observe(&mut state, &documents, start + DIAGNOSTIC_DELAY));
+        assert!(!state.diagnostic_delays.contains_key(&documents[0].path));
+        assert!(state.diagnostic_delays.contains_key(&documents[1].path));
+
+        observe(&mut state, &documents[..1], start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.is_empty());
+        documents[1].stamp.instance += 1;
+        observe(&mut state, &documents, start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.is_empty(), "reopening is immediate");
+
+        // Reloading an open path invalidates the report even at equal generation.
+        documents[0].stamp.instance += 1;
+        observe(&mut state, &documents, start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.contains_key(&documents[0].path));
+        documents[0].path = "Renamed.kt".into();
+        observe(&mut state, &documents, start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.is_empty());
     }
 }

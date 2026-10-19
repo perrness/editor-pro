@@ -70,6 +70,10 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         let height = body.height.saturating_sub(3) as usize;
         let top = editor.git.selected.saturating_sub(height.saturating_sub(1));
         for (index, file) in files.iter().enumerate().skip(top).take(height) {
+            editor.mouse.map.add(
+                Rect::new(area.x, area.y + (index - top + 3) as u16, area.width, 1),
+                crate::mouse::Target::Change(index),
+            );
             let progress = progress.get(&file.path).unwrap_or(&empty);
             line(
                 frame,
@@ -130,6 +134,25 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
         )
     };
     if area.height > 1 {
+        use crate::input::Key;
+        editor.mouse.map.labels(
+            Rect::new(area.x, area.bottom() - 2, area.width, 1),
+            &status,
+            &[
+                ("Enter source", Key::Enter),
+                ("d diff", Key::Char('d')),
+                ("r refresh", Key::Char('r')),
+                ("Esc return", Key::Escape),
+                ("]", Key::Char(']')),
+                ("[", Key::Char('[')),
+                ("n/p", Key::Char('n')),
+                ("p files", Key::Char('p')),
+                ("Tab layout", Key::Tab),
+                ("F/", Key::Char('F')),
+                ("R reviewed", Key::Char('R')),
+                ("A attention", Key::Char('A')),
+            ],
+        );
         line(
             frame,
             area,
@@ -325,6 +348,18 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
                 break;
             };
             let width = (area.width - 1) / 2;
+            if let Some(index) = pair.left {
+                editor.mouse.map.add(
+                    Rect::new(rect.x, rect.y, width, 1),
+                    crate::mouse::Target::Diff(index),
+                );
+            }
+            if let Some(index) = pair.right {
+                editor.mouse.map.add(
+                    Rect::new(rect.x + width + 1, rect.y, rect.width - width - 1, 1),
+                    crate::mouse::Target::Diff(index),
+                );
+            }
             render_side(
                 frame,
                 diff,
@@ -350,6 +385,10 @@ fn render_diff(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme, area: 
                 theme,
             );
         } else if let Some(row) = diff.rows.get(index) {
+            editor
+                .mouse
+                .map
+                .add(rect, crate::mouse::Target::Diff(index));
             let old = row.old.map_or(String::new(), |n| (n + 1).to_string());
             let new = row.new.map_or(String::new(), |n| (n + 1).to_string());
             let prefix = if row.kind == Kind::Header {

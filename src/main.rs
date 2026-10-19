@@ -18,8 +18,8 @@ use ratatui::{
     crossterm::{
         cursor::{SetCursorStyle, Show},
         event::{
-            self, DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste,
-            EnableFocusChange, Event,
+            self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
+            EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event,
         },
         execute,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -127,6 +127,7 @@ fn run() -> io::Result<()> {
     let mut editor = Editor::new(document);
     editor.theme = settings.theme;
     editor.settings = settings.editor;
+    editor.mouse.settings = settings.mouse;
     editor.lsp.config.installation.directory = config::lsp_directory();
     editor.lsp.config.installation.auto_install = settings.lsp.auto_install;
     for path in additional {
@@ -150,6 +151,9 @@ fn run() -> io::Result<()> {
         EnableBracketedPaste,
         EnableFocusChange
     )?;
+    if settings.mouse.enabled {
+        execute!(stdout(), EnableMouseCapture)?;
+    }
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
     let preparation = if settings.lsp.warmup && (path.is_none() || directory.is_some()) {
@@ -211,6 +215,8 @@ fn event_loop(
             || editor.review.busy
             || editor.lsp.pending
             || editor.lsp.completion_scheduled()
+            || editor.lsp.mouse_hover.scheduled()
+            || editor.mouse.dragging()
             || editor.lsp.installations.values().any(|state| state.busy)
             || editor.project_search.pending
             || editor.ai.pending
@@ -234,13 +240,27 @@ fn event_loop(
                     editor.paste(&text);
                     redraw = true;
                 }
-                Event::Resize(_, _) => redraw = true,
+                Event::Mouse(mouse) => {
+                    if let Some(mouse) = input::decode_mouse(mouse) {
+                        if splash && mouse.kind != input::MouseKind::Move {
+                            splash = false;
+                            // The splash has no source hit map yet.
+                            redraw = true;
+                        } else if !splash {
+                            redraw |= editor.handle_mouse(mouse);
+                        }
+                    }
+                }
+                Event::Resize(_, _) => {
+                    editor.cancel_mouse_interaction();
+                    redraw = true;
+                }
+                Event::FocusLost => redraw |= editor.cancel_mouse_interaction(),
                 Event::FocusGained => {
                     editor.check_external();
                     editor.refresh_git();
                     redraw = true;
                 }
-                _ => {}
             }
         }
     }
@@ -263,6 +283,7 @@ fn restore_terminal() -> io::Result<()> {
         Show,
         DisableBracketedPaste,
         DisableFocusChange,
+        DisableMouseCapture,
         LeaveAlternateScreen
     );
     let raw = disable_raw_mode();

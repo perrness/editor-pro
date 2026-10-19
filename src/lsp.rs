@@ -91,6 +91,9 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VirtualSource {
+    /// Server declaration text when the visible bytecode fallback has a different layout.
+    pub protocol_text: Option<Rope>,
+    pub protocol_language: Language,
     pub uri: String,
     pub key: ServerKey,
     pub epoch: u64,
@@ -467,6 +470,11 @@ pub fn supports_request(
             && params["textDocument"]["uri"]
                 .as_str()
                 .is_some_and(is_csharp_metadata_uri)
+    } else if method == "java/classFileContents" {
+        language == Language::Java
+            && params["uri"]
+                .as_str()
+                .is_some_and(|uri| crate::lsp_source::supports_uri(language, uri))
     } else {
         supports(capabilities, method)
     }

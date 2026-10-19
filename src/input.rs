@@ -1,4 +1,4 @@
-//! Terminal key decoding only. Editor commands do not depend on Crossterm.
+//! Terminal event decoding. Editor commands do not depend on Crossterm.
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,56 @@ pub enum Key {
     PageDown,
     BackTab,
     F1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Down,
+    Up,
+    Drag,
+    Move,
+    RightDown,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    pub column: u16,
+    pub row: u16,
+    pub control: bool,
+    pub shift: bool,
+}
+
+pub fn decode_mouse(event: ratatui::crossterm::event::MouseEvent) -> Option<Mouse> {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    if event
+        .modifiers
+        .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    Some(Mouse {
+        kind: match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => MouseKind::Down,
+            MouseEventKind::Up(MouseButton::Left) => MouseKind::Up,
+            MouseEventKind::Drag(MouseButton::Left) => MouseKind::Drag,
+            MouseEventKind::Down(MouseButton::Right) => MouseKind::RightDown,
+            MouseEventKind::Moved => MouseKind::Move,
+            MouseEventKind::ScrollUp => MouseKind::ScrollUp,
+            MouseEventKind::ScrollDown => MouseKind::ScrollDown,
+            MouseEventKind::ScrollLeft => MouseKind::ScrollLeft,
+            MouseEventKind::ScrollRight => MouseKind::ScrollRight,
+            _ => return None,
+        },
+        column: event.column,
+        row: event.row,
+        control: event.modifiers.contains(KeyModifiers::CONTROL),
+        shift: event.modifiers.contains(KeyModifiers::SHIFT),
+    })
 }
 
 pub fn decode(event: KeyEvent) -> Option<Key> {

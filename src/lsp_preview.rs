@@ -74,10 +74,23 @@ pub(super) fn select(editor: &Editor, panel: &mut Panel) {
             .map_or_else(
                 || Err(io::Error::other(row.detail.clone())),
                 |doc| {
+                    let position = editor
+                        .lsp
+                        .virtual_sources
+                        .get(&doc.buffer.instance())
+                        .and_then(|source| source.protocol_text.as_ref())
+                        .map_or(Ok(*position), |original| {
+                            crate::lsp_source::map_position(original, doc.buffer.text(), *position)
+                        })?;
+                    let syntax_path = match doc.syntax.language {
+                        "Java" => "source.java",
+                        "Kotlin" => "source.kt",
+                        _ => "source.cs",
+                    };
                     Source::new(
                         doc.buffer.text().clone(),
-                        Path::new("source.cs"),
-                        *position,
+                        Path::new(syntax_path),
+                        position,
                         None,
                         "read only",
                     )

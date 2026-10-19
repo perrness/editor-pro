@@ -11,6 +11,9 @@ fn missing_config_uses_defaults_without_creating_directories() {
     assert!(config::load(&path).unwrap().lsp.auto_install);
     assert!(config::load(&path).unwrap().lsp.warmup);
     assert!(!config::load(&path).unwrap().editor.relative_line_numbers);
+    let mouse = config::load(&path).unwrap().mouse;
+    assert!(mouse.enabled && mouse.hover_enabled);
+    assert_eq!(mouse.hover_delay_ms, 400);
     assert!(!path.parent().unwrap().exists());
 }
 
@@ -42,6 +45,11 @@ fn invalid_settings_report_the_path_without_overwriting_them() {
         r#"{"editor":{"relative_line_numbers":null}}"#,
         r#"{"editor":{"relative_numbers":true}}"#,
         r#"{"editor":false}"#,
+        r#"{"mouse":{"enabled":"true"}}"#,
+        r#"{"mouse":{"hover_enabled":null}}"#,
+        r#"{"mouse":{"hover_delay_ms":-1}}"#,
+        r#"{"mouse":{"hover_delay_ms":1.5}}"#,
+        r#"{"mouse":{"unknown":true}}"#,
     ] {
         fs::write(&path, text).unwrap();
         let error = config::load(&path).unwrap_err();
@@ -57,6 +65,34 @@ fn invalid_settings_report_the_path_without_overwriting_them() {
             .contains("64 KiB")
     );
     assert!(config::load(dir.path()).is_err());
+}
+
+#[test]
+fn mouse_settings_are_independent_optional_and_preserve_config_bytes() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    for text in [
+        r#"{"mouse":{"enabled":false}}"#,
+        r#"{"mouse":{"hover_enabled":false}}"#,
+        r#"{"mouse":{"hover_delay_ms":0}}"#,
+    ] {
+        fs::write(&path, text).unwrap();
+        let settings = config::load(&path).unwrap();
+        assert_eq!(settings.mouse.enabled, !text.contains("\"enabled\""));
+        assert_eq!(
+            settings.mouse.hover_enabled,
+            !text.contains("\"hover_enabled\"")
+        );
+        assert_eq!(
+            settings.mouse.hover_delay_ms,
+            if text.contains("hover_delay_ms") {
+                0
+            } else {
+                400
+            }
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
 }
 
 #[test]

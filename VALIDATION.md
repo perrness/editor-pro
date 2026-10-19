@@ -2462,6 +2462,200 @@ The v0.2.19 tag is preserved; v0.2.20 reruns the existing release gates with the
 corrected harness. Logs are `/tmp/editor-pro-v0.2.20-{prepare,diagnostics}.log`;
 the corrected capture is `/tmp/editor-pro-v0.2.20-terminal/lsp-diagnostics.ansi`.
 
+## Issue 27 — JVM dependency sources and bytecode
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0, 2026-10-19. Java `jdt://contents/`
+and official Kotlin `jar:`/`jrt:` targets now share read-only virtual buffers,
+history, syntax selection, guarded navigation and bounded content caches. JDT LS
+prefers its source attachments and uses bundled FernFlower when source is missing.
+Kotlin's declaration-only responses trigger checksum-pinned Vineflower 1.12.0 slim;
+the resulting Java includes actual method bodies for Java and Kotlin bytecode.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed. |
+| `cargo test --locked --all-targets` | 437 tests passed; 17 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| Python unittest discovery in `tools` and `tools/kotlin-lsp` | Six and eight tests passed. |
+| `python3 tools/terminal_smoke.py` | All 71 PTY sessions passed against the final debug build. |
+| `cargo test --locked --test lsp_real dependency_sources_and_bytecode -- --ignored --nocapture --test-threads=1` | All four Java/Kotlin Maven/Gradle fixtures passed in 174.36 seconds, with the Kotlin navigation limit below recorded separately. |
+
+The real fixtures use JDT LS 1.60.0, official Kotlin LSP 263.6379.0, JDK 21/25,
+Maven and Gradle 9.1.0. They compile a Java/Kotlin dependency outside the imported
+project and expose only its binary JAR and a partial sources JAR. A content-derived
+artifact version prevents stale build-tool caches from hiding fixture changes.
+They require source-only comments in attached Java/Kotlin source and actual
+`JAVA_BYTECODE`/`KOTLIN_BYTECODE` strings in decompiled method bodies, precise class
+and Java method targets, read-only guards, buffer reuse, history and unchanged
+project bytes. Each run uses fresh temporary projects with cached server/build
+artifacts; no user project is opened.
+
+JDT navigates from decompiled `HashMap` to `AbstractMap`. Kotlin navigates from
+attached Kotlin source to a qualified JDK type. The pinned Kotlin server returns
+no definition for that type from a compiled Kotlin declaration view; this is
+recorded as `server_returned_no_result`, not successful navigation. An earlier
+Java-in-Kotlin probe also returned no definition for `HashMap`'s `AbstractMap`.
+Those cases preserve source/history. Kotlin built-in declaration documents without
+a JVM class report an unavailable target instead of pretending placeholders are
+full decompilation. The host lacks JDK source archives, so `HashMap` uses bytecode;
+its large Kotlin/Vineflower output can hit the existing syntax parse budget.
+Small dependency sources require successful highlighting. Maximum observed editor
+ticks were 50 ms for Java and 253 ms for Kotlin; decompiler execution is off-thread.
+
+Protocol regressions cover Unicode/CRLF and opaque URIs, single/multiple/lazy
+locations, workspace symbols and call hierarchy, missing/invalid/oversized content,
+unsupported commands, timeouts, cancellation, stale sessions, unauthorized edits,
+refresh in place and backing-free virtual sources. Cache tests distinguish binary
+replacement, source downloads, import/build invalidation and ordinary indexing;
+unit checks cover expiry, memory bounds, UTF-16 declaration mapping, absent built-in
+bytecode and missing/corrupt decompiler artifacts. Existing local and C# navigation
+remain covered by the full suite.
+
+Reports are `/tmp/editor-pro-issue27-reports/*dependencies*.json`. Logs are
+`/tmp/editor-pro-issue27-{real-complete,rust-verified,clippy-complete,build-verified,python-final,smoke-verified}.log`.
+Terminal captures are `/tmp/editor-pro-issue27-terminal/jvm-java-decompiled.ansi`
+and `jvm-kotlin-original.ansi` in the same directory.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Earlier overlapping runs
+were interrupted by a stalled validation environment and are not acceptance
+evidence; the real-server cases above ran serially. Commands required normal
+process access because the sandbox could not initialize its loopback interface.
+macOS, hosted CI, minimum Rust 1.88 and physical-terminal appearance were not
+tested here. No release version or workflow changed.
+
+## Issue 28 — Mouse interaction
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0, 2026-10-19, from `39445de`.
+Mouse capture now supports cursor placement, vertical/horizontal wheel scrolling,
+inclusive Visual/VisualLine drag selections with edge scrolling, Shift-click,
+existing list/menu actions and Ctrl-click definition navigation. The existing
+buffer list and its statusline entry are clickable; there is no separate tab strip.
+JSON settings control capture, hover and its default 400-ms delay.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 439 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Seven release/harness tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| `EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue28-captures python3 tools/terminal_smoke.py` | All 72 PTY sessions passed. |
+
+Regressions cover rendered hit regions and popup precedence, buffer/file/tree
+navigation, paired and inline diff coordinates/actions, diagnostic locations,
+completion acceptance and preview approval boundaries. Source checks cover tab
+stops, combining marks, emoji/CJK widths, CRLF, nonzero origins and scroll offsets,
+tiny terminals, multiline and linewise selections, Insert undo boundaries, pending
+operators, preserved prompts, edge-drag cancellation and Help's retained viewport.
+Unsupported buttons/modifiers and disabled capture leave keyboard editing intact.
+
+The protocol double verifies pointer UTF-16 positions independently of the cursor,
+debouncing, duplicate suppression, delayed initialization, quiet unsupported/timeout
+handling, definition history, and cancellation after pointer movement, edits,
+buffer switches, Help, resize and server restart. Hover content wraps on grapheme
+boundaries and neutralizes terminal control characters. These deterministic tests
+do not establish real-server or physical-terminal compatibility.
+
+Three new PTY scenarios send SGR mouse events through the real binary, check exact
+saved Unicode/CRLF bytes, exercise hover and Ctrl-click/history, and verify that
+disabled mouse support never enables capture. The harness checks that every
+enabled mouse tracking mode is disabled on exit; its negative fixture detects a
+missing cleanup sequence. Captures are `mouse-selection.ansi` and `mouse-hover.ansi`
+under `/tmp/editor-pro-issue28-captures`; `mouse-hover.txt` and `mouse-hover.svg`
+reconstruct the first complete hover frame from that capture.
+
+A disposable debug-build dispatch probe processed 10,000 pointer movements across
+a 100-line Kotlin fixture in **232.393 ms**, with zero redraw requests and an
+unchanged source cursor. This measures event dispatch only, excluding terminal
+transport, rendering and language-server work; it is not a physical input-latency
+guarantee. Unsupported/oversized documents skip hover coordinate materialization.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands needed normal
+process access because the sandbox could not initialize its loopback interface.
+Logs are `/tmp/editor-pro-issue28-{clippy,rust-tests,build,terminal-tests}.log`.
+macOS, minimum Rust 1.88, physical terminals/multiplexers, real language servers
+and AI providers were not tested locally. No dependencies, version or workflows
+changed.
+
+## Issue 27 integration with main
+
+After merging main's mouse support (`2cddd65`) into the JVM navigation change
+(`d3a3893`), the combined tree was validated on Linux x86_64 on 2026-10-19:
+
+- `cargo fmt --check` and `git diff --check`: passed.
+- `cargo clippy --locked --all-targets -- -D warnings`: passed.
+- `cargo test --locked --all-targets`: 457 passed, 17 opt-in tests ignored.
+- `cargo build --locked`: passed.
+- Python unittest discovery in `tools` and `tools/kotlin-lsp`: seven and eight passed.
+- `python3 tools/terminal_smoke.py`: all 74 PTY sessions passed, including JVM
+  source navigation, mouse navigation/hover and terminal cleanup.
+
+The merge preserves both issue-specific validation records above. The four real
+JVM server fixtures passed before integration; they were not repeated for the
+mouse merge. Mouse hover and Ctrl-click use the shared virtual-source request
+mapping and navigation guards. Local Cargo environment settings remain as listed
+above. Logs are `/tmp/editor-pro-issue27-integrated-{clippy,tests,build,smoke}.log`;
+captures are under `/tmp/editor-pro-issue27-integrated-terminal`.
+Hosted Ubuntu/macOS CI will run after the authorized push. No release is part of
+this integration.
+
+## Issue #26 — Wait for typing to pause before showing diagnostics
+
+After a document edit, source messages, the cursor-line panel, gutter marks and
+the statusline diagnostic count wait for 750 ms without further text changes.
+Each open LSP document has its own deadline. An idle tick restores the display;
+the existing poll interval can add up to 200 ms. Initial reports and explicit
+diagnostic commands remain immediate, and synchronization/completion keep their
+existing timing and freshness guards.
+
+Two deterministic clock tests cover deadline reset/expiry, redraw, independent
+documents, saving, close/reopen, reload and save-as. Two integration tests cover
+push/pull/versionless reports, hidden and restored rendering, explicit navigation,
+stale reports, empty replacements, undo, Unicode/CRLF and unchanged disk bytes.
+The terminal diagnostic scenario now types and deletes, then waits for messages
+to return without another keypress or resize before continuing its save checks.
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0:
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --lib --test lsp diagnostic -- --nocapture` | 18 diagnostic-focused tests passed. |
+| `cargo test --locked --all-targets` | 423 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Six release/harness tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| `python3 tools/terminal_smoke.py` | All 69 PTY sessions passed. |
+
+Terminal capture: `/tmp/editor-pro-issue26-captures/lsp-diagnostics.ansi`.
+Rust and terminal logs: `/tmp/editor-pro-issue26-{clippy,tests,build,terminal}.log`.
+Native macOS, physical-terminal appearance and real language servers were not
+tested locally; protocol doubles do not establish real-server compatibility.
+
+### Issue #26 integration with main
+
+Merged main's mouse support and JVM dependency navigation (`b0dea27`) into the
+diagnostic change (`557d429`) on the allocated branch. The only merge conflict was
+in this log; both prior validation records are preserved. The combined tree passed
+on Linux x86_64 with Rust/Cargo 1.99.0:
+
+- `cargo fmt --check`, `git diff --check` and Clippy with `-D warnings`: passed.
+- `cargo test --locked --all-targets`: 461 passed; 17 opt-in tests ignored.
+- `cargo build --locked`: passed.
+- Python unittest discovery in `tools` and `tools/kotlin-lsp`: seven and eight passed.
+- `python3 tools/terminal_smoke.py`: all 74 PTY sessions passed, including mouse,
+  JVM navigation and the diagnostic idle redraw regression.
+
+Logs are `/tmp/editor-pro-issue26-integrated-{clippy,tests,build,python,terminal}.log`;
+captures are under `/tmp/editor-pro-issue26-integrated-captures`.
+Native macOS and real language servers were not retested locally. This integration
+does not change the package version or release workflow.
+
 ## Issue 25 — Reference source previews
 
 Validated on Linux x86_64, 2026-10-19.

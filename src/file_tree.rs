@@ -270,6 +270,19 @@ impl Editor {
     fn tree_forget(&mut self, path: &Path) {
         self.navigation.forget_tree_path(path);
     }
+    pub(crate) fn click_tree(&mut self, index: usize) {
+        if self.tree.prompt.is_some() || index >= self.tree.entries.len() {
+            return;
+        }
+        self.tree.selected = index;
+        self.tree.leader = 0;
+        self.tree_key(if self.tree.entries[index].expanded {
+            Key::Left
+        } else {
+            Key::Enter
+        });
+    }
+
     pub(crate) fn tree_key(&mut self, key: Key) {
         if let Some((op, path, mut value)) = self.tree.prompt.take() {
             match key {
@@ -446,6 +459,10 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
         theme,
     );
     for (row, entry) in tree.entries.iter().skip(tree.top).take(height).enumerate() {
+        editor.mouse.map.add(
+            Rect::new(area.x, area.y + 1 + row as u16, area.width, 1),
+            crate::mouse::Target::Tree(tree.top + row),
+        );
         let selected = tree.top + row == tree.selected;
         let row_style = if selected {
             style.bg(theme.selection).add_modifier(Modifier::BOLD)
