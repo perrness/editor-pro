@@ -2524,3 +2524,81 @@ evidence; the real-server cases above ran serially. Commands required normal
 process access because the sandbox could not initialize its loopback interface.
 macOS, hosted CI, minimum Rust 1.88 and physical-terminal appearance were not
 tested here. No release version or workflow changed.
+
+## Issue 28 — Mouse interaction
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0, 2026-10-19, from `39445de`.
+Mouse capture now supports cursor placement, vertical/horizontal wheel scrolling,
+inclusive Visual/VisualLine drag selections with edge scrolling, Shift-click,
+existing list/menu actions and Ctrl-click definition navigation. The existing
+buffer list and its statusline entry are clickable; there is no separate tab strip.
+JSON settings control capture, hover and its default 400-ms delay.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --all-targets` | 439 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Seven release/harness tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| `EDITOR_PRO_SMOKE_CAPTURE_DIR=/tmp/editor-pro-issue28-captures python3 tools/terminal_smoke.py` | All 72 PTY sessions passed. |
+
+Regressions cover rendered hit regions and popup precedence, buffer/file/tree
+navigation, paired and inline diff coordinates/actions, diagnostic locations,
+completion acceptance and preview approval boundaries. Source checks cover tab
+stops, combining marks, emoji/CJK widths, CRLF, nonzero origins and scroll offsets,
+tiny terminals, multiline and linewise selections, Insert undo boundaries, pending
+operators, preserved prompts, edge-drag cancellation and Help's retained viewport.
+Unsupported buttons/modifiers and disabled capture leave keyboard editing intact.
+
+The protocol double verifies pointer UTF-16 positions independently of the cursor,
+debouncing, duplicate suppression, delayed initialization, quiet unsupported/timeout
+handling, definition history, and cancellation after pointer movement, edits,
+buffer switches, Help, resize and server restart. Hover content wraps on grapheme
+boundaries and neutralizes terminal control characters. These deterministic tests
+do not establish real-server or physical-terminal compatibility.
+
+Three new PTY scenarios send SGR mouse events through the real binary, check exact
+saved Unicode/CRLF bytes, exercise hover and Ctrl-click/history, and verify that
+disabled mouse support never enables capture. The harness checks that every
+enabled mouse tracking mode is disabled on exit; its negative fixture detects a
+missing cleanup sequence. Captures are `mouse-selection.ansi` and `mouse-hover.ansi`
+under `/tmp/editor-pro-issue28-captures`; `mouse-hover.txt` and `mouse-hover.svg`
+reconstruct the first complete hover frame from that capture.
+
+A disposable debug-build dispatch probe processed 10,000 pointer movements across
+a 100-line Kotlin fixture in **232.393 ms**, with zero redraw requests and an
+unchanged source cursor. This measures event dispatch only, excluding terminal
+transport, rendering and language-server work; it is not a physical input-latency
+guarantee. Unsupported/oversized documents skip hover coordinate materialization.
+
+Cargo used `CARGO_NET_OFFLINE=true`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0`. Commands needed normal
+process access because the sandbox could not initialize its loopback interface.
+Logs are `/tmp/editor-pro-issue28-{clippy,rust-tests,build,terminal-tests}.log`.
+macOS, minimum Rust 1.88, physical terminals/multiplexers, real language servers
+and AI providers were not tested locally. No dependencies, version or workflows
+changed.
+
+## Issue 27 integration with main
+
+After merging main's mouse support (`2cddd65`) into the JVM navigation change
+(`d3a3893`), the combined tree was validated on Linux x86_64 on 2026-10-19:
+
+- `cargo fmt --check` and `git diff --check`: passed.
+- `cargo clippy --locked --all-targets -- -D warnings`: passed.
+- `cargo test --locked --all-targets`: 457 passed, 17 opt-in tests ignored.
+- `cargo build --locked`: passed.
+- Python unittest discovery in `tools` and `tools/kotlin-lsp`: seven and eight passed.
+- `python3 tools/terminal_smoke.py`: all 74 PTY sessions passed, including JVM
+  source navigation, mouse navigation/hover and terminal cleanup.
+
+The merge preserves both issue-specific validation records above. The four real
+JVM server fixtures passed before integration; they were not repeated for the
+mouse merge. Mouse hover and Ctrl-click use the shared virtual-source request
+mapping and navigation guards. Local Cargo environment settings remain as listed
+above. Logs are `/tmp/editor-pro-issue27-integrated-{clippy,tests,build,smoke}.log`;
+captures are under `/tmp/editor-pro-issue27-integrated-terminal`.
+Hosted Ubuntu/macOS CI will run after the authorized push. No release is part of
+this integration.

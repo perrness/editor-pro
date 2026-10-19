@@ -23,6 +23,7 @@ mod lsp_source;
 pub mod lsp_view;
 pub mod lsp_worker;
 pub mod motion;
+pub mod mouse;
 pub mod navigation;
 pub mod picker;
 pub mod project_search;

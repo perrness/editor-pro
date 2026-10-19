@@ -56,7 +56,8 @@ Create the directory and file yourself when you want a persistent setting:
 
 ```json
 {
-  "theme": "tokyo-night"
+  "theme": "tokyo-night",
+  "mouse": { "enabled": true, "hover_enabled": true, "hover_delay_ms": 400 }
 }
 ```
 
@@ -65,6 +66,9 @@ use defaults. Invalid JSON, unknown fields/themes and files over 64 KiB fail
 before terminal setup and report the config path. `--help` and `--version` work
 even with invalid configuration. `:theme` changes only the current session.
 No configuration is read from beside the executable or from a project checkout.
+Mouse capture and hover default to enabled. Set `mouse.enabled` to `false` for
+native terminal mouse behavior, or adjust `mouse.hover_delay_ms` (a nonnegative
+integer in milliseconds). See [mouse interactions](../README.md#mouse-interaction).
 The existing environment variables for optional language/AI services still apply.
 
 ## Homebrew installation and updates

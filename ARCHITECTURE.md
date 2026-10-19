@@ -14,6 +14,7 @@ plugin API, generic backend trait, event bus, dependency injection, or GUI layer
 main.rs      terminal lifetime, CLI, event loop, focus notifications and worker polling
 config.rs    optional bounded user settings, XDG configuration and native data paths
 input.rs     Crossterm events -> terminal-independent Key values
+mouse.rs     rendered hit regions, source coordinates, mouse dispatch and drag scrolling
 help.rs      shared shortcut metadata, bounded search and read-only help overlay
 editor.rs    editing modes, pending counts/operators, prompts, unnamed register
 indent.rs    bounded local indentation inference and syntax-aware newline plans
@@ -44,6 +45,7 @@ lsp_install.rs pinned per-user server provisioning, runtime selection and instal
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
 lsp_completion.rs Insert-mode completion scheduling and popup (LSP view child module)
+lsp_hover.rs  pointer hover scheduling, request identity and floating popup (LSP view child module)
 ai.rs          bounded captured context, structured answers and conversation schema
 ai_worker.rs   optional Codex exec lifecycle, JSONL progress and transcript I/O jobs
 ai_store.rs    private transcript loading, atomic persistence and conflict checks
@@ -85,6 +87,32 @@ keys, context and descriptions case-insensitively with a 256-byte query cap and
 grapheme Backspace. Wrapped rows are rebuilt only when the query, category or
 terminal width changes, and scroll independently even in a one-cell terminal.
 Opening/searching/rendering help performs no document edits or external work.
+
+## Mouse interaction
+
+Mouse events are decoded at the input boundary and dispatched by `mouse.rs`.
+Each renderer registers the regions it actually displayed in a bounded per-frame
+hit map; later regions take precedence, so popups cannot click through to source.
+Source geometry captures the gutter and both viewport offsets. It reuses the
+shared cell-to-scalar/grapheme rules, including clipped tabs, wide characters and
+CRLF. Mouse selection uses the existing Visual/VisualLine anchor and operators.
+Dragging at an edge advances at most once per 50-ms tick without blocking input.
+Wheel scrolling temporarily detaches the source viewport from the cursor;
+keyboard input restores cursor following. Resize/focus loss cancels the gesture.
+Contextual clicks use existing guarded navigation and actions; they do not submit
+text prompts or approve workspace-edit previews. No separate tab UI is added.
+
+Pointer hover has one debounced target and one bounded popup. Its identity contains
+the buffer instance/generation, cursor, mode, viewport and a lexical symbol range.
+Movement within that symbol shares the request; movement elsewhere cancels it.
+The request uses the pointer's UTF-16 position while retaining the actual editing
+cursor in the ordinary LSP context guards. The existing worker handles transport,
+cancellation, capability checks and deadlines. Mouse context IDs additionally
+reject late replies after cancellation. Completion and explicit requests retain
+priority; passive failures do not replace editing messages. Content is sanitized
+and wrapped on grapheme boundaries using the existing literal text styling.
+Mouse capture uses Crossterm setup/cleanup, including partial initialization and
+panic recovery, and is never enabled when the JSON mouse setting is disabled.
 
 ## Dependency choices
 

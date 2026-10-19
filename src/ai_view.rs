@@ -1212,6 +1212,10 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
         ai.top = ai.selected + 1 - height;
     }
     for (i, row) in ai.rows.iter().skip(ai.top).take(height).enumerate() {
+        editor.mouse.map.add(
+            Rect::new(area.x, area.y + 1 + i as u16, area.width, 1),
+            crate::mouse::Target::Ai(ai.top + i),
+        );
         frame.render_widget(
             Paragraph::new(crate::text::visible_text(
                 &row.text,

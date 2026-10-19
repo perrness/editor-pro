@@ -470,6 +470,72 @@ fn draw(editor: &mut Editor, width: u16, height: u16) -> String {
         .map(|c| c.symbol())
         .collect()
 }
+
+#[test]
+fn mouse_selects_changed_files_paired_and_inline_diff_rows_and_existing_actions() {
+    use editor_pro::input::{Mouse, MouseKind};
+    let click = |e: &mut Editor, column, row| {
+        e.handle_mouse(Mouse {
+            kind: MouseKind::Down,
+            column,
+            row,
+            control: false,
+            shift: false,
+        });
+    };
+    let r = Repo::new();
+    r.write("a", "first\nold\nlast\n");
+    r.commit();
+    r.write("a", "first\nnew\nlast\n");
+    let index_bytes = fs::read(r.path(".git/index")).unwrap();
+    let mut e = Editor::new(Document::open(&r.path("a")).unwrap());
+    e.execute_command("changes").unwrap();
+    settle_editor(&mut e);
+    draw(&mut e, 140, 20);
+    click(&mut e, 10, 3);
+    assert_eq!(e.view, View::Diff);
+    settle_editor(&mut e);
+    e.git.diff_view.as_mut().unwrap().paired = true;
+    let screen = draw(&mut e, 140, 20);
+    let (pair_index, old, new) = e
+        .git
+        .diff()
+        .unwrap()
+        .pairs
+        .iter()
+        .enumerate()
+        .find_map(|(i, pair)| {
+            let old = pair.left?;
+            let new = pair.right?;
+            (old != new && e.git.diff().unwrap().rows[old].kind == Kind::Delete)
+                .then_some((i, old, new))
+        })
+        .unwrap();
+    click(&mut e, 5, 4 + pair_index as u16);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().selected, old);
+    draw(&mut e, 140, 20);
+    click(&mut e, 100, 4 + pair_index as u16);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().selected, new);
+    let footer: String = screen.chars().skip(18 * 140).take(140).collect();
+    let layout = footer.find("Tab layout").unwrap();
+    // Convert a byte index in the visible Unicode footer to terminal cells.
+    let column = editor_pro::text::display_column(&footer[..layout], usize::MAX) as u16;
+    click(&mut e, column, 18);
+    assert!(!e.git.diff_view.as_ref().unwrap().paired);
+    draw(&mut e, 140, 20);
+    click(&mut e, 20, 4 + old as u16);
+    assert_eq!(e.git.diff_view.as_ref().unwrap().selected, old);
+    let screen = draw(&mut e, 140, 20);
+    let footer: String = screen.chars().skip(18 * 140).take(140).collect();
+    let source = footer.find("Enter source").unwrap();
+    let column = editor_pro::text::display_column(&footer[..source], usize::MAX) as u16;
+    click(&mut e, column, 18);
+    assert_eq!(e.view, View::Editing);
+    assert_eq!(e.document.buffer.position().0, 1);
+    assert_eq!(e.document.buffer.text().to_string(), "first\nnew\nlast\n");
+    assert!(!e.document.buffer.is_modified());
+    assert_eq!(fs::read(r.path(".git/index")).unwrap(), index_bytes);
+}
 fn status_line(editor: &mut Editor, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
     terminal

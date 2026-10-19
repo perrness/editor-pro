@@ -570,6 +570,10 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
     }
     if let Some(results) = &state.results {
         for (row, hit) in results.hits.iter().skip(state.top).take(height).enumerate() {
+            editor.mouse.map.add(
+                Rect::new(area.x, area.y + row as u16 + 1, area.width, 1),
+                crate::mouse::Target::Search(state.top + row),
+            );
             let label = format!(
                 "{}:{}:{} {}",
                 crate::git::display_path(hit.path.strip_prefix(&results.root).unwrap_or(&hit.path)),
