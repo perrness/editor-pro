@@ -74,7 +74,7 @@ const NORMAL_COMMANDS: &[CommandBinding] = &[
             "Navigation / LSP",
             "Normal",
             "gr",
-            "Find references; jump to one location or choose among results. Requires a ready language server.",
+            "Find references; jump to one location or choose with a source preview. Requires a ready language server.",
         ),
     },
     CommandBinding {
@@ -381,7 +381,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Navigation / LSP",
         "Command",
         ":Definition / :References",
-        "List definition/reference locations from the language server; Enter opens a result.",
+        "List definition/reference locations from the language server; references include a source preview. Enter opens a result.",
     ),
     entry(
         "Navigation / LSP",

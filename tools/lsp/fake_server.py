@@ -355,6 +355,8 @@ while True:
             continue
         uri = root + "/Other.kt"
         start = 5 if args.scenario == "navigation-unicode" else 0
+        if args.scenario == "references-long":
+            start = 240
         if args.scenario == "navigation-virtual":
             uri = "jdt://decompiled/Library"
         elif args.scenario == "navigation-missing":
@@ -368,6 +370,12 @@ while True:
         if args.scenario == "navigation-multiple":
             result = [{"uri": root + "/Main.kt", "range": span(4, 5)},
                       {"uri": uri, "range": span(4, 5)}]
+        elif args.scenario == "references-preview":
+            result = [{"uri": root + "/Main.kt", "range": span(4, 9)},
+                      {"uri": uri, "range": {"start": {"line": 8, "character": 8},
+                                             "end": {"line": 8, "character": 14}}},
+                      {"uri": uri, "range": {"start": {"line": 18, "character": 0},
+                                             "end": {"line": 18, "character": 6}}}]
         elif args.scenario == "navigation-empty":
             result = None if method == "textDocument/definition" else []
         if args.scenario == "navigation-slow":

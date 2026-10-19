@@ -43,6 +43,7 @@ lsp_install.rs pinned per-user server provisioning, runtime selection and instal
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
 lsp_completion.rs Insert-mode completion scheduling and popup (LSP view child module)
+lsp_preview.rs read-only selected-reference snapshots and split source preview (LSP view child module)
 ai.rs          bounded captured context, structured answers and conversation schema
 ai_worker.rs   optional Codex exec lifecycle, JSONL progress and transcript I/O jobs
 ai_store.rs    private transcript loading, atomic persistence and conflict checks
@@ -775,6 +776,20 @@ Multiple results use the contextual chooser; explicit `:Definition` and
 `:References` retain their lists. Both paths use the same guarded location jump
 and session navigation history. The request marker is subject to the existing
 serial, session, cursor and document guards, so obsolete replies cannot navigate.
+Reference lists add a half-width source preview at 50 columns/five rows or larger.
+Selection captures one Rope snapshot (at most 2 MiB), preferring open buffers to
+the ordinary bounded, guarded file loader. Loading and syntax initialization run
+only when accepting results or changing selection; rendering never reads files
+or opens buffers. The preview has its own syntax state and horizontal offset,
+retains UTF-16 range validation, and shares grapheme/cell rendering with source.
+It centers the reference line and marks its range without moving the editor's
+cursor/viewport or consuming its syntax edits, undo groups or navigation history.
+Paths strip the nearest Git ancestor (including worktree .git files), falling back
+to the requesting server's project root; out-of-root paths stay absolute.
+Disk previews are labelled snapshots and refresh on reselection. Unavailable
+targets remain selectable with an explanation. Generated-source previews reuse
+only an existing current-session virtual buffer; Enter retains the guarded fetch
+path below. Small terminals retain the list, and other LSP panels keep their layout.
 C# definition/reference targets using `csharp:/` are fetched with `csharp/metadata`
 on the same worker, with the existing serial, epoch, document, cursor, cancellation
 and deadline guards. A null/invalid/oversized response or invalid UTF-16 position

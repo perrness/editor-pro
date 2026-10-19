@@ -2461,3 +2461,51 @@ build/version check, formatting and whitespace checks.
 The v0.2.19 tag is preserved; v0.2.20 reruns the existing release gates with the
 corrected harness. Logs are `/tmp/editor-pro-v0.2.20-{prepare,diagnostics}.log`;
 the corrected capture is `/tmp/editor-pro-v0.2.20-terminal/lsp-diagnostics.ansi`.
+
+## Issue 25 — Reference source previews
+
+Validated on Linux x86_64, 2026-10-19.
+[Issue #25](https://github.com/perrness/editor-pro/issues/25) adds an evenly split
+references view: repository-relative locations on the left, syntax-colored source
+with line numbers and the selected usage highlighted on the right. Selection
+preserves the source cursor, viewport, buffers, undo and navigation history.
+Enter retains ordinary guarded navigation; Escape returns to the origin.
+Single-result `gr` still jumps directly, while `:References` always offers a list.
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --offline --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --offline --all-targets` | 425 passed; 13 opt-in tests ignored. |
+| `cargo build --locked --offline` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Six release/harness tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| Focused reference-preview PTY scenario | Passed. |
+| `python3 tools/terminal_smoke.py /tmp/editor-pro-issue25-target/debug/editor-pro` | All 70 PTY sessions passed. |
+
+Six new Rust regressions cover the split layout, context before/after a usage,
+syntax and range colors, tabs, emoji, combining characters, wide text and CRLF,
+control sanitization, multiple usages in one file, long-line horizontal scrolling,
+unsaved target reuse and undo, narrow/one-cell resizing, source and history
+preservation, missing/binary/invalid UTF-8/oversized targets, invalid UTF-16
+positions, cached disk snapshots, nested project paths below a worktree root,
+and supported/unsupported virtual source previews. Existing asynchronous-result,
+navigation, completion and rendering suites also passed.
+
+The added PTY scenario exercises a nested Kotlin project, selection, preview
+context, narrow resizing, cancellation, Enter and Ctrl-o, and checks exact CRLF
+file bytes and terminal restoration. Navigation assertions observe protocol
+didOpen and cursor positions because incremental terminal output may omit
+unchanged letters in status messages. Its capture is
+`/tmp/editor-pro-issue25-terminal/references-preview.ansi`; a readable SVG and
+text reconstruction are in the same directory as `references-preview.svg` and
+`references-preview.txt`.
+
+The first full link exhausted the environment's available disk space. Only this
+task's temporary build artifacts were cleaned; the successful full run used
+`CARGO_TARGET_DIR=/tmp/editor-pro-issue25-target`, disabled dev/test debug info
+and incremental compilation, stripped executable symbols, and two build jobs.
+Logs are `/tmp/editor-pro-issue25-{clippy,rust-tests,build,python,terminal-tests}.log`.
+Commands needed normal process access because the sandbox could not initialize
+its loopback interface. macOS, hosted CI, physical terminals and real language
+servers were not tested locally. No release version or workflow changed.

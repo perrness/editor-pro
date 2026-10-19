@@ -594,6 +594,53 @@ def run_lsp_warmup_sessions(binary, directory, resize, capture_dir=None):
             (Path(capture_dir) / f"lsp-warmup-{name}.ansi").write_bytes(output)
 
 
+def run_references_preview_session(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "references preview"
+    project = root / "module"
+    project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (project / "pom.xml").write_text("<project/>")
+    source = project / "Main.kt"
+    original = b"bad value\r\n"
+    source.write_bytes(original)
+    target = project / "Other.kt"
+    lines = [f"// context {i}" for i in range(26)]
+    lines[7:10] = ["fun caller() {", "\t😀 é界 target(value)", "  // after first usage"]
+    lines[18] = "target(second)"
+    target_bytes = "\r\n".join(lines).encode()
+    target.write_bytes(target_bytes)
+    log = project / "protocol.jsonl"
+    fake = Path(__file__).parent / "lsp" / "fake_server.py"
+    environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+        sys.executable, str(fake.resolve()), "--log", str(log),
+        "--scenario", "references-preview",
+    ])}
+    def ready():
+        return log.exists() and '"method": "textDocument/didOpen"' in log.read_text()
+    def target_opened():
+        return any(
+            m.get("method") == "textDocument/didOpen"
+            and m["params"]["textDocument"]["uri"] == target.resolve().as_uri()
+            for m in map(json.loads, log.read_text().splitlines())
+        )
+    output = run_session(binary, source, [
+        (ready, 10), b"wgr", (b"references", 10), (b"Preview", 10), resize(24, 100),
+        b"j", (b"disk snapshot", 10), (b"caller", 10), resize(24, 101),
+        resize(3, 1), resize(16, 49), (b"widen", 10), resize(24, 100),
+        b"G", resize(24, 101), (b"module/Other.kt:19:1", 10),
+        b"\x1b", b"gr", (b"Preview", 10), resize(24, 100),
+        # Ratatui can omit unchanged letters in status-message deltas. Observe
+        # the opened document and actual cursor, not a contiguous raw message.
+        b"G\r", (target_opened, 10), (b"\x1b[19;5H", 10), resize(24, 101),
+        b"\x0f", (b"\x1b[1;8H", 10), resize(24, 100), b":q\r",
+    ], original, environment)
+    assert target.read_bytes() == target_bytes
+    messages = [json.loads(line) for line in log.read_text().splitlines()]
+    assert sum(m.get("method") == "textDocument/references" for m in messages) == 2
+    if capture_dir:
+        (Path(capture_dir) / "references-preview.ansi").write_bytes(output)
+
+
 def run_diagnostic_session(binary, directory, resize, capture_dir=None):
     root = Path(directory) / "diagnostic messages"
     root.mkdir()
@@ -1217,13 +1264,14 @@ def main():
         run_file_tree_session(binary, directory, resize, capture_dir)
         run_colorful_ui_sessions(binary, directory, resize, capture_dir)
         run_lsp_warmup_sessions(binary, directory, resize, capture_dir)
+        run_references_preview_session(binary, directory, resize, capture_dir)
         run_diagnostic_session(binary, directory, resize, capture_dir)
         run_lsp_startup_session(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 69 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 70 PTY sessions; split reference previews, inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

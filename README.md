@@ -678,6 +678,21 @@ locations; `Ctrl-o` returns after a jump, and `Ctrl-i`/Tab goes forward again.
 These shortcuts require a ready language server for the current source file.
 Escape cancels a pending request; moving, editing or switching buffers discards
 obsolete results. No matches or unavailable targets leave the source in place.
+
+Reference lists (`gr` with multiple results, or `:References`) split the screen
+in half: locations on the left and a read-only source preview on the right.
+Selecting a location centers its line in the preview and highlights the reference,
+with line numbers and syntax colors. Paths are relative to the repository root,
+or the language-server project outside Git; external paths remain absolute.
+Open buffers supply their current text, including unsaved edits. Other files use
+a disk snapshot loaded when selected, limited to 2 MiB; selecting a different
+result and returning refreshes it. Previewing leaves buffers, undo and navigation
+history untouched. Missing, binary, oversized or unsupported targets show an
+explanation. Generated/decompiled source previews use an already-open buffer;
+Enter fetches source when it has not been opened yet. Below 50 columns or five
+rows, the view keeps the locations list; widen the terminal to restore the preview.
+Single-result `gr` still jumps directly; use `:References` to preview one result.
+
 C# enables `csharp-ls` metadata URIs, so `gd` can open classes and members in
 compiled assemblies and source-generator output. These buffers show `[RO]`,
 support searching, copying, further `gd`/`gr` navigation and history, and cannot

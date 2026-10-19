@@ -647,14 +647,14 @@ fn render_buffers(
     }
 }
 
-struct TextStyles<'a> {
-    highlights: &'a [HighlightSpan],
-    search: &'a [SearchMatch],
-    selection: Option<Range<usize>>,
-    theme: &'a Theme,
+pub(crate) struct TextStyles<'a> {
+    pub(crate) highlights: &'a [HighlightSpan],
+    pub(crate) search: &'a [SearchMatch],
+    pub(crate) selection: Option<Range<usize>>,
+    pub(crate) theme: &'a Theme,
 }
 
-fn styled_text(
+pub(crate) fn styled_text(
     line: &str,
     byte_start: usize,
     left: usize,

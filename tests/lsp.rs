@@ -1258,6 +1258,247 @@ fn navigation_shortcut(editor: &mut Editor, key: char) {
     editor.handle_key(Key::Char(key));
 }
 
+fn reference_screen(editor: &mut Editor, width: u16, height: u16) -> Terminal<TestBackend> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, editor, &Theme::night()))
+        .unwrap();
+    terminal
+}
+
+#[test]
+fn references_preview_centers_and_highlights_usage_without_navigating_or_editing() {
+    let mut f = Fixture::new("references-preview");
+    let target = f.directory.path().join("Other.kt");
+    let mut lines: Vec<_> = (0..26).map(|i| format!("// context {i}")).collect();
+    lines[7] = "fun caller() {".into();
+    lines[8] = "\t😀 e\u{301}界 target(value)\u{1b}[31m".into();
+    lines[9] = "  // after first usage".into();
+    lines[18] = "target(second)".into();
+    let target_bytes = lines.join("\r\n");
+    fs::write(&target, &target_bytes).unwrap();
+    f.ready();
+    f.editor.document.buffer.set_cursor(4, false);
+    f.editor.viewport.left = 2;
+    let viewport = f.editor.viewport.clone();
+    let original = f.editor.document.buffer.text().to_string();
+    navigation_shortcut(&mut f.editor, 'r');
+    until(&mut f.editor, |editor| !editor.lsp.pending);
+    assert_eq!(f.editor.view, View::Lsp);
+    let panel = f.editor.lsp.panel.as_ref().unwrap();
+    assert_eq!(panel.rows[0].label, "Main.kt:1:5");
+    assert_eq!(panel.rows[1].label, "Other.kt:9:9");
+    assert_eq!(panel.rows[2].label, "Other.kt:19:1");
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16));
+    assert!(screen[0].contains("references · 1/3"), "{screen:?}");
+    assert!(screen[0].contains("Preview · buffer"), "{screen:?}");
+    assert!(screen[2].contains("bad value"), "{screen:?}");
+    f.editor.handle_key(Key::Down);
+    let terminal = reference_screen(&mut f.editor, 100, 16);
+    let screen = diagnostic_screen(&terminal);
+    assert!(screen[0].contains("Preview · disk snapshot"), "{screen:?}");
+    assert!(screen[7].contains("fun caller() {"), "{screen:?}");
+    assert!(screen[8].contains("target(value)�[31m"), "{screen:?}");
+    assert!(screen[9].contains("after first usage"), "{screen:?}");
+    let cells = terminal.backend().buffer();
+    assert_eq!(cells[(51, 8)].symbol(), ">");
+    assert_eq!(cells[(67, 8)].symbol(), "t");
+    for x in 67..73 {
+        assert_eq!(cells[(x, 8)].bg, Theme::night().selection);
+    }
+    assert_eq!(cells[(73, 8)].bg, Theme::night().current_line);
+    assert_eq!(cells[(56, 7)].fg, Theme::night().keyword);
+    assert_eq!(f.editor.buffer_count(), 1);
+    assert_eq!(f.editor.active_buffer_id, 1);
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert_eq!(f.editor.viewport, viewport);
+    f.editor.handle_key(Key::Ctrl('n'));
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16));
+    assert!(screen[8].contains("target(second)"), "{screen:?}");
+    assert!(screen[0].contains("3/3"));
+    f.editor.handle_key(Key::Char('l'));
+    f.editor.handle_key(Key::Char('h'));
+    for (width, height) in [(49, 16), (50, 5), (20, 3), (1, 1), (2, 2), (100, 16)] {
+        let screen = diagnostic_screen(&reference_screen(&mut f.editor, width, height));
+        if width == 49 {
+            assert!(!screen.join("\n").contains("Preview"));
+            assert!(screen.last().unwrap().contains("widen"));
+        }
+    }
+    f.editor.handle_key(Key::Escape);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert_eq!(f.editor.viewport, viewport);
+    assert_eq!(fs::read_to_string(&target).unwrap(), target_bytes);
+    // Previewing does not insert a target into session navigation history.
+    f.editor.handle_key(Key::Ctrl('o'));
+    assert_eq!(f.editor.active_buffer_id, 1);
+    navigation_shortcut(&mut f.editor, 'r');
+    until(&mut f.editor, |editor| !editor.lsp.pending);
+    f.editor.handle_key(Key::Char('G'));
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(f.editor.document.path(), Some(target.as_path()));
+    assert_eq!(f.editor.document.buffer.position(), (18, 0));
+    f.editor.handle_key(Key::Ctrl('o'));
+    assert_eq!(f.editor.active_buffer_id, 1);
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    assert_eq!(f.editor.viewport, viewport);
+}
+
+#[test]
+fn references_preview_uses_unsaved_buffers_and_preserves_undo_and_disk_bytes() {
+    let mut f = Fixture::new("navigation-multiple");
+    let target = f.directory.path().join("Other.kt");
+    let disk = fs::read(&target).unwrap();
+    f.editor.open_buffer(&target).unwrap();
+    f.editor
+        .document
+        .buffer
+        .replace_range(0..9, "bad unsaved target");
+    f.editor.document.buffer.commit();
+    f.editor.switch_buffer(1).unwrap();
+    f.ready();
+    f.command("References");
+    f.editor.handle_key(Key::Down);
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("Preview · unsaved buffer"), "{screen}");
+    assert!(screen.contains("bad unsaved target"), "{screen}");
+    f.editor.handle_key(Key::Enter);
+    assert_eq!(f.editor.buffer_count(), 2);
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    f.editor.handle_key(Key::Char('u'));
+    assert_eq!(f.editor.document.buffer.text().to_string().as_bytes(), disk);
+    assert_eq!(fs::read(&target).unwrap(), disk);
+}
+
+#[test]
+fn references_preview_reads_only_on_selection_and_handles_unavailable_sources() {
+    let mut f = Fixture::new("navigation-multiple");
+    let target = f.directory.path().join("Other.kt");
+    f.ready();
+    f.command("References");
+    f.editor.handle_key(Key::Down);
+    fs::remove_file(&target).unwrap();
+    // Redraws and resizes use the selected snapshot, with no filesystem work.
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("bad other"), "{screen}");
+    f.editor.handle_key(Key::Up);
+    f.editor.handle_key(Key::Down);
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("Preview unavailable"), "{screen}");
+    assert!(!screen.contains("bad other"), "{screen}");
+    assert_eq!(f.editor.buffer_count(), 1);
+    f.editor.handle_key(Key::Enter);
+    assert!(f.editor.message_is_error);
+    assert_eq!(f.editor.view, View::Lsp);
+    assert_eq!(f.editor.active_buffer_id, 1);
+    for bytes in [
+        vec![0],
+        vec![255],
+        b"a".to_vec(),
+        "abc😀".as_bytes().to_vec(),
+        vec![b'a'; lsp::MAX_DOCUMENT_BYTES + 1],
+    ] {
+        fs::write(&target, bytes).unwrap();
+        f.editor.handle_key(Key::Up);
+        f.editor.handle_key(Key::Down);
+        let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+        assert!(screen.contains("Preview unavailable"), "{screen}");
+        assert_eq!(f.editor.buffer_count(), 1);
+    }
+    f.editor.handle_key(Key::Escape);
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+}
+
+#[test]
+fn references_preview_paths_are_relative_to_repository_above_project_root() {
+    let mut f = Fixture::new("navigation-multiple");
+    // Linked worktrees have a .git file instead of a directory.
+    fs::write(f.directory.path().join(".git"), "gitdir: elsewhere\n").unwrap();
+    let module = f.directory.path().join("module");
+    fs::create_dir(&module).unwrap();
+    fs::write(module.join("pom.xml"), "<project/>").unwrap();
+    fs::write(module.join("Main.kt"), "bad value\n").unwrap();
+    fs::write(module.join("Other.kt"), "bad other\n").unwrap();
+    f.editor.open_buffer(&module.join("Main.kt")).unwrap();
+    until(&mut f.editor, |e| {
+        e.lsp
+            .routes
+            .get(&module.join("Main.kt"))
+            .is_some_and(|key| {
+                e.lsp
+                    .servers
+                    .get(key)
+                    .is_some_and(|server| server.capabilities.is_object())
+            })
+    });
+    f.command("References");
+    let panel = f.editor.lsp.panel.as_ref().unwrap();
+    assert_eq!(panel.rows[0].label, "module/Main.kt:1:5");
+    assert_eq!(panel.rows[1].label, "module/Other.kt:1:5");
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(
+        !screen.contains(&f.directory.path().display().to_string()),
+        "{screen}"
+    );
+}
+
+#[test]
+fn references_preview_keeps_long_line_usage_visible_and_allows_horizontal_scrolling() {
+    let mut f = Fixture::new("references-long");
+    fs::write(
+        f.directory.path().join("Other.kt"),
+        format!("prefix{}target\r\n", " ".repeat(234)),
+    )
+    .unwrap();
+    f.ready();
+    f.command("References");
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("target"), "{screen}");
+    assert!(!screen.contains("prefix"), "{screen}");
+    for _ in 0..70 {
+        f.editor.handle_key(Key::Left);
+        reference_screen(&mut f.editor, 100, 16);
+    }
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("prefix"), "{screen}");
+    f.editor.handle_key(Key::Right);
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(!screen.contains("prefix"), "{screen}");
+    assert_eq!(f.editor.buffer_count(), 1);
+}
+
+#[test]
+fn references_preview_explains_virtual_targets_and_reuses_open_metadata_without_fetching() {
+    let mut unsupported = Fixture::new("navigation-virtual");
+    unsupported.ready();
+    unsupported.command("References");
+    let screen = diagnostic_screen(&reference_screen(&mut unsupported.editor, 100, 16)).join("\n");
+    assert!(screen.contains("Unsupported location"), "{screen}");
+    assert!(screen.contains("Preview unavailable"), "{screen}");
+    let mut f = csharp_metadata_fixture("metadata-normal");
+    f.command("References");
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("Preview unavailable"), "{screen}");
+    assert!(!f.log().iter().any(|m| m["method"] == "csharp/metadata"));
+    f.editor.handle_key(Key::Enter);
+    until(&mut f.editor, |e| !e.lsp.pending);
+    f.editor.handle_key(Key::Ctrl('o'));
+    f.command("References");
+    let screen = diagnostic_screen(&reference_screen(&mut f.editor, 100, 16)).join("\n");
+    assert!(screen.contains("Preview · read only"), "{screen}");
+    assert!(screen.contains("class Library"), "{screen}");
+    assert_eq!(
+        f.log()
+            .iter()
+            .filter(|m| m["method"] == "csharp/metadata")
+            .count(),
+        1
+    );
+    assert_eq!(f.editor.document.virtual_uri(), None);
+}
+
 #[test]
 fn help_defers_definition_results_without_losing_the_request_or_origin() {
     let mut f = Fixture::new("navigation-slow");

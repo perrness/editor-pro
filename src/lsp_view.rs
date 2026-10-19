@@ -20,6 +20,9 @@ mod completion;
 pub use completion::CompletionMenu;
 pub(crate) use completion::render as render_completion;
 
+#[path = "lsp_preview.rs"]
+mod preview;
+
 #[derive(Default)]
 pub struct LspState {
     pub config: Config,
@@ -89,6 +92,7 @@ pub struct Panel {
     reply: Option<(ServerKey, u64, Value)>,
     continuation: Option<Value>,
     return_mode: Mode,
+    preview: Option<preview::Preview>,
 }
 pub struct Row {
     pub label: String,
@@ -106,6 +110,7 @@ enum Item {
         position: Position,
         stamp: Option<Stamp>,
         symbol_range: Option<lsp_types::Range>,
+        range: Option<lsp_types::Range>,
     },
     Completion {
         value: Value,
@@ -137,6 +142,7 @@ impl Panel {
             reply: None,
             continuation: None,
             return_mode: Mode::Normal,
+            preview: None,
         }
     }
 }
@@ -1072,16 +1078,18 @@ impl Editor {
                         .as_str()
                         .or_else(|| item["targetUri"].as_str())
                         .ok_or_else(|| error("Invalid LSP location"))?;
-                    let position = item
+                    let range = item
                         .get("targetSelectionRange")
                         .or_else(|| item.get("range"))
-                        .ok_or_else(|| error("Missing LSP location range"))?["start"]
+                        .ok_or_else(|| error("Missing LSP location range"))?
                         .clone();
-                    let position: Position =
-                        serde_json::from_value(position).map_err(io::Error::other)?;
-                    panel
-                        .rows
-                        .push(uri_location_row(uri, position, "", context.key.language));
+                    let range: lsp_types::Range =
+                        serde_json::from_value(range).map_err(io::Error::other)?;
+                    let mut row = uri_location_row(uri, range.start, "", context.key.language);
+                    if let Item::Jump { range: target, .. } = &mut row.action {
+                        *target = Some(range);
+                    }
+                    panel.rows.push(row);
                 }
                 if context.jump_to_single_location
                     && panel.rows.len() == 1
@@ -1270,6 +1278,9 @@ impl Editor {
         panel.return_mode = context.mode;
         panel.context = Some(context);
         panel.versions = versions;
+        if method == "textDocument/references" {
+            preview::prepare(self, &mut panel);
+        }
         self.lsp.panel = Some(panel);
         self.view = View::Lsp;
         self.mode = Mode::Normal;
@@ -1429,6 +1440,7 @@ impl Editor {
             self.view = View::Editing;
             return;
         };
+        let selected = panel.selected;
         match key {
             Key::Char('j') | Key::Down | Key::Ctrl('n') => {
                 panel.selected = (panel.selected + 1).min(panel.rows.len().saturating_sub(1))
@@ -1442,8 +1454,18 @@ impl Editor {
             Key::PageUp | Key::Ctrl('u') => panel.selected = panel.selected.saturating_sub(10),
             Key::Char('g') => panel.selected = 0,
             Key::Char('G') => panel.selected = panel.rows.len().saturating_sub(1),
-            Key::Char('h') | Key::Left => panel.left = panel.left.saturating_sub(4),
-            Key::Char('l') | Key::Right => panel.left += 4,
+            Key::Char('h') | Key::Left => {
+                panel.left = panel.left.saturating_sub(4);
+                if let Some(preview) = &mut panel.preview {
+                    preview.scroll = preview.scroll.saturating_sub(4);
+                }
+            }
+            Key::Char('l') | Key::Right => {
+                panel.left = panel.left.saturating_add(4);
+                if let Some(preview) = &mut panel.preview {
+                    preview.scroll = preview.scroll.saturating_add(4);
+                }
+            }
             Key::Enter | Key::Char('d') | Key::Tab
                 if key != Key::Tab
                     || (panel.plan.is_none()
@@ -1460,6 +1482,16 @@ impl Editor {
                 }
             }
             _ => {}
+        }
+        if self
+            .lsp
+            .panel
+            .as_ref()
+            .is_some_and(|p| p.preview.is_some() && p.selected != selected)
+        {
+            let mut panel = self.lsp.panel.take().unwrap();
+            preview::select(self, &mut panel);
+            self.lsp.panel = Some(panel);
         }
     }
     fn select_lsp(&mut self, documentation: bool) -> io::Result<()> {
@@ -1530,6 +1562,7 @@ impl Editor {
                 position,
                 stamp,
                 symbol_range,
+                range,
             } => {
                 if let Err(e) = self.jump_lsp_location(&path, position, stamp.as_ref()) {
                     row.action = Item::Jump {
@@ -1537,6 +1570,7 @@ impl Editor {
                         position,
                         stamp,
                         symbol_range,
+                        range,
                     };
                     self.lsp.panel = Some(panel);
                     return Err(e);
@@ -2113,6 +2147,7 @@ fn location_row(path: PathBuf, position: Position, label: &str, stamp: Option<St
             position,
             stamp,
             symbol_range: None,
+            range: None,
         },
     }
 }
@@ -2295,12 +2330,24 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
     };
     let style = Style::default().fg(theme.foreground).bg(theme.background);
     let width = area.width as usize;
-    let line = |text: &str, left| crate::text::visible_text(text, left, width);
+    let split = panel.preview.is_some() && area.width >= 50 && area.height >= 5;
+    let list_width = if split { area.width / 2 } else { area.width };
+    let line = |text: &str, left| crate::text::visible_text(text, left, list_width as usize);
+    let title = if panel.preview.is_some() {
+        format!(
+            "{} · {}/{}",
+            panel.title,
+            panel.selected + 1,
+            panel.rows.len()
+        )
+    } else {
+        panel.title.clone()
+    };
     frame.render_widget(
-        Paragraph::new(line(&panel.title, 0)).style(style.fg(theme.command)),
-        Rect::new(area.x, area.y, area.width, 1),
+        Paragraph::new(line(&title, 0)).style(style.fg(theme.command)),
+        Rect::new(area.x, area.y, list_width, 1),
     );
-    let detail_rows = if area.height >= 8 { 3 } else { 0 };
+    let detail_rows = if !split && area.height >= 8 { 3 } else { 0 };
     let height = area.height.saturating_sub(2 + detail_rows);
     panel.top = panel.top.min(panel.selected);
     if height > 0 && panel.selected >= panel.top + height as usize {
@@ -2315,9 +2362,30 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
                 } else {
                     style
                 }),
-                Rect::new(area.x, area.y + 1 + row, area.width, 1),
+                Rect::new(area.x, area.y + 1 + row, list_width, 1),
             );
         }
+    }
+    if split {
+        let divider = area.x + list_width;
+        for y in area.y..area.bottom() - 1 {
+            frame.render_widget(
+                Paragraph::new("│").style(style.fg(theme.border)),
+                Rect::new(divider, y, 1, 1),
+            );
+        }
+        preview::render(
+            frame,
+            panel.preview.as_mut().unwrap(),
+            Rect::new(
+                divider + 1,
+                area.y,
+                area.width - list_width - 1,
+                area.height - 1,
+            ),
+            panel.left,
+            theme,
+        );
     }
     if let Some(item) = panel.rows.get(panel.selected) {
         for (index, text) in item.detail.lines().take(detail_rows as usize).enumerate() {
@@ -2333,6 +2401,12 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
             &command
         } else if editor.message_is_error {
             &editor.message
+        } else if panel.preview.is_some() {
+            if split {
+                "j/k select  h/l scroll  Enter open  Esc return"
+            } else {
+                "j/k select  Enter open  Esc return · widen for preview"
+            }
         } else if panel.rows.iter().any(|r| matches!(r.action, Item::Call(_))) {
             "j/k select  i incoming  o outgoing  Enter source  Backspace parent  Esc return"
         } else if panel
@@ -2351,11 +2425,13 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
             0
         };
         frame.render_widget(
-            Paragraph::new(line(text, offset)).style(style.fg(if editor.message_is_error {
-                theme.error
-            } else {
-                theme.muted
-            })),
+            Paragraph::new(crate::text::visible_text(text, offset, width)).style(style.fg(
+                if editor.message_is_error {
+                    theme.error
+                } else {
+                    theme.muted
+                },
+            )),
             Rect::new(area.x, area.y + area.height - 1, area.width, 1),
         );
         if editor.mode == Mode::Command {
