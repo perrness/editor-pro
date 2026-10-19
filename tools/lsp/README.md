@@ -2,7 +2,7 @@
 
 `tests/lsp_real.rs` drives the ordinary `Editor`, its background manager, command
 views and edit approvals against installed servers. These tests are opt-in:
-`cargo test --locked --all-targets` compiles them and reports eight ignored tests in this suite.
+`cargo test --locked --all-targets` compiles them and reports twelve ignored tests in this suite.
 The default suite and `fake_server.py` require no real servers or downloads.
 
 `csharp_generated_and_decompiled_navigation` additionally exercises actual
@@ -16,6 +16,36 @@ history and unchanged fixture bytes. Run it with the same C# setup below:
 ```sh
 cargo test --locked --test lsp_real csharp_generated_and_decompiled_navigation -- --ignored --nocapture
 ```
+
+The four `dependency_sources_and_bytecode` tests cover Java/Kotlin in Maven and
+Gradle projects. They exercise `HashMap`, original Java/Kotlin source attachments, Java/Kotlin classes
+without matching source, and a decompiled Java method. The tests build `jvm-library`
+with Maven/JDK/Kotlin 2.3.0 in a separate temporary directory and publish only its
+JAR and a partial sources JAR to the temporary project's file repository. No user
+project is used. They check declarations, source-only comments, bytecode-derived
+Java method bodies, syntax, read-only guards, buffer reuse, history and unchanged
+fixture bytes. A JDK without `src.zip` may return decompiled `HashMap`.
+Kotlin's declaration stubs trigger the full Vineflower fallback; both Java and
+Kotlin bytecode must expose their actual method-body string constants. Reports
+record source provenance, syntax-budget fallback and navigation within dependencies.
+Java must navigate from `HashMap` to `AbstractMap`, and Kotlin must navigate from
+attached Kotlin source to a qualified JDK type. The pinned Kotlin server's empty
+result for that type in a compiled Kotlin declaration view is recorded separately
+as `server_returned_no_result`, with unchanged source/history checks; it does not
+count as a successful navigation. Changed library fixtures use a content-derived
+Maven version to prevent stale build-tool artifacts from passing acceptance.
+The helper artifact is pinned and SHA-256 verified; automatic installation or
+`:LspInstall kotlin` provides it without manual extraction.
+
+```sh
+EDITOR_PRO_LSP_INSTALL_DIR=/tmp/editor-pro-jvm-servers \
+EDITOR_PRO_LSP_REPORT_DIR=/tmp/editor-pro-jvm-reports \
+  cargo test --locked --test lsp_real dependency_sources_and_bytecode -- --ignored --nocapture --test-threads=1
+```
+
+Use existing pinned installations/argv overrides to avoid downloads. The first
+run needs network access for server and Maven/Kotlin artifacts. The ordinary suite
+never downloads or invokes these real servers.
 
 ## Provisioning
 

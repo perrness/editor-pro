@@ -77,6 +77,51 @@ No assumption is made that Microsoft's VS Code extension
 or C# Dev Kit binaries are an interchangeable generic LSP distribution.
 [csharp-ls metadata extension](https://github.com/razzmatazz/csharp-language-server/blob/master/docs/features.md).
 
+## JVM dependency source protocols
+
+Java `jdt://contents/` targets use `java/classFileContents` with `{uri}` after
+advertising `initializationOptions.extendedClientCapabilities.classFileContentsSupport`.
+This extension has no standard server capability flag; unsupported implementations
+fail visibly through JSON-RPC. JDT LS 1.60's source provider runs before its bundled
+FernFlower provider, so Maven/Gradle/JDK source attachments remain server-managed.
+The decompiler's header identifies fallback text without shifting positions.
+[Protocol](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/v1.60.0/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/JavaProtocolExtensions.java),
+[source providers](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/v1.60.0/org.eclipse.jdt.ls.core/plugin.xml).
+
+Official Kotlin LSP 263.6379.0's client retrieves `jar:` and `jrt:` documents with
+`workspace/executeCommand`, command `decompile`, and the URI as its only argument.
+The command must appear in `executeCommandProvider.commands`; its result is
+`{code, language}`. It supplies source attachments as well as decompiled content.
+The returned Java/Kotlin language selects highlighting independently of the
+owning Kotlin session. This version returns compiled-code placeholders for some
+bytecode documents, so the editor uses checksum-pinned Vineflower 1.12.0 slim for
+full Java output in those cases. Original Kotlin sources remain Kotlin. Runtime,
+installation policy, cancellation and cache handling are shared with existing LSP
+infrastructure. The client does not assume fwcd's separate `kotlin/jarClassContents`
+protocol, or authorize edits through the retrieval command.
+[Vineflower release](https://github.com/Vineflower/vineflower/releases/tag/1.12.0).
+
+The official Kotlin client includes jar/jrt in its synchronization selector. The
+editor sends didOpen/didClose with the server text/language and maps full-bytecode
+positions to that declaration view; JDT/C# retain their unsynchronized virtual
+source behavior. Neither path permits buffer edits or didChange/didSave.
+[Pinned client selector](https://github.com/Kotlin/kotlin-lsp/blob/kotlin-lsp/v263.6379.0/vscode-extension-core/src/lspClient.ts).
+[Pinned Kotlin client](https://github.com/Kotlin/kotlin-lsp/blob/kotlin-lsp/v263.6379.0/vscode-extension-core/src/decompiler.ts).
+
+Both paths use shared read-only documents, history, bounds and cache handling.
+In real acceptance, Kotlin resolves a qualified JDK type from an attached Kotlin
+source but returns no definition for that type from a compiled Kotlin declaration
+view, and for `AbstractMap` inside decompiled Java `HashMap`. Those empty results
+preserve the current source and history. Kotlin `.kotlin_builtins` declaration
+documents without a corresponding JVM class are reported as unavailable; they
+cannot supply full bytecode bodies. These limits are separate from successful
+project-to-dependency navigation and full Java/Kotlin bytecode retrieval.
+See README for cache invalidation and `:LspRestart` after dependency/import changes.
+JDK source availability is determined by the configured project JDK; readable
+decompiled Java is used when its source archive is missing. Tests against protocol
+doubles do not establish real-server compatibility; real dependency fixtures are
+listed in [tools/lsp](../tools/lsp/README.md).
+
 ## Kotlin: version-specific findings
 
 The latest release page observed is **v263.6379.0, October 3, 2026**. It distributes
@@ -186,6 +231,6 @@ they do not replace these real workload checks.
 macOS and physical-terminal appearance remain unobserved. Android, KMP, Razor,
 older .NET targets and multiple-solution selection are not established by these
 fixtures. JDT indexes remain temporary per session. The client still excludes
-snippets, Kotlin/Java virtual documents, watched-file registration and file resource operations.
+snippets, watched-file registration and file resource operations.
 Use the manual workflow in README on your projects before relying on those
 environments; record unsupported and failed behavior separately from passes.

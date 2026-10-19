@@ -134,6 +134,249 @@ fn workspace(path: &Path, edits: Vec<Value>) -> Value {
     json!({"changes":{lsp::file_uri(path).unwrap().as_str():edits}})
 }
 
+fn mouse_frame(editor: &mut Editor) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, editor, &Theme::night()))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn mouse(kind: editor_pro::input::MouseKind, column: u16, row: u16) -> editor_pro::input::Mouse {
+    editor_pro::input::Mouse {
+        kind,
+        column,
+        row,
+        control: false,
+        shift: false,
+    }
+}
+
+#[test]
+fn mouse_hover_debounces_uses_pointer_utf16_and_preserves_keyboard_context() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.mouse.settings.hover_delay_ms = 60;
+    mouse_frame(&mut f.editor);
+    let cursor = f.editor.document.buffer.cursor();
+    let original = f.editor.document.buffer.text().to_string();
+    let message = f.editor.message.clone();
+    assert!(!f.editor.handle_mouse(mouse(MouseKind::Move, 7, 1)));
+    f.editor.tick();
+    assert!(!f.log().iter().any(|m| m["method"] == "textDocument/hover"));
+    until(&mut f.editor, |e| e.lsp.mouse_hover.visible());
+    let requests: Vec<_> = f
+        .log()
+        .into_iter()
+        .filter(|m| m["method"] == "textDocument/hover")
+        .collect();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["params"]["position"],
+        json!({"line":1,"character":5})
+    );
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.mode, Mode::Normal);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+    assert_eq!(f.editor.message, message);
+    let frame = mouse_frame(&mut f.editor);
+    let text: String = frame.content.iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("Documentation 界"), "{text}");
+    // Both terminal cells of the same wide symbol share the completed request.
+    assert!(!f.editor.handle_mouse(mouse(MouseKind::Move, 8, 1)));
+    settle(&mut f.editor);
+    assert_eq!(
+        f.log()
+            .iter()
+            .filter(|m| m["method"] == "textDocument/hover")
+            .count(),
+        1
+    );
+    f.editor.handle_key(Key::Char('l'));
+    assert!(!f.editor.lsp.mouse_hover.visible());
+    assert_eq!(f.editor.document.buffer.cursor(), 1);
+    f.command("Hover");
+    assert_eq!(f.editor.view, View::Lsp);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().title, "Documentation");
+}
+
+#[test]
+fn mouse_hover_cancels_and_ignores_late_responses_after_pointer_edit_and_view_changes() {
+    use editor_pro::input::MouseKind;
+    for change in ["pointer", "edit", "buffer", "help", "resize", "restart"] {
+        let mut f = Fixture::new("slow");
+        f.ready();
+        f.editor.mouse.settings.hover_delay_ms = 0;
+        mouse_frame(&mut f.editor);
+        f.editor.handle_mouse(mouse(MouseKind::Move, 7, 0));
+        f.wait_log("textDocument/hover", 1);
+        match change {
+            "pointer" => {
+                f.editor.handle_mouse(mouse(MouseKind::Move, 60, 20));
+            }
+            "edit" => f.editor.document.buffer.insert("changed "),
+            "buffer" => {
+                f.editor
+                    .open_buffer(&f.directory.path().join("Other.kt"))
+                    .unwrap();
+            }
+            "help" => f.editor.handle_key(Key::F1),
+            "resize" => {
+                f.editor.cancel_mouse_interaction();
+            }
+            "restart" => f.editor.execute_command("LspRestart").unwrap(),
+            _ => unreachable!(),
+        }
+        settle(&mut f.editor);
+        assert!(!f.editor.lsp.mouse_hover.visible(), "{change}");
+        if change == "help" {
+            f.editor.handle_key(Key::Escape);
+            settle(&mut f.editor);
+        }
+        assert_eq!(f.editor.view, View::Editing, "{change}");
+        assert!(!f.editor.lsp.mouse_hover.visible(), "{change}");
+    }
+}
+
+#[test]
+fn mouse_hover_disabled_unsupported_and_timeout_cases_stay_quiet() {
+    use editor_pro::input::MouseKind;
+    for scenario in ["normal", "unsupported", "timeout"] {
+        let mut f = Fixture::new(scenario);
+        f.ready();
+        f.editor.mouse.settings.hover_delay_ms = 0;
+        f.editor.mouse.settings.hover_enabled = scenario != "normal";
+        f.editor.lsp.config.request_timeout = Duration::from_millis(30);
+        mouse_frame(&mut f.editor);
+        let message = f.editor.message.clone();
+        f.editor.handle_mouse(mouse(MouseKind::Move, 7, 0));
+        settle(&mut f.editor);
+        if scenario == "timeout" {
+            until(&mut f.editor, |e| !e.lsp.pending);
+        }
+        assert!(!f.editor.lsp.mouse_hover.visible());
+        assert_eq!(f.editor.view, View::Editing);
+        assert_eq!(f.editor.message, message, "{scenario}");
+        assert!(!f.editor.message_is_error);
+        if scenario != "timeout" {
+            assert!(!f.log().iter().any(|m| m["method"] == "textDocument/hover"));
+        }
+    }
+}
+
+#[test]
+fn resting_mouse_hover_waits_for_server_initialization_without_repeated_requests() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("initialize-held");
+    f.wait_log("initialize", 1);
+    f.editor.mouse.settings.hover_delay_ms = 0;
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(mouse(MouseKind::Move, 7, 0));
+    settle(&mut f.editor);
+    assert!(!f.log().iter().any(|m| m["method"] == "textDocument/hover"));
+    fs::write(
+        f.directory.path().join("protocol.jsonl.initialize"),
+        "ready",
+    )
+    .unwrap();
+    until(&mut f.editor, |e| e.lsp.mouse_hover.visible());
+    assert_eq!(
+        f.log()
+            .iter()
+            .filter(|m| m["method"] == "textDocument/hover")
+            .count(),
+        1
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+}
+
+#[test]
+fn modifier_click_reuses_definition_and_history_and_diagnostics_are_clickable() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("normal");
+    f.ready();
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(editor_pro::input::Mouse {
+        control: true,
+        ..mouse(MouseKind::Down, 7, 0)
+    });
+    until(&mut f.editor, |e| {
+        e.document.path().unwrap().ends_with("Other.kt")
+    });
+    f.editor.handle_key(Key::Ctrl('o'));
+    assert!(f.editor.document.path().unwrap().ends_with("Main.kt"));
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    until(&mut f.editor, |e| e.current_diagnostics().is_some());
+    f.command("Diagnostics");
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(mouse(MouseKind::Down, 5, 1));
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+    assert!(!f.editor.document.buffer.is_modified());
+    let frame = mouse_frame(&mut f.editor);
+    // The diagnostic panel header opens the existing full diagnostic list.
+    let row = frame
+        .content
+        .chunks(80)
+        .position(|row| {
+            row.iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .starts_with("Diagnostics")
+        })
+        .unwrap();
+    f.editor.handle_mouse(mouse(MouseKind::Down, 5, row as u16));
+    assert_eq!(f.editor.view, View::Lsp);
+}
+
+#[test]
+fn completion_popup_click_accepts_and_edit_preview_click_only_selects() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.handle_key(Key::Char('i'));
+    f.editor.handle_key(Key::Char('g'));
+    until(&mut f.editor, |e| e.lsp.completion.is_some());
+    let frame = mouse_frame(&mut f.editor);
+    let row = frame
+        .content
+        .chunks(80)
+        .position(|row| {
+            row.iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .contains(" good")
+        })
+        .unwrap();
+    let column = frame.content[row * 80..(row + 1) * 80]
+        .iter()
+        .position(|c| c.symbol() == "g")
+        .unwrap();
+    f.editor
+        .handle_mouse(mouse(MouseKind::Down, column as u16, row as u16));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(
+        f.editor
+            .document
+            .buffer
+            .text()
+            .to_string()
+            .starts_with("good ")
+    );
+    f.editor.handle_key(Key::Escape);
+    f.command("Format");
+    let original = f.editor.document.buffer.text().to_string();
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(mouse(MouseKind::Down, 5, 1));
+    assert_eq!(f.editor.view, View::Lsp);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+    f.editor.handle_mouse(mouse(MouseKind::RightDown, 5, 1));
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+}
+
 fn current_versions(editor: &Editor) -> Vec<Versioned> {
     let path = editor.document.path().unwrap().to_path_buf();
     vec![Versioned {
@@ -3999,4 +4242,546 @@ fn review_note_never_replaces_source_in_lsp_synchronization() {
             .starts_with("bad")
     );
     f.command("Hover");
+}
+
+fn jvm_fixture(scenario: &str) -> Fixture {
+    let mut f = Fixture::new(scenario);
+    fs::write(
+        f.directory.path().join("dependency + 界.jar"),
+        "binary revision 1",
+    )
+    .unwrap();
+    fs::create_dir_all(f.directory.path().join("jdk/lib")).unwrap();
+    fs::write(
+        f.directory.path().join("jdk/lib/modules"),
+        "runtime revision 1",
+    )
+    .unwrap();
+    if scenario.starts_with("jvm-java") {
+        let command = f
+            .editor
+            .lsp
+            .config
+            .commands
+            .remove(&Language::Kotlin)
+            .unwrap();
+        let path = f.directory.path().join("Main.java");
+        fs::write(&path, "class Main { Library value; }\r\n").unwrap();
+        let config = f.editor.lsp.config.clone();
+        f.editor = Editor::new(Document::open(&path).unwrap());
+        f.editor.lsp.config = config;
+        f.editor.lsp.config.commands.insert(Language::Java, command);
+    }
+    if scenario.contains("large") {
+        f.editor.lsp.config.request_timeout = Duration::from_secs(5);
+    }
+    f.ready();
+    f
+}
+
+fn source_requests(f: &Fixture) -> usize {
+    f.log()
+        .iter()
+        .filter(|m| {
+            m["method"] == "java/classFileContents"
+                || (m["method"] == "workspace/executeCommand"
+                    && m["params"]["command"] == "decompile")
+        })
+        .count()
+}
+
+#[test]
+fn jvm_original_and_decompiled_sources_share_read_only_navigation_and_history() {
+    for scenario in [
+        "jvm-java-original",
+        "jvm-java-decompiled-link",
+        "jvm-kotlin-original",
+        "jvm-kotlin-decompiled",
+        "jvm-kotlin-jrt",
+    ] {
+        let mut f = jvm_fixture(scenario);
+        let main = f.editor.document.path().unwrap().to_path_buf();
+        f.editor.document.buffer.insert("// unsaved\r\n");
+        f.editor.document.buffer.commit();
+        let original = f.editor.document.buffer.text().to_string();
+        let cursor = f.editor.document.buffer.cursor();
+        gd(&mut f.editor);
+        assert!(
+            !f.editor.message_is_error,
+            "{scenario}: {}",
+            f.editor.message
+        );
+        let uri = f.editor.document.virtual_uri().unwrap().to_owned();
+        assert!(f.editor.document.path().is_none());
+        assert!(f.editor.document.buffer.is_read_only());
+        assert_eq!(f.editor.document.buffer.position().1, 12);
+        assert_eq!(f.editor.document.buffer.newline(), "\r\n");
+        assert!(
+            f.editor
+                .document
+                .display_name()
+                .contains(if scenario.contains("original") {
+                    "Dependency source"
+                } else {
+                    "Decompiled source"
+                })
+        );
+        for command in [
+            "w",
+            "w! must-not-save.java",
+            "Format",
+            "Rename renamed",
+            "CodeAction",
+            "Complete",
+        ] {
+            assert!(f.editor.execute_command(command).is_err(), "{command}");
+        }
+        f.editor.handle_key(Key::Char('i'));
+        assert_eq!(f.editor.mode, Mode::Normal);
+        f.editor.handle_key(Key::Char('/'));
+        for ch in "method".chars() {
+            f.editor.handle_key(Key::Char(ch));
+        }
+        f.editor.handle_key(Key::Enter);
+        assert!(
+            f.editor
+                .document
+                .buffer
+                .line(f.editor.document.buffer.position().0)
+                .contains("method")
+        );
+        f.editor.handle_key(Key::Ctrl('o'));
+        // Search may record its own location; the source jump remains reachable.
+        if f.editor.document.virtual_uri().is_some() {
+            f.editor.handle_key(Key::Ctrl('o'));
+        }
+        assert_eq!(f.editor.document.path(), Some(main.as_path()));
+        assert_eq!(f.editor.document.buffer.text().to_string(), original);
+        assert_eq!(f.editor.document.buffer.cursor(), cursor);
+        gd(&mut f.editor);
+        assert_eq!(f.editor.document.virtual_uri(), Some(uri.as_str()));
+        assert_eq!(f.editor.buffer_count(), 2);
+        gd(&mut f.editor);
+        assert!(f.editor.document.virtual_uri().unwrap().contains("Next"));
+        gd(&mut f.editor);
+        assert_eq!(f.editor.document.path(), Some(main.as_path()));
+        assert!(
+            f.log()
+                .iter()
+                .filter(|m| m["method"] == "textDocument/definition")
+                .any(|m| m["params"]["textDocument"]["uri"] == uri)
+        );
+        assert!(
+            f.log()
+                .iter()
+                .filter(|m| matches!(
+                    m["method"].as_str(),
+                    Some(
+                        "textDocument/didOpen"
+                            | "textDocument/didChange"
+                            | "textDocument/didSave"
+                            | "textDocument/didClose"
+                    )
+                ))
+                .all(|m| {
+                    m["params"]["textDocument"]["uri"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("file:")
+                        || (scenario.starts_with("jvm-kotlin")
+                            && matches!(
+                                m["method"].as_str(),
+                                Some("textDocument/didOpen" | "textDocument/didClose")
+                            ))
+                })
+        );
+        assert!(
+            !f.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .contains("UNAUTHORIZED")
+        );
+    }
+}
+
+#[test]
+fn jvm_cache_reuses_content_and_invalidates_archive_runtime_source_and_session_changes() {
+    for scenario in [
+        "jvm-java-decompiled",
+        "jvm-kotlin-original",
+        "jvm-kotlin-decompiled",
+        "jvm-kotlin-jrt",
+    ] {
+        let mut f = jvm_fixture(scenario);
+        gd(&mut f.editor);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        let id = f.editor.active_buffer_id;
+        f.editor.handle_key(Key::Ctrl('o'));
+        gd(&mut f.editor);
+        assert_eq!(source_requests(&f), 1, "{scenario}");
+        assert_eq!(f.editor.active_buffer_id, id);
+        f.editor.handle_key(Key::Ctrl('o'));
+        let backing = f.directory.path().join(if scenario.contains("jrt") {
+            "jdk/lib/modules"
+        } else {
+            "dependency + 界.jar"
+        });
+        fs::write(&backing, "binary revision 2 with changed bytes").unwrap();
+        gd(&mut f.editor);
+        assert_eq!(source_requests(&f), 2, "{scenario}");
+        assert_eq!(f.editor.active_buffer_id, id);
+        f.editor.handle_key(Key::Ctrl('o'));
+        fs::write(
+            f.directory.path().join("dependency + 界-sources.jar"),
+            "attached source",
+        )
+        .unwrap();
+        gd(&mut f.editor);
+        assert_eq!(
+            source_requests(&f),
+            if scenario.contains("jrt") { 2 } else { 3 },
+            "{scenario}"
+        );
+        f.editor.handle_key(Key::Ctrl('o'));
+        let before = source_requests(&f);
+        f.notify(json!({"id":"source-refresh","method":"workspace/textDocumentContent/refresh","params":{"uri":"unused"}}));
+        let started = Instant::now();
+        while !f.log().iter().any(|m| m["id"] == "source-refresh") {
+            f.editor.tick();
+            assert!(started.elapsed() < Duration::from_secs(6));
+            thread::sleep(Duration::from_millis(5));
+        }
+        gd(&mut f.editor);
+        assert_eq!(source_requests(&f), before + 1);
+        f.editor.handle_key(Key::Ctrl('o'));
+        let epoch = f.editor.lsp.servers.values().next().unwrap().epoch;
+        f.editor.execute_command("LspRestart").unwrap();
+        until(&mut f.editor, |e| {
+            e.lsp
+                .servers
+                .values()
+                .any(|s| s.epoch != epoch && s.capabilities.is_object())
+        });
+        gd(&mut f.editor);
+        assert_eq!(source_requests(&f), before + 2);
+        assert_ne!(f.editor.active_buffer_id, id);
+    }
+}
+
+#[test]
+fn jvm_indexing_keeps_cached_bytecode_but_project_import_invalidates_it() {
+    let mut f = jvm_fixture("jvm-kotlin-decompiled");
+    // Creating the transport sidecar must not look like a new source attachment.
+    fs::write(f.directory.path().join("protocol.jsonl.notifications"), "").unwrap();
+    gd(&mut f.editor);
+    f.editor.handle_key(Key::Ctrl('o'));
+    for (title, expected) in [("Indexing", 1), ("Importing", 2)] {
+        f.notify(json!({"method":"$/progress", "params":{"token":"cache-test", "value":{"kind":"begin", "title":title}}}));
+        until(&mut f.editor, |e| {
+            e.lsp
+                .servers
+                .values()
+                .any(|s| s.status.progress.iter().any(|p| p.contains(title)))
+        });
+        f.notify(
+            json!({"method":"$/progress", "params":{"token":"cache-test", "value":{"kind":"end"}}}),
+        );
+        until(&mut f.editor, |e| {
+            e.lsp.servers.values().all(|s| s.status.progress.is_empty())
+        });
+        gd(&mut f.editor);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert_eq!(source_requests(&f), expected, "{title}");
+        f.editor.handle_key(Key::Ctrl('o'));
+    }
+}
+
+#[test]
+fn jvm_virtual_targets_work_in_references_workspace_symbols_and_call_hierarchy() {
+    for scenario in [
+        "jvm-java-decompiled-multiple",
+        "jvm-kotlin-original-multiple",
+    ] {
+        let mut f = jvm_fixture(scenario);
+        for command in [
+            "Definition",
+            "References",
+            "WorkspaceSymbols Library",
+            "WorkspaceSymbols lazy",
+            "Calls",
+        ] {
+            f.command(command);
+            f.editor.handle_key(Key::Enter);
+            until(&mut f.editor, |e| !e.lsp.pending);
+            assert!(
+                !f.editor.message_is_error,
+                "{command}: {}",
+                f.editor.message
+            );
+            assert!(f.editor.document.virtual_uri().is_some(), "{command}");
+            f.editor.handle_key(Key::Ctrl('o'));
+        }
+        for key in ['i', 'o'] {
+            f.command("Calls");
+            f.editor.handle_key(Key::Char(key));
+            until(&mut f.editor, |e| !e.lsp.pending);
+            f.editor.handle_key(Key::Enter);
+            until(&mut f.editor, |e| !e.lsp.pending);
+            assert!(f.editor.document.virtual_uri().is_some());
+            f.editor.handle_key(Key::Ctrl('o'));
+        }
+    }
+}
+
+#[test]
+fn jvm_retrieval_failures_leave_source_and_history_untouched() {
+    for language in ["java", "kotlin"] {
+        for (suffix, message) in [
+            ("empty", "no source text"),
+            ("nul", "NUL"),
+            ("large", "2 MiB"),
+            ("position", "outside"),
+            ("error", "Source extension unavailable"),
+            ("timeout", "timed out"),
+        ] {
+            let mut f = jvm_fixture(&format!("jvm-{language}-{suffix}"));
+            let path = f.editor.document.path().unwrap().to_path_buf();
+            let text = f.editor.document.buffer.text().to_string();
+            gd(&mut f.editor);
+            assert!(f.editor.message_is_error, "{language}-{suffix}");
+            assert!(f.editor.message.contains(message), "{}", f.editor.message);
+            assert_eq!(f.editor.document.path(), Some(path.as_path()));
+            assert_eq!(f.editor.document.buffer.text().to_string(), text);
+            assert_eq!(f.editor.buffer_count(), 1);
+            assert!(f.editor.navigate_history(true).is_err());
+        }
+    }
+    for scenario in ["jvm-kotlin-unsupported", "jvm-kotlin-bad-language"] {
+        let mut f = jvm_fixture(scenario);
+        gd(&mut f.editor);
+        assert!(f.editor.message_is_error);
+        assert!(f.editor.document.path().is_some());
+        if scenario.contains("unsupported") {
+            assert_eq!(source_requests(&f), 0);
+        }
+    }
+}
+
+#[test]
+fn jvm_late_retrieval_cannot_navigate_after_cancellation_or_source_changes() {
+    for language in ["java", "kotlin"] {
+        for action in ["escape", "move", "edit", "switch", "restart"] {
+            let mut f = jvm_fixture(&format!("jvm-{language}-slow"));
+            f.editor.handle_key(Key::Char('g'));
+            f.editor.handle_key(Key::Char('d'));
+            f.wait_log(
+                if language == "java" {
+                    "java/classFileContents"
+                } else {
+                    "workspace/executeCommand"
+                },
+                1,
+            );
+            match action {
+                "escape" => escape(&mut f.editor),
+                "move" => f.editor.handle_key(Key::Char('l')),
+                "edit" => f.editor.document.buffer.insert("changed"),
+                "switch" => f
+                    .editor
+                    .open_buffer(&f.directory.path().join("Other.kt"))
+                    .unwrap(),
+                "restart" => f.editor.execute_command("LspRestart").unwrap(),
+                _ => unreachable!(),
+            }
+            settle(&mut f.editor);
+            assert!(
+                f.editor.document.virtual_uri().is_none(),
+                "{language}-{action}"
+            );
+        }
+    }
+}
+
+#[test]
+fn kotlin_decompile_command_does_not_authorize_edits() {
+    let mut f = jvm_fixture("jvm-kotlin-apply");
+    let original = f.editor.document.buffer.text().to_string();
+    gd(&mut f.editor);
+    settle(&mut f.editor);
+    assert!(
+        f.log()
+            .iter()
+            .any(|m| m["id"] == "decompile-apply" && m["result"]["applied"] == false)
+    );
+    assert!(f.editor.document.virtual_uri().is_some());
+    f.editor.handle_key(Key::Ctrl('o'));
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+    assert!(!f.editor.document.buffer.is_modified());
+}
+
+#[test]
+fn jvm_dependency_change_during_retrieval_rejects_old_content() {
+    for language in ["java", "kotlin"] {
+        let mut f = jvm_fixture(&format!("jvm-{language}-slow"));
+        f.editor.handle_key(Key::Char('g'));
+        f.editor.handle_key(Key::Char('d'));
+        f.wait_log(
+            if language == "java" {
+                "java/classFileContents"
+            } else {
+                "workspace/executeCommand"
+            },
+            1,
+        );
+        fs::write(
+            f.directory.path().join("dependency + 界.jar"),
+            "replaced while retrieving",
+        )
+        .unwrap();
+        until(&mut f.editor, |e| !e.lsp.pending);
+        assert!(
+            f.editor.message.contains("Dependency changed"),
+            "{}",
+            f.editor.message
+        );
+        assert!(f.editor.document.virtual_uri().is_none());
+        assert!(f.editor.navigate_history(true).is_err());
+    }
+}
+
+#[test]
+fn jvm_source_attachment_download_during_retrieval_does_not_reject_the_result() {
+    for language in ["java", "kotlin"] {
+        let mut f = jvm_fixture(&format!("jvm-{language}-slow"));
+        f.editor.handle_key(Key::Char('g'));
+        f.editor.handle_key(Key::Char('d'));
+        f.wait_log(
+            if language == "java" {
+                "java/classFileContents"
+            } else {
+                "workspace/executeCommand"
+            },
+            1,
+        );
+        fs::write(
+            f.directory.path().join("dependency + 界-sources.jar"),
+            "downloaded source",
+        )
+        .unwrap();
+        until(&mut f.editor, |e| !e.lsp.pending);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert!(f.editor.document.virtual_uri().is_some());
+        f.editor.handle_key(Key::Ctrl('o'));
+        gd(&mut f.editor);
+        assert_eq!(source_requests(&f), 2);
+    }
+}
+
+#[test]
+fn jvm_help_defers_retrieval_and_source_labels_survive_rendering() {
+    for language in ["java", "kotlin"] {
+        let mut f = jvm_fixture(&format!("jvm-{language}-slow"));
+        f.editor.handle_key(Key::Char('g'));
+        f.editor.handle_key(Key::Char('d'));
+        f.wait_log(
+            if language == "java" {
+                "java/classFileContents"
+            } else {
+                "workspace/executeCommand"
+            },
+            1,
+        );
+        f.editor.handle_key(Key::F1);
+        settle(&mut f.editor);
+        assert!(f.editor.document.virtual_uri().is_none());
+        f.editor.handle_key(Key::Escape);
+        until(&mut f.editor, |e| !e.lsp.pending);
+        let mut terminal = Terminal::new(TestBackend::new(110, 10)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            screen.to_lowercase().contains("decompiled source"),
+            "{screen}"
+        );
+        assert!(screen.contains("[RO]"), "{screen}");
+        assert!(f.editor.document.syntax.tree().is_some());
+    }
+}
+
+#[test]
+fn jvm_virtual_source_does_not_require_a_local_backing_file() {
+    for scenario in ["jvm-java-original", "jvm-kotlin-original"] {
+        let mut f = jvm_fixture(scenario);
+        fs::remove_file(f.directory.path().join("dependency + 界.jar")).unwrap();
+        gd(&mut f.editor);
+        assert!(!f.editor.message_is_error, "{}", f.editor.message);
+        assert!(f.editor.document.virtual_uri().is_some());
+        f.editor.handle_key(Key::Ctrl('o'));
+        gd(&mut f.editor);
+        assert_eq!(source_requests(&f), 2);
+        assert_eq!(f.editor.buffer_count(), 2);
+    }
+}
+
+#[test]
+fn jvm_changed_content_refreshes_the_existing_buffer_and_preserves_history() {
+    for scenario in ["jvm-java-original", "jvm-kotlin-original"] {
+        let mut f = jvm_fixture(scenario);
+        gd(&mut f.editor);
+        let id = f.editor.active_buffer_id;
+        f.editor.handle_key(Key::Ctrl('o'));
+        fs::write(
+            f.directory.path().join("protocol.jsonl.source"),
+            "/*😀*/ class Changed {\n    void method() {}\n}\n",
+        )
+        .unwrap();
+        fs::write(f.directory.path().join("dependency + 界.jar"), "revision 2").unwrap();
+        gd(&mut f.editor);
+        assert_eq!(f.editor.active_buffer_id, id);
+        assert!(
+            f.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .contains("class Changed")
+        );
+        assert!(f.editor.document.buffer.is_read_only());
+        f.editor.handle_key(Key::Ctrl('o'));
+        assert!(f.editor.document.path().is_some());
+        f.editor.handle_key(Key::Ctrl('i'));
+        assert_eq!(f.editor.active_buffer_id, id);
+        assert!(
+            f.editor
+                .document
+                .buffer
+                .text()
+                .to_string()
+                .contains("class Changed")
+        );
+    }
+}
+
+#[test]
+fn kotlin_declaration_stub_requires_full_fallback_instead_of_claiming_decompiled_method_bodies() {
+    let mut f = jvm_fixture("jvm-kotlin-stub");
+    gd(&mut f.editor);
+    assert!(f.editor.message_is_error);
+    assert!(
+        f.editor.message.contains("managed LSP storage"),
+        "{}",
+        f.editor.message
+    );
+    assert!(f.editor.document.virtual_uri().is_none());
+    assert!(f.editor.navigate_history(true).is_err());
 }

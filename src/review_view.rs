@@ -928,7 +928,7 @@ impl Editor {
     }
 }
 
-pub fn render(frame: &mut ratatui::Frame<'_>, editor: &Editor, theme: &crate::theme::Theme) {
+pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate::theme::Theme) {
     use ratatui::{layout::Rect, style::Style, widgets::Paragraph};
     let area = frame.area();
     let style = Style::default().fg(theme.foreground).bg(theme.background);
@@ -1011,6 +1011,12 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &Editor, theme: &crate::th
             2,
             "No matching review records. :review help lists actions.",
             style.fg(theme.muted),
+        );
+    }
+    for i in top..(top + height).min(records.len()) {
+        editor.mouse.map.add(
+            Rect::new(area.x, area.y + (i - top + 2) as u16, area.width, 1),
+            crate::mouse::Target::Review(i),
         );
     }
     if area.height > 1 {

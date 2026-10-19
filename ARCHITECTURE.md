@@ -14,6 +14,7 @@ plugin API, generic backend trait, event bus, dependency injection, or GUI layer
 main.rs      terminal lifetime, CLI, event loop, focus notifications and worker polling
 config.rs    optional bounded user settings, XDG configuration and native data paths
 input.rs     Crossterm events -> terminal-independent Key values
+mouse.rs     rendered hit regions, source coordinates, mouse dispatch and drag scrolling
 help.rs      shared shortcut metadata, bounded search and read-only help overlay
 editor.rs    editing modes, pending counts/operators, prompts, unnamed register
 indent.rs    bounded local indentation inference and syntax-aware newline plans
@@ -38,11 +39,13 @@ review_store.rs bounded loading, record CAS, atomic persistence and Markdown wor
 review_view.rs  review commands, progress/navigation and contextual record list
 lsp.rs         protocol positions, immutable document stamps, capabilities and roots
 lsp_worker.rs  bounded multi-project server lifecycle, transport and synchronization
+lsp_source.rs  server-owned source protocols, provenance labels and bounded JVM cache
 lsp_warmup.rs  bounded cancellable project hints for the existing session manager
 lsp_install.rs pinned per-user server provisioning, runtime selection and installation jobs
 lsp_edit.rs    complete workspace-edit validation and ordinary buffer transactions
 lsp_view.rs    language commands, diagnostics and contextual results/edit previews
 lsp_completion.rs Insert-mode completion scheduling and popup (LSP view child module)
+lsp_hover.rs  pointer hover scheduling, request identity and floating popup (LSP view child module)
 ai.rs          bounded captured context, structured answers and conversation schema
 ai_worker.rs   optional Codex exec lifecycle, JSONL progress and transcript I/O jobs
 ai_store.rs    private transcript loading, atomic persistence and conflict checks
@@ -84,6 +87,32 @@ keys, context and descriptions case-insensitively with a 256-byte query cap and
 grapheme Backspace. Wrapped rows are rebuilt only when the query, category or
 terminal width changes, and scroll independently even in a one-cell terminal.
 Opening/searching/rendering help performs no document edits or external work.
+
+## Mouse interaction
+
+Mouse events are decoded at the input boundary and dispatched by `mouse.rs`.
+Each renderer registers the regions it actually displayed in a bounded per-frame
+hit map; later regions take precedence, so popups cannot click through to source.
+Source geometry captures the gutter and both viewport offsets. It reuses the
+shared cell-to-scalar/grapheme rules, including clipped tabs, wide characters and
+CRLF. Mouse selection uses the existing Visual/VisualLine anchor and operators.
+Dragging at an edge advances at most once per 50-ms tick without blocking input.
+Wheel scrolling temporarily detaches the source viewport from the cursor;
+keyboard input restores cursor following. Resize/focus loss cancels the gesture.
+Contextual clicks use existing guarded navigation and actions; they do not submit
+text prompts or approve workspace-edit previews. No separate tab UI is added.
+
+Pointer hover has one debounced target and one bounded popup. Its identity contains
+the buffer instance/generation, cursor, mode, viewport and a lexical symbol range.
+Movement within that symbol shares the request; movement elsewhere cancels it.
+The request uses the pointer's UTF-16 position while retaining the actual editing
+cursor in the ordinary LSP context guards. The existing worker handles transport,
+cancellation, capability checks and deadlines. Mouse context IDs additionally
+reject late replies after cancellation. Completion and explicit requests retain
+priority; passive failures do not replace editing messages. Content is sanitized
+and wrapped on grapheme boundaries using the existing literal text styling.
+Mouse capture uses Crossterm setup/cleanup, including partial initialization and
+panic recovery, and is never enabled when the JSON mouse setting is disabled.
 
 ## Dependency choices
 
@@ -784,27 +813,72 @@ Multiple results use the contextual chooser; explicit `:Definition` and
 `:References` retain their lists. Both paths use the same guarded location jump
 and session navigation history. The request marker is subject to the existing
 serial, session, cursor and document guards, so obsolete replies cannot navigate.
-C# definition/reference targets using `csharp:/` are fetched with `csharp/metadata`
-on the same worker, with the existing serial, epoch, document, cursor, cancellation
-and deadline guards. A null/invalid/oversized response or invalid UTF-16 position
-leaves the source/history untouched. `Document` stores the original virtual URI,
-no disk path or baseline, and a read-only Buffer. Mutation entry points and saving
-refuse changes; ordinary movement, search, copy, syntax, buffer switching and
-back/forward history remain available. No temporary source files are created.
+Virtual definition/reference, workspace-symbol and call-hierarchy targets use
+`lsp_source.rs` for language-scoped URI validation, retrieval payloads and content
+interpretation. C# uses `csharp/metadata`; Java negotiates
+`extendedClientCapabilities.classFileContentsSupport` and uses `java/classFileContents`;
+official Kotlin requires the advertised `decompile` execute command for `jar:`/`jrt:`.
+JDT's source-first provider chain supplies attachments then bundled FernFlower.
+Kotlin returns text plus syntax language. Its compiled-code stubs trigger the pinned
+Vineflower 1.12.0 fallback in `lsp_install/decompiler.rs`, using the existing HTTP,
+checksum, private storage, locking, runtime discovery and bounded process helpers.
+The 1.2 MiB slim JAR is verified before execution; downloads cap at 8 MiB and honor
+`auto_install`. Explicit Kotlin installation includes it. Two semaphore permits,
+retained until blocking tasks exit, bound cancelled as well as active fallbacks.
+The request deadline covers download, Java source-mode helper execution and output.
+Cancellation, changed snapshots and session shutdown cancel the child process group.
+The helper reads at most 128 related classes/8 MiB from one local archive or JDK
+module, never loads dependency classes, ignores decompiler-selected output paths,
+and writes at most 2 MiB of Java to one private temporary output. Temporary bytecode,
+helper and output files are removed after the child exits. No new Cargo dependency
+or dependency resolver is added. The checksum and artifact URL are pinned in code.
 
-The LSP view binds each virtual buffer instance to its owning server and epoch.
-Snapshots use an opaque relative routing token distinct from absolute file paths;
-`Snapshot::uri()` supplies the original URI. Manager routing bypasses filesystem
-root discovery for these snapshots. The worker tracks them for request freshness
-and session lifetime without sending didOpen/didChange/didSave, pull diagnostics
-or edits to the server-owned source. Definition/reference requests from them use
-the original URI. Ordinary disk, Git, edit guards and recent-file discovery see
-no path. At most 32 virtual buffers retain 2 MiB each. Repeated jumps fetch again
-and reuse the same session/URI buffer slot, replacing changed generated text.
-Old-epoch buffers remain readable after restart but cannot issue navigation
-requests; a fresh jump from source obtains a new snapshot. Closed virtual buffers
-cannot be reopened through file history. Other virtual URI schemes, workspace
-symbols and call-hierarchy virtual targets remain explicitly unsupported.
+Original source and full server-provided decompilation always win. The known JDT
+header and Kotlin source/class URI identify provenance without adding display lines.
+Full Kotlin fallback retains up to 2 MiB of original server declarations alongside
+its Java display text. A bounded identifier/context map excludes comments/literals,
+converts UTF-16 in both directions, and refuses ambiguous or absent symbols. The
+server cannot resolve new method-body positions absent from its declaration view.
+Unknown/absent methods fail through the normal request path.
+
+Retrieval uses existing serial, epoch, document, cursor, cancellation and deadline
+guards. The Kotlin command is explicitly excluded from server-edit authorization,
+including any remaining authorization from an earlier code action. A null, invalid,
+oversized response or invalid UTF-16 position leaves source/history untouched.
+`Document` stores the original URI and a display label, no disk path or baseline,
+and a read-only Buffer. Mutation entry points and saving refuse changes; ordinary
+movement, search, copy, syntax, switching and back/forward history remain available.
+Virtual documents have no persistent source files.
+
+Each virtual buffer instance belongs to its original server and epoch. Snapshots
+use opaque relative routing tokens distinct from absolute file paths;
+`Snapshot::uri()` supplies the original URI. Routing bypasses filesystem root
+discovery. JDT/C# virtual documents need no open notifications. Kotlin's official
+client contract requires didOpen/didClose for jar/jrt documents; the worker supplies
+the original declaration text and its Java/Kotlin language, never Vineflower's
+changed layout. No virtual document sends didChange/didSave, pull diagnostics or
+edits. Ordinary disk, Git,
+edit guards and recent-file discovery see no path. At most 32 virtual buffers
+retain 2 MiB each. Repeated jumps reuse the same session/URI buffer slot and replace
+changed snapshots; C# generated output is fetched every time. Old-epoch buffers
+stay readable but cannot issue requests. Closed virtual buffers cannot reopen
+through file history.
+
+Each worker session additionally caches at most 32 JVM responses/16 MiB for 30
+seconds with least-recently-used eviction. Display plus retained server-declaration
+bytes count against that budget. Archive/runtime paths, when recognizable
+in server URIs, supply file identity, size and modification/change timestamps;
+JDK modules/source archives, sibling source archives and archive-parent metadata
+also participate. Metadata checks run on a blocking task, never on the UI thread.
+Unobservable dependencies are not cached. A binary change during retrieval
+rejects the response. Source downloads during retrieval remain viewable but are not
+cached until a stable observation. Project import/build and content-refresh
+notifications clear the cache; ordinary indexing does not evict unchanged bytecode.
+Responses crossing invalidation notifications are not inserted. Session teardown clears
+all entries. Original JDT source bypasses this client cache because nonstandard
+source attachment locations are opaque; JDT revalidates them. The server still
+owns project reimport and its internal caches; restart is the recovery for stale
+server models, and existing buffers are immutable snapshots until another jump.
 
 M6 reuses that list for the nested symbol outline, workspace symbols and call
 hierarchy. Workspace symbols use the active project/language session and negotiate
@@ -813,7 +887,7 @@ through incoming/outgoing requests; recursive browsing retains at most 16 parent
 panels and restores their selection/scroll. Enter jumps to declarations; call-site
 ranges are displayed in caller coordinates. Existing session/request/source/open-
 document guards apply before expansion, resolution or navigation. Capability
-absence and virtual/decompiled locations remain explicit. These are read-only
+absence and unsupported virtual locations remain explicit. These are read-only
 features, with no new server-edit authorization path.
 
 Rename, formatting and quick fixes create an edit

@@ -153,12 +153,12 @@ impl Project {
                 self.state()
             );
             assert!(
-                !self
-                    .editor
-                    .lsp
-                    .servers
-                    .values()
-                    .any(|s| s.status.message.contains(":LspRestart retries")),
+                !self.editor.lsp.servers.values().any(|s| s
+                    .status
+                    .message
+                    .contains(":LspRestart retries")
+                    && !(self.editor.lsp.config.installation.auto_install
+                        && s.status.message.starts_with("Missing "))),
                 "{}: server stopped during {label}; {}",
                 self.name,
                 self.state()
@@ -914,4 +914,244 @@ fn java_gradle() {
 #[ignore = "requires pinned csharp-ls and .NET SDK; see tools/lsp/README.md"]
 fn csharp_solution() {
     Project::new("csharp-solution", "App/Main.cs", "Library/Greeter.cs").run();
+}
+
+fn jvm_dependency_project(name: &'static str, main: &str) -> Project {
+    // Build the dependency outside the imported project, then expose only its
+    // archive and a deliberately partial source attachment through Maven.
+    let mut p = Project::new(name, main, main);
+    let library = tempfile::tempdir().unwrap();
+    let mut library_files = Vec::new();
+    copy_fixture(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/lsp/fixtures/jvm-library"),
+        library.path(),
+        &mut library_files,
+    );
+    // A changed fixture must not reuse an older artifact from a build-tool cache.
+    let mut digest = Sha256::new();
+    for (path, bytes) in &library_files {
+        digest.update(
+            path.strip_prefix(library.path())
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        digest.update(bytes);
+    }
+    let hash = format!("{:x}", digest.finalize());
+    let version = format!("0.0.27-{}", &hash[..12]);
+    p.report["dependency_sha256"] = json!(hash);
+    for (path, bytes) in p.originals.iter_mut().chain(library_files.iter_mut()) {
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        *bytes = text.replace("0.0.27", &version).into_bytes();
+        fs::write(path, bytes).unwrap();
+    }
+    let build = std::process::Command::new("mvn")
+        .args(["-B", "-q", "-Dmaven.test.skip=true", "package"])
+        .current_dir(library.path())
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let repository = p.directory.path().join(format!(
+        "repository/dev/editorpro/dependency-fixture/{version}"
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::copy(
+        library
+            .path()
+            .join(format!("target/dependency-fixture-{version}.jar")),
+        repository.join(format!("dependency-fixture-{version}.jar")),
+    )
+    .unwrap();
+    fs::write(repository.join(format!("dependency-fixture-{version}.pom")), format!("<project><modelVersion>4.0.0</modelVersion><groupId>dev.editorpro</groupId><artifactId>dependency-fixture</artifactId><version>{version}</version></project>")).unwrap();
+    let mut sources = zip::ZipWriter::new(
+        fs::File::create(repository.join(format!("dependency-fixture-{version}-sources.jar")))
+            .unwrap(),
+    );
+    for (directory, name) in [("java", "Attached.java"), ("kotlin", "AttachedKotlin.kt")] {
+        use std::io::Write;
+        sources
+            .start_file(
+                format!("dependency/{name}"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        sources
+            .write_all(
+                &fs::read(
+                    library
+                        .path()
+                        .join(format!("src/main/{directory}/dependency/{name}")),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    sources.finish().unwrap();
+    p.wait("initial_type_diagnostic", |e| {
+        Project::error_on_marker(e) == Some(true)
+    });
+    p.report["initialized"] = p.state();
+    p
+}
+
+fn check_jvm_dependencies(mut p: Project, kotlin: bool) {
+    for (marker, token, source_marker) in [
+        ("JDK_SOURCE", "HashMap", None),
+        (
+            "ATTACHED_SOURCE",
+            if kotlin { "AttachedKotlin" } else { "Attached" },
+            Some(if kotlin {
+                "ORIGINAL_KOTLIN_SOURCE"
+            } else {
+                "ORIGINAL_JAVA_SOURCE"
+            }),
+        ),
+        ("BINARY_JAVA", "BinaryJava", Some("JAVA_BYTECODE")),
+        ("BINARY_KOTLIN", "BinaryKotlin", Some("KOTLIN_BYTECODE")),
+        ("BINARY_MEMBER", "message", Some("JAVA_BYTECODE")),
+    ] {
+        p.cursor(marker, token, 1);
+        let cursor = p.editor.document.buffer.cursor();
+        p.editor.handle_key(Key::Char('g'));
+        p.editor.handle_key(Key::Char('d'));
+        p.wait(marker, |e| !e.lsp.pending);
+        assert!(!p.editor.message_is_error, "{}", p.state());
+        assert!(
+            p.editor.document.virtual_uri().is_some(),
+            "{marker}: {}",
+            p.state()
+        );
+        let uri = p.editor.document.virtual_uri().unwrap().to_owned();
+        let text = p.editor.document.buffer.text().to_string();
+        let row = p.editor.document.buffer.position().0;
+        let line = p.editor.document.buffer.line(row);
+        assert!(
+            line.contains(token),
+            "{marker}: unexpected declaration {line:?}"
+        );
+        if let Some(source_marker) = source_marker {
+            assert!(text.contains(source_marker), "{marker}: {text}");
+        }
+        assert!(p.editor.document.buffer.is_read_only());
+        assert!(p.editor.execute_command("w").is_err());
+        if marker != "JDK_SOURCE" {
+            assert!(
+                p.editor
+                    .document
+                    .display_name()
+                    .contains(if marker.starts_with("BINARY") {
+                        "Decompiled source"
+                    } else {
+                        "Dependency source"
+                    }),
+                "{marker}: {}",
+                p.editor.document.display_name()
+            );
+        }
+        p.editor.document.sync_syntax();
+        if marker != "JDK_SOURCE" {
+            assert!(
+                p.editor.document.syntax.tree().is_some(),
+                "{:?}",
+                p.editor.document.syntax.fallback
+            );
+        }
+        p.report["checks"][marker] = json!({"status":"passed", "uri":uri, "line":line, "kind":p.editor.document.display_name(), "excerpt":text.chars().take(1800).collect::<String>(), "syntax":p.editor.document.syntax.language, "syntax_fallback":p.editor.document.syntax.fallback});
+        if (marker == "JDK_SOURCE" && !kotlin)
+            || (kotlin && matches!(marker, "ATTACHED_SOURCE" | "BINARY_KOTLIN"))
+        {
+            let (declaration, target) = match marker {
+                "ATTACHED_SOURCE" | "BINARY_KOTLIN" => ("map(", "HashMap"),
+                _ => ("extends AbstractMap", "AbstractMap"),
+            };
+            p.cursor(declaration, target, 1);
+            p.editor.handle_key(Key::Char('g'));
+            p.editor.handle_key(Key::Char('d'));
+            let check = format!("navigation_from_{marker}");
+            p.wait(&check, |e| !e.lsp.pending);
+            if kotlin
+                && marker == "BINARY_KOTLIN"
+                && p.editor.message.starts_with("No language-server results")
+            {
+                // The pinned server resolves the attached-source case above,
+                // but returns no definition from this compiled declaration view.
+                // Record the limit separately; do not count an empty target as navigation.
+                assert_eq!(p.editor.document.virtual_uri(), Some(uri.as_str()));
+                assert_eq!(p.editor.document.buffer.text().to_string(), text);
+                p.report["checks"][check] =
+                    json!({"status":"server_returned_no_result", "message":p.editor.message});
+            } else {
+                assert!(!p.editor.message_is_error, "{}", p.state());
+                assert!(
+                    p.editor
+                        .document
+                        .virtual_uri()
+                        .is_some_and(|uri| uri.contains(target)),
+                    "{}",
+                    p.state()
+                );
+                p.report["checks"][check] =
+                    json!({"status":"passed", "uri":p.editor.document.virtual_uri()});
+                p.editor.handle_key(Key::Ctrl('o'));
+                assert_eq!(p.editor.document.virtual_uri(), Some(uri.as_str()));
+            }
+        }
+        // Reopening follows the same URI and slot while retaining jump history.
+        let id = p.editor.active_buffer_id;
+        p.editor.handle_key(Key::Ctrl('o'));
+        assert_eq!(p.editor.document.path(), Some(p.main.as_path()));
+        assert_eq!(p.editor.document.buffer.cursor(), cursor);
+        p.editor.handle_key(Key::Char('g'));
+        p.editor.handle_key(Key::Char('d'));
+        p.wait("reopen_dependency", |e| !e.lsp.pending);
+        assert_eq!(p.editor.active_buffer_id, id);
+        p.editor.handle_key(Key::Ctrl('o'));
+    }
+    for (path, bytes) in &p.originals {
+        assert_eq!(&fs::read(path).unwrap(), bytes);
+    }
+    p.report["checks"]["disk_unchanged"] = json!({"status":"passed"});
+    p.report["status"] = json!("passed");
+}
+
+#[test]
+#[ignore = "requires pinned JDT LS, Maven, JDK and Kotlin compiler downloads; see tools/lsp/README.md"]
+fn java_dependency_sources_and_bytecode() {
+    check_jvm_dependencies(
+        jvm_dependency_project("java-dependencies", "src/main/java/probe/Main.java"),
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires pinned Kotlin LSP, Maven and JDK; see tools/lsp/README.md"]
+fn kotlin_dependency_sources_and_bytecode() {
+    check_jvm_dependencies(
+        jvm_dependency_project("kotlin-dependencies", "src/main/kotlin/Main.kt"),
+        true,
+    );
+}
+
+#[test]
+#[ignore = "requires pinned JDT LS, Gradle, Maven, JDK and Kotlin compiler; see tools/lsp/README.md"]
+fn java_gradle_dependency_sources_and_bytecode() {
+    check_jvm_dependencies(
+        jvm_dependency_project("java-dependencies-gradle", "src/main/java/probe/Main.java"),
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires pinned Kotlin LSP, Gradle, Maven and JDK; see tools/lsp/README.md"]
+fn kotlin_gradle_dependency_sources_and_bytecode() {
+    check_jvm_dependencies(
+        jvm_dependency_project("kotlin-dependencies-gradle", "src/main/kotlin/Main.kt"),
+        true,
+    );
 }

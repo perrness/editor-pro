@@ -154,6 +154,11 @@ impl Editor {
         self.info("Recent files (this session); Enter opens, Escape returns");
     }
 
+    pub(crate) fn click_recent(&mut self, index: usize) {
+        self.navigation.selected = index;
+        self.recent_key(Key::Enter);
+    }
+
     pub(crate) fn recent_key(&mut self, key: Key) {
         let nav = &mut self.navigation;
         match key {
@@ -210,6 +215,10 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
         Rect::new(area.x, area.y, area.width, 1),
     );
     for (row, path) in nav.recent.iter().skip(nav.top).take(height).enumerate() {
+        editor.mouse.map.add(
+            Rect::new(area.x, area.y + row as u16 + 1, area.width, 1),
+            crate::mouse::Target::Recent(nav.top + row),
+        );
         let text = crate::text::visible_text(
             &crate::git::display_path(path),
             nav.left,

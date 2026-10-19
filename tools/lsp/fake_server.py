@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, quote
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--log", required=True)
@@ -128,7 +128,7 @@ def diagnostics(uri, version):
 
 # External notification script for deterministic lifecycle tests. This keeps the
 # protocol loop responsive while tests choose exactly when imports finish/fail.
-if args.scenario.startswith("lifecycle"):
+if args.scenario.startswith(("lifecycle", "jvm-")):
     notifications = Path(args.log + ".notifications")
     consumed = len(notifications.read_text().splitlines()) if notifications.exists() else 0
 
@@ -147,6 +147,63 @@ if args.scenario.startswith("lifecycle"):
 
     threading.Thread(target=scripted_notifications, daemon=True).start()
 
+def jvm_uri(name="Library"):
+    path = Path(unquote(urlparse(root).path)) / "dependency + 界.jar"
+    if args.scenario.startswith("jvm-java"):
+        handle = "=project/" + str(path).replace("/", "\\/") + "<probe(" + name + ".class"
+        return "jdt://contents/dependency.jar/probe/" + name + ".class?" + quote(handle, safe="")
+    if "jrt" in args.scenario:
+        path = path.parent / "jdk"
+        return "jrt:" + path.as_uri().removeprefix("file:") + "!/java.base/java/util/" + name + ".class"
+    extension = ".kt" if "original" in args.scenario else ".class"
+    return "jar:" + path.as_uri() + "!/probe/" + name + extension
+
+
+def jvm_location(uri=None):
+    uri = uri or jvm_uri()
+    location = {"uri": uri, "range": span(13, 14)}
+    if args.scenario.startswith("jvm-java") and "original" not in args.scenario:
+        location["range"]["start"]["line"] = 1
+        location["range"]["end"]["line"] = 1
+    if "position" in args.scenario:
+        location["range"]["start"]["character"] = 999
+    return location
+
+
+def jvm_content(ident, params):
+    java = args.scenario.startswith("jvm-java")
+    uri = params["uri"] if java else params["arguments"][0]
+    assert uri == jvm_uri() or uri == jvm_uri("Next")
+    source = "/*😀*/ class Library {\r\n    public void method() {}\r\n}\r\n"
+    if java and "original" not in args.scenario:
+        source = "// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\r\n" + source
+    replacement = Path(args.log + ".source")
+    if replacement.exists():
+        source = replacement.read_text()
+    if "stub" in args.scenario:
+        source = "/*😀*/ class Library { public String method() { /* compiled code */ } }"
+    if "nul" in args.scenario:
+        source += "\0"
+    if "large" in args.scenario:
+        source = "x" * (2 * 1024 * 1024 + 1)
+    result = source if java else {"code": source, "language": "kotlin" if "original" in args.scenario else "java"}
+    if "empty" in args.scenario:
+        result = None
+    if "bad-language" in args.scenario:
+        result["language"] = "invalid"
+    if "apply" in args.scenario:
+        send({"id": "decompile-apply", "method": "workspace/applyEdit", "params": {
+            "edit": {"changes": {root + "/Main.kt": [edit("UNAUTHORIZED")]}}}})
+    if "error" in args.scenario:
+        send({"id": ident, "error": {"code": -32601, "message": "Source extension unavailable"}})
+    elif "timeout" in args.scenario:
+        pass
+    elif "slow" in args.scenario:
+        later({"id": ident, "result": result})
+    else:
+        send({"id": ident, "result": result})
+
+
 while True:
     try:
         message = read()
@@ -158,6 +215,8 @@ while True:
     ident = message.get("id")
     if method == "initialize":
         root = p["rootUri"]
+        if args.scenario.startswith("jvm-java"):
+            assert p["initializationOptions"]["extendedClientCapabilities"]["classFileContentsSupport"] is True
         if args.scenario.startswith("metadata-"):
             assert p["capabilities"]["experimental"]["csharp"]["metadataUris"] is True
         if args.scenario.startswith("completion-command"):
@@ -183,6 +242,8 @@ while True:
                 "workspaceSymbolProvider": {"resolveProvider": True}, "callHierarchyProvider": True,
                 "codeActionProvider": {"resolveProvider": True},
                 "executeCommandProvider": {"commands": ["fake.fix"]}}
+        if args.scenario.startswith("jvm-kotlin") and "unsupported" not in args.scenario:
+            caps["executeCommandProvider"]["commands"].append("decompile")
         if args.scenario == "unsupported":
             caps = {"textDocumentSync": 2}
         if args.scenario.startswith("auto-completion"):
@@ -334,7 +395,22 @@ while True:
     elif method == "textDocument/signatureHelp":
         send({"id": ident, "result": {"activeSignature": 0, "activeParameter": 1,
               "signatures": [{"label": "greet(name, count)", "documentation": "Signature documentation"}]}})
+    elif method == "java/classFileContents" or (method == "workspace/executeCommand" and p.get("command") == "decompile"):
+        jvm_content(ident, p)
     elif method in ("textDocument/definition", "textDocument/references"):
+        if args.scenario.startswith("jvm-"):
+            origin = p["textDocument"]["uri"]
+            if "Next" in origin:
+                location = {"uri": root + ("/Main.java" if "java" in args.scenario else "/Main.kt"), "range": span(0, 1)}
+            else:
+                location = jvm_location(jvm_uri("Next") if not origin.startswith("file:") else None)
+            result = [location]
+            if "link" in args.scenario:
+                result = [{"targetUri": location["uri"], "targetSelectionRange": location["range"], "targetRange": location["range"]}]
+            if "multiple" in args.scenario:
+                result = [location, location]
+            send({"id": ident, "result": result})
+            continue
         if args.scenario.startswith("metadata-"):
             origin = p["textDocument"]["uri"]
             uri = "csharp:" + urlparse(root).path + "/Probe.csproj/decompiled/Library.cs"
@@ -402,6 +478,22 @@ while True:
         inner = span(4, 9) if args.scenario == "ai-symbols" else span()
         comprehension_reply(ident, [{"name": "outer", "kind": 5, "range": outer, "selectionRange": span(0, 1),
               "children": [{"name": "inner", "kind": 6, "range": inner, "selectionRange": span(1, 2)}]}])
+    elif method == "workspace/symbol" and args.scenario.startswith("jvm-"):
+        location = jvm_location()
+        if p["query"] == "lazy":
+            del location["range"]
+        send({"id": ident, "result": [{"name": "Library", "kind": 5, "location": location}]})
+    elif method == "workspaceSymbol/resolve" and args.scenario.startswith("jvm-"):
+        p["location"] = jvm_location()
+        send({"id": ident, "result": p})
+    elif method in ("textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls") and args.scenario.startswith("jvm-"):
+        location = jvm_location()
+        item = {"name": "method", "kind": 6, "uri": location["uri"], "range": location["range"], "selectionRange": location["range"], "data": ["preserved"]}
+        result = [item]
+        if method.startswith("callHierarchy/"):
+            assert p["item"]["data"] == ["preserved"]
+            result = [{"from" if "incoming" in method else "to": item, "fromRanges": [span()]}]
+        send({"id": ident, "result": result})
     elif method == "workspace/symbol":
         if p["query"] == "empty":
             comprehension_reply(ident, None)
