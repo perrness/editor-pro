@@ -2461,3 +2461,37 @@ build/version check, formatting and whitespace checks.
 The v0.2.19 tag is preserved; v0.2.20 reruns the existing release gates with the
 corrected harness. Logs are `/tmp/editor-pro-v0.2.20-{prepare,diagnostics}.log`;
 the corrected capture is `/tmp/editor-pro-v0.2.20-terminal/lsp-diagnostics.ansi`.
+
+## Issue #26 — Wait for typing to pause before showing diagnostics
+
+After a document edit, source messages, the cursor-line panel, gutter marks and
+the statusline diagnostic count wait for 750 ms without further text changes.
+Each open LSP document has its own deadline. An idle tick restores the display;
+the existing poll interval can add up to 200 ms. Initial reports and explicit
+diagnostic commands remain immediate, and synchronization/completion keep their
+existing timing and freshness guards.
+
+Two deterministic clock tests cover deadline reset/expiry, redraw, independent
+documents, saving, close/reopen, reload and save-as. Two integration tests cover
+push/pull/versionless reports, hidden and restored rendering, explicit navigation,
+stale reports, empty replacements, undo, Unicode/CRLF and unchanged disk bytes.
+The terminal diagnostic scenario now types and deletes, then waits for messages
+to return without another keypress or resize before continuing its save checks.
+
+Validated on Linux x86_64 with Rust/Cargo 1.99.0:
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` and `git diff --check` | Passed. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed without warnings. |
+| `cargo test --locked --lib --test lsp diagnostic -- --nocapture` | 18 diagnostic-focused tests passed. |
+| `cargo test --locked --all-targets` | 423 passed; 13 opt-in tests ignored. |
+| `cargo build --locked` | Passed. |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | Six release/harness tests passed. |
+| `python3 -m unittest discover -s tools/kotlin-lsp -p 'test_*.py' -v` | Eight probe tests passed. |
+| `python3 tools/terminal_smoke.py` | All 69 PTY sessions passed. |
+
+Terminal capture: `/tmp/editor-pro-issue26-captures/lsp-diagnostics.ansi`.
+Rust and terminal logs: `/tmp/editor-pro-issue26-{clippy,tests,build,terminal}.log`.
+Native macOS, physical-terminal appearance and real language servers were not
+tested locally; protocol doubles do not establish real-server compatibility.

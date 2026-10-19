@@ -893,6 +893,119 @@ fn diagnostic_screen(terminal: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 #[test]
+fn diagnostic_display_waits_for_quiet_with_push_pull_and_unversioned_reports() {
+    for scenario in ["normal", "pull", "unversioned"] {
+        let mut f = Fixture::new(scenario);
+        f.ready();
+        until(&mut f.editor, |e| {
+            e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+        });
+        assert!(f.editor.lsp_summary().contains("1diag"));
+
+        f.editor.handle_key(Key::Char('A'));
+        f.editor.paste("界😀");
+        assert!(f.editor.current_diagnostics().is_none());
+        until(&mut f.editor, |e| {
+            e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+        });
+        // Fresh reports and didChange are available before passive display.
+        assert!(
+            f.log()
+                .iter()
+                .any(|m| m["method"] == "textDocument/didChange")
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        let rows = diagnostic_screen(&terminal);
+        assert!(
+            !rows.join("\n").contains("Diagnostics"),
+            "{scenario}: {rows:?}"
+        );
+        assert!(!rows[0].contains("Error"));
+        assert!(!rows[0].contains("Warning"));
+        assert_eq!(terminal.backend().buffer()[(2, 0)].symbol(), " ");
+        assert!(!f.editor.lsp_summary().contains("1diag"));
+        assert_eq!(f.editor.viewport.height, 10);
+
+        // No further keypress or server report is needed to restore the display.
+        let start = Instant::now();
+        loop {
+            let redraw = f.editor.tick();
+            if f.editor.lsp_summary().contains("1diag") {
+                assert!(redraw, "expiry must wake the renderer");
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(6));
+            thread::sleep(Duration::from_millis(5));
+        }
+        terminal
+            .draw(|frame| ui::render(frame, &mut f.editor, &Theme::night()))
+            .unwrap();
+        let rows = diagnostic_screen(&terminal);
+        assert!(rows.join("\n").contains("Diagnostics"));
+        assert_eq!(terminal.backend().buffer()[(2, 0)].symbol(), "!");
+        assert!(f.editor.viewport.height < 10);
+        assert_eq!(f.editor.mode, Mode::Insert);
+        assert!(!rows.join("\n").contains("OBSOLETE"));
+        assert_eq!(
+            f.editor.document.buffer.text().to_string(),
+            "bad value界😀\r\n😀 e\u{301}界\r\n"
+        );
+        assert_eq!(
+            fs::read(f.directory.path().join("Main.kt")).unwrap(),
+            "bad value\r\n😀 e\u{301}界\r\n".as_bytes()
+        );
+    }
+}
+
+#[test]
+fn explicit_diagnostics_remain_available_during_quiet_period_and_clears_stay_empty() {
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.handle_key(Key::Char('A'));
+    f.editor.paste(" test");
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+    });
+    escape(&mut f.editor);
+    assert!(!f.editor.lsp_summary().contains("1diag"));
+    f.editor.execute_command("Dnext").unwrap();
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+    f.editor.execute_command("Diagnostics").unwrap();
+    assert_eq!(f.editor.view, View::Lsp);
+    assert!(
+        f.editor.lsp.panel.as_ref().unwrap().rows[0]
+            .label
+            .contains("bad value")
+    );
+    escape(&mut f.editor);
+
+    // A fixed document supersedes a report still waiting for its display delay.
+    f.editor.document.buffer.replace_range(0..3, "good");
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| d.items.is_empty())
+    });
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(1) {
+        f.editor.tick();
+        assert!(!f.editor.lsp_summary().contains("1diag"));
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(f.editor.current_diagnostics().unwrap().items.is_empty());
+
+    // Undo restores a new generation, whose diagnostics also wait for quiet.
+    f.editor.document.buffer.commit();
+    assert!(f.editor.document.buffer.undo());
+    until(&mut f.editor, |e| {
+        e.current_diagnostics().is_some_and(|d| !d.items.is_empty())
+    });
+    assert!(!f.editor.lsp_summary().contains("1diag"));
+    until(&mut f.editor, |e| e.lsp_summary().contains("1diag"));
+}
+
+#[test]
 fn diagnostic_messages_prioritize_severity_and_use_each_theme_without_changing_source() {
     let source = "bad value\r\nwarning\r\ninfo\r\nhint\r\nunknown\r\n";
     let mut f = diagnostic_fixture(

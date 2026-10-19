@@ -723,8 +723,17 @@ dependencies also trigger repulls after other synchronized documents change;
 those reports retain the captured session document stamps through UI acceptance
 and display invalidation.
 Source rendering uses that same current-diagnostic guard for severity-colored
-gutter marks, trailing summaries and a cursor-line message panel. Messages are
-ordered by severity and source position, with counts for multiple reports.
+gutter marks, trailing summaries and a cursor-line message panel. Passive displays,
+including the statusline count, additionally wait for 750 ms of document quiet.
+The UI tracks one deadline per edited open LSP path, resetting it when the
+snapshot stamp changes and removing it on close or expiry. Save counters, cursor
+movement and incoming reports do not reset it. Initial reports on opened files
+are immediate. Tick expiry requests a redraw without requiring input or a server
+event; the existing idle poll bounds the extra delay to 200 ms. Current reports
+remain available to explicit diagnostic commands, code actions and AI context.
+Synchronization, request cancellation and completion scheduling are unchanged.
+Messages are ordered by severity and source position, with counts for multiple
+reports.
 LSP ranges exclude their end while zero-length ranges retain their start line.
 Inline text uses only cells after source text; a panel of at most four rows
 (header plus three message rows) reduces the source viewport without changing

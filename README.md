@@ -724,8 +724,13 @@ Quit protects every dirty buffer. Sources are never saved automatically.
 Review note drafts are excluded from synchronization and language commands.
 
 Diagnostics mark the source gutter and show a severity-colored message after the
-code when space permits. Errors take priority over warnings, information and
-hints; `(+N)` counts additional diagnostics on that line. Moving to an affected
+code when space permits. After a text edit, these messages, gutter marks and the
+statusline count wait for about 750 ms without further edits to that document.
+Typing, deletion, paste and undo restart the wait; cursor movement and saving do
+not. Completion and server synchronization continue normally. `:Diagnostics`,
+`:Dnext` and `:Dprev` can still use current reports during the wait.
+Errors take priority over warnings, information and hints; `(+N)` counts
+additional diagnostics on that line. Moving to an affected
 line opens a small wrapped panel above the statusline, so messages remain readable
 even when the source fills the row. The panel shows up to three message rows,
 shrinking or hiding on tiny terminals to keep the source cursor visible. Use

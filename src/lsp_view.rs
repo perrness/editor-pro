@@ -12,8 +12,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+const DIAGNOSTIC_DELAY: Duration = Duration::from_millis(750);
 
 #[path = "lsp_completion.rs"]
 mod completion;
@@ -34,6 +36,7 @@ pub struct LspState {
     pub unavailable: BTreeMap<PathBuf, String>,
     pub servers: BTreeMap<ServerKey, ServerInfo>,
     pub diagnostics: BTreeMap<PathBuf, DiagnosticSet>,
+    diagnostic_delays: BTreeMap<PathBuf, Instant>,
     pub panel: Option<Panel>,
     pub completion: Option<CompletionMenu>,
     completion_due: Option<completion::Scheduled>,
@@ -141,6 +144,24 @@ impl Panel {
     }
 }
 impl LspState {
+    fn update_diagnostic_delays(&mut self, snapshots: &[Snapshot], now: Instant) -> bool {
+        for snapshot in snapshots {
+            if self
+                .snapshots
+                .iter()
+                .any(|old| old.path == snapshot.path && old.stamp != snapshot.stamp)
+            {
+                self.diagnostic_delays
+                    .insert(snapshot.path.clone(), now + DIAGNOSTIC_DELAY);
+            }
+        }
+        let pending = self.diagnostic_delays.len();
+        self.diagnostic_delays
+            .retain(|path, due| *due > now && snapshots.iter().any(|s| &s.path == path));
+        // Expiry must repaint even when no new server event or key arrives.
+        self.diagnostic_delays.len() != pending
+    }
+
     fn cancel_request(&mut self) {
         if let Some(context) = &self.context
             && let Some(worker) = &self.worker
@@ -331,6 +352,9 @@ impl Editor {
                 .retain(|instance, _| instances.contains(instance));
         }
         let snapshots = self.lsp_snapshots();
+        let diagnostics_ready = self
+            .lsp
+            .update_diagnostic_delays(&snapshots, Instant::now());
         if self.lsp.worker.is_none() && !snapshots.is_empty() {
             match Worker::new(self.lsp.config.clone()) {
                 Ok(worker) => self.lsp.worker = Some(worker),
@@ -367,7 +391,7 @@ impl Editor {
                     .retain(|key, _| self.lsp.warm_sessions.contains(key));
             }
         }
-        let mut redraw = changed;
+        let mut redraw = changed || diagnostics_ready;
         if self.lsp.context.as_ref().is_some_and(|c| {
             !self.lsp_context_current(c)
                 || (self.lsp.pending && self.view == View::Editing && self.mode != c.mode)
@@ -1900,6 +1924,18 @@ impl Editor {
                 && d.stamp.generation == self.document.buffer.generation()
         })
     }
+    /// Passive diagnostics wait for a quiet document; explicit commands still
+    /// use current reports, and synchronization/completion keep their own timing.
+    pub(crate) fn visible_diagnostics(&self) -> Option<&DiagnosticSet> {
+        if self
+            .lsp
+            .diagnostic_delays
+            .contains_key(self.document.path()?)
+        {
+            return None;
+        }
+        self.current_diagnostics()
+    }
     pub fn lsp_summary(&self) -> String {
         if self.note_edit.is_some() {
             return String::new();
@@ -1965,7 +2001,7 @@ impl Editor {
         if self.lsp.pending {
             return "LSP Ready (request pending)".into();
         }
-        if let Some(d) = self.current_diagnostics()
+        if let Some(d) = self.visible_diagnostics()
             && !d.items.is_empty()
         {
             return format!(
@@ -2364,5 +2400,93 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
                 area.y + area.height - 1,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_delay_tests {
+    use super::*;
+
+    fn snapshot(path: &str, buffer_id: usize) -> Snapshot {
+        Snapshot {
+            stamp: Stamp {
+                buffer_id,
+                instance: buffer_id as u64,
+                generation: 0,
+            },
+            path: path.into(),
+            text: ropey::Rope::from_str("bad value\r\n界😀\r\n"),
+            saved: 0,
+            language: Language::Kotlin,
+            virtual_source: None,
+        }
+    }
+
+    fn observe(state: &mut LspState, snapshots: &[Snapshot], now: Instant) -> bool {
+        let redraw = state.update_diagnostic_delays(snapshots, now);
+        state.snapshots = snapshots.to_vec();
+        redraw
+    }
+
+    #[test]
+    fn diagnostic_delay_restarts_on_edits_and_redraws_once_after_quiet() {
+        let mut state = LspState::default();
+        let mut document = snapshot("Main.kt", 1);
+        let start = Instant::now();
+        observe(&mut state, std::slice::from_ref(&document), start);
+        assert!(state.diagnostic_delays.is_empty(), "opening is immediate");
+
+        document.stamp.generation += 1;
+        observe(&mut state, std::slice::from_ref(&document), start);
+        let second_edit = start + Duration::from_millis(500);
+        document.stamp.generation += 1;
+        observe(&mut state, std::slice::from_ref(&document), second_edit);
+        assert!(!observe(
+            &mut state,
+            std::slice::from_ref(&document),
+            start + DIAGNOSTIC_DELAY
+        ));
+        assert!(state.diagnostic_delays.contains_key(&document.path));
+
+        // Saving and ticks without edits must not postpone the second deadline.
+        document.saved += 1;
+        let due = second_edit + DIAGNOSTIC_DELAY;
+        assert!(!observe(
+            &mut state,
+            std::slice::from_ref(&document),
+            due - Duration::from_millis(1)
+        ));
+        assert!(observe(&mut state, std::slice::from_ref(&document), due));
+        assert!(state.diagnostic_delays.is_empty());
+        assert!(!observe(&mut state, &[document], due));
+    }
+
+    #[test]
+    fn diagnostic_delays_are_independent_and_discarded_with_closed_paths() {
+        let mut state = LspState::default();
+        let mut documents = [snapshot("Main.kt", 1), snapshot("Other.kt", 2)];
+        let start = Instant::now();
+        observe(&mut state, &documents, start);
+        documents[0].stamp.generation += 1;
+        observe(&mut state, &documents, start);
+        documents[1].stamp.generation += 1;
+        observe(&mut state, &documents, start + Duration::from_millis(500));
+        assert!(observe(&mut state, &documents, start + DIAGNOSTIC_DELAY));
+        assert!(!state.diagnostic_delays.contains_key(&documents[0].path));
+        assert!(state.diagnostic_delays.contains_key(&documents[1].path));
+
+        observe(&mut state, &documents[..1], start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.is_empty());
+        documents[1].stamp.instance += 1;
+        observe(&mut state, &documents, start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.is_empty(), "reopening is immediate");
+
+        // Reloading an open path invalidates the report even at equal generation.
+        documents[0].stamp.instance += 1;
+        observe(&mut state, &documents, start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.contains_key(&documents[0].path));
+        documents[0].path = "Renamed.kt".into();
+        observe(&mut state, &documents, start + DIAGNOSTIC_DELAY);
+        assert!(state.diagnostic_delays.is_empty());
     }
 }

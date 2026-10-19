@@ -231,7 +231,7 @@ pub fn render(frame: &mut Frame<'_>, editor: &mut Editor, theme: &Theme) {
             let start = end.saturating_sub(editor.viewport.left) + 2;
             if start < text_width {
                 let versioned = editor
-                    .current_diagnostics()
+                    .visible_diagnostics()
                     .is_some_and(|set| set.versioned);
                 let message = diagnostics::summary(
                     diagnostic,

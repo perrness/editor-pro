@@ -31,7 +31,7 @@ pub(super) fn color(diagnostic: &Diagnostic, theme: &Theme) -> Color {
 }
 
 pub(super) fn on_line(editor: &Editor, line: usize) -> Vec<&Diagnostic> {
-    let Some(set) = editor.current_diagnostics() else {
+    let Some(set) = editor.visible_diagnostics() else {
         return Vec::new();
     };
     let mut items: Vec<_> = set
@@ -101,7 +101,7 @@ pub(super) fn panel(editor: &Editor, theme: &Theme, width: u16, height: u16) -> 
         return Vec::new();
     }
     let versioned = editor
-        .current_diagnostics()
+        .visible_diagnostics()
         .is_some_and(|set| set.versioned);
     let width = usize::from(width);
     let header = format!(
