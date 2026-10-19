@@ -17,8 +17,12 @@ use std::{
 
 #[path = "lsp_completion.rs"]
 mod completion;
+#[path = "lsp_hover.rs"]
+mod hover;
 pub use completion::CompletionMenu;
 pub(crate) use completion::render as render_completion;
+pub use hover::HoverState;
+pub(crate) use hover::render as render_mouse_hover;
 
 #[derive(Default)]
 pub struct LspState {
@@ -36,6 +40,7 @@ pub struct LspState {
     pub diagnostics: BTreeMap<PathBuf, DiagnosticSet>,
     pub panel: Option<Panel>,
     pub completion: Option<CompletionMenu>,
+    pub mouse_hover: HoverState,
     completion_due: Option<completion::Scheduled>,
     call_history: Vec<Panel>,
     context: Option<Context>,
@@ -69,6 +74,7 @@ struct Context {
     epoch: u64,
     apply_resolved: bool,
     inline_completion: bool,
+    mouse_hover: Option<u64>,
     // Insertion position after the primary edit, before a completion command.
     // Unlike the visible Normal-mode cursor, this may be at the end of a line.
     completion_command: Option<usize>,
@@ -152,6 +158,7 @@ impl LspState {
         self.pending = false;
     }
     pub fn cancel(&mut self) {
+        self.mouse_hover.clear();
         self.cancel_request();
         self.completion = None;
         self.completion_due = None;
@@ -307,6 +314,9 @@ impl Editor {
             && self.document.buffer.generation() == context.stamp.generation
             && lsp_identity(&self.document).as_ref() == Some(&context.path)
             && self.document.buffer.cursor() == context.cursor
+            && context
+                .mouse_hover
+                .is_none_or(|id| self.mouse_hover_current(id))
             && self.lsp_edit_guards() == context.guards
             && self
                 .lsp
@@ -434,11 +444,9 @@ impl Editor {
                 t.elapsed() > self.lsp.config.request_timeout + std::time::Duration::from_secs(3)
             })
         {
-            let quiet = self
-                .lsp
-                .context
-                .as_ref()
-                .is_some_and(|c| c.inline_completion && !c.apply_resolved);
+            let quiet = self.lsp.context.as_ref().is_some_and(|c| {
+                (c.inline_completion && !c.apply_resolved) || c.mouse_hover.is_some()
+            });
             self.lsp.cancel_request();
             if !quiet {
                 self.error("LSP request expired; :LspInfo or :LspRestart");
@@ -446,7 +454,7 @@ impl Editor {
             redraw = true;
         }
         self.tick_completion();
-        redraw
+        self.tick_mouse_hover() || redraw
     }
     fn lsp_event(&mut self, event: Event) -> io::Result<()> {
         match event {
@@ -592,8 +600,8 @@ impl Editor {
                     return Ok(());
                 };
                 self.lsp.pending = false;
-                if context.inline_completion
-                    && !context.apply_resolved
+                if ((context.inline_completion && !context.apply_resolved)
+                    || context.mouse_hover.is_some())
                     && let Err(message) = &result
                 {
                     self.lsp.cancel_request();
@@ -925,7 +933,7 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| error("LSP unavailable"))?
             .submit(Control::Request(request))?;
-        if !context.inline_completion {
+        if !context.inline_completion && context.mouse_hover.is_none() {
             self.info(&format!("LSP {method}…"));
         }
         self.lsp.context = Some(context);
@@ -980,6 +988,7 @@ impl Editor {
             epoch: info.epoch,
             apply_resolved: false,
             inline_completion: false,
+            mouse_hover: None,
             completion_command: None,
             jump_to_single_location: false,
             ai_question: None,
@@ -1001,6 +1010,10 @@ impl Editor {
                 return self.open_virtual_result(result, context);
             }
             "textDocument/hover" => {
+                if context.mouse_hover.is_some() {
+                    self.show_mouse_hover(&result);
+                    return Ok(());
+                }
                 panel = Panel::text("Documentation", &markup(&result["contents"]))
             }
             "textDocument/signatureHelp" => {
@@ -2308,6 +2321,10 @@ pub fn render(frame: &mut ratatui::Frame<'_>, editor: &mut Editor, theme: &crate
     }
     for row in 0..height {
         if let Some(item) = panel.rows.get(panel.top + row as usize) {
+            editor.mouse.map.add(
+                Rect::new(area.x, area.y + 1 + row, area.width, 1),
+                crate::mouse::Target::Lsp(panel.top + row as usize),
+            );
             let selected = panel.top + row as usize == panel.selected;
             frame.render_widget(
                 Paragraph::new(line(&item.label, panel.left)).style(if selected {

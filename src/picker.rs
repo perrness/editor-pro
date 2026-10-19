@@ -193,6 +193,7 @@ impl Editor {
     }
     pub fn tick(&mut self) -> bool {
         let disk = self.tick_disk();
+        let mouse = self.tick_mouse_drag();
         // Workers keep running, but applying a result can jump to a definition,
         // finish a note, or replace a contextual list. Keep the help origin intact.
         if self.help.is_some() || self.disk.view.is_some() {
@@ -204,7 +205,7 @@ impl Editor {
         let lsp = self.tick_lsp();
         let project_search = self.tick_project_search();
         let ai = self.tick_ai();
-        self.tick_review() || disk || tree || git || picker || lsp || project_search || ai
+        self.tick_review() || disk || mouse || tree || git || picker || lsp || project_search || ai
     }
     pub(crate) fn picker_key(&mut self, key: Key) {
         if matches!(key, Key::Escape | Key::Ctrl('c' | '[')) {

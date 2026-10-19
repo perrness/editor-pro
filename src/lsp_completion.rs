@@ -472,7 +472,7 @@ fn completion_order(item: &Value) -> &str {
 
 pub(crate) fn render(
     frame: &mut Frame<'_>,
-    editor: &Editor,
+    editor: &mut Editor,
     theme: &Theme,
     area: Rect,
     cursor: (u16, u16),
@@ -503,12 +503,17 @@ pub(crate) fn render(
         height,
     );
     let base = Style::default().fg(theme.foreground).bg(theme.status);
+    editor.mouse.map.add(rect, crate::mouse::Target::Popup);
     // Styling a block does not erase the source characters beneath the popup.
     frame.render_widget(Clear, rect);
     frame.render_widget(Block::default().style(base), rect);
     let rows = usize::from(height - 1);
     let top = menu.selected.saturating_sub(rows - 1);
     for (row, item) in menu.items.iter().enumerate().skip(top).take(rows) {
+        editor.mouse.map.add(
+            Rect::new(rect.x, rect.y + (row - top) as u16, width, 1),
+            crate::mouse::Target::Completion(row),
+        );
         let label = format!(" {}", item["label"].as_str().unwrap_or(""));
         let style = if row == menu.selected {
             base.bg(theme.selection)
@@ -524,6 +529,14 @@ pub(crate) fn render(
         " {}/{} Tab/Enter accept  ↑↓ select  Esc/Ctrl-e dismiss",
         menu.selected + 1,
         menu.items.len()
+    );
+    editor.mouse.map.labels(
+        Rect::new(rect.x, rect.bottom() - 1, width, 1),
+        &hint,
+        &[
+            ("Tab/Enter accept", Key::Enter),
+            ("Esc/Ctrl-e dismiss", Key::Ctrl('e')),
+        ],
     );
     frame.render_widget(
         Paragraph::new(visible_text(&hint, 0, width as usize)).style(base.fg(theme.muted)),

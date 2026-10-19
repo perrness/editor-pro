@@ -18,6 +18,25 @@ pub struct Config {
     pub theme: ThemeName,
     pub lsp: LspSettings,
     pub editor: EditorSettings,
+    pub mouse: MouseSettings,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MouseSettings {
+    pub enabled: bool,
+    pub hover_enabled: bool,
+    pub hover_delay_ms: u64,
+}
+
+impl Default for MouseSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hover_enabled: true,
+            hover_delay_ms: 400,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

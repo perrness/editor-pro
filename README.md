@@ -89,7 +89,8 @@ and relative line numbers:
 {
   "theme": "gruvbox",
   "editor": { "relative_line_numbers": true },
-  "lsp": { "auto_install": true, "warmup": true }
+  "lsp": { "auto_install": true, "warmup": true },
+  "mouse": { "enabled": true, "hover_enabled": true, "hover_delay_ms": 400 }
 }
 ```
 
@@ -107,6 +108,52 @@ on macOS, move that file to the location printed by `ep --config-path`.
 Missing language servers are installed automatically by default. Set
 `"lsp": { "auto_install": false }` for manual/offline operation; existing servers
 still start normally, and `:LspInstall` remains available.
+
+## Mouse interaction
+
+Mouse support is enabled by default alongside the keyboard commands. Set
+`"mouse": { "enabled": false }` in `config.json` to keep native terminal selection,
+scrolling and clicks. Set `hover_enabled` to `false` to keep clicks and scrolling
+without automatic documentation; `hover_delay_ms` controls the resting delay
+(400 milliseconds by default, 0 for immediate requests).
+
+| Interaction | Behavior |
+| --- | --- |
+| Left-click source | Move the cursor; Insert stays Insert. Gutters and beyond-line clicks clamp to the line. |
+| Drag with the left button | Select with Vim's inclusive Visual selection, across lines; retain VisualLine when already active. Holding near an edge scrolls the selection. |
+| Shift-click | Extend a selection from its anchor, or start one at the current cursor. |
+| Wheel | Scroll the source viewport or the contextual list. Horizontal wheel and Shift-wheel scroll horizontally when reported by the terminal. |
+| Rest over source | Show LSP documentation in a floating popup without moving the cursor. |
+| Ctrl-click a symbol | Use the existing definition command; choose from multiple results if necessary. `Ctrl-o` returns. |
+| Right-click | Dismiss hover, or use the current view's Escape behavior (close a menu, cancel a prompt or leave Insert/Visual). |
+
+Source scrolling can leave the cursor offscreen; the next keyboard command brings
+it back into view. Clicks use the displayed gutter, viewport, four-cell tab stops,
+and grapheme/wide-character widths. Source lines are horizontally scrolled, not
+wrapped. A mouse move without a visible change does not redraw the editor.
+
+Click a tree folder to expand/collapse it or a file to open it. File-picker,
+recent-file, search, diagnostic and language-result rows open their existing
+targets. Click `[B#]` in the statusline to open the buffer list, then click a
+buffer to switch; there is no separate tab strip. Click changed files to open
+their diffs, diff rows to select old/new locations, and the visible Git footer
+labels to navigate hunks/files, change layout, return to source or mark review
+state. Completion rows accept the selected suggestion. Workspace-edit preview
+rows only select; Enter still approves the preview. Mouse clicks do not submit
+command, search or file-operation prompts.
+
+Hover uses the same optional language servers, UTF-16 conversion, request limits
+and document/session guards as `:Hover`. It preserves line breaks, indentation,
+code fences and literal markup in a bounded popup. Moving to another symbol,
+editing, keyboard input, scrolling, resizing, focus loss or changing context
+dismisses it; late replies cannot reopen it. Resting on the same symbol does not
+send repeated requests. Completion and explicit language requests take priority.
+
+Terminal emulators and multiplexers may reserve modified clicks, omit pointer
+motion or omit horizontal wheel events. Use `gd`/`:Definition` and `:Hover` when
+those events are unavailable. Some terminals reserve Shift for native selection;
+disable mouse support if your terminal provides no capture-bypass gesture.
+Physical macOS terminal behavior still needs manual verification.
 
 ## Editing
 

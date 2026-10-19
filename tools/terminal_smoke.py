@@ -16,7 +16,8 @@ import termios
 import time
 
 
-def run_session(binary, path, commands, expected, environment=None, arguments=None, cwd=None):
+def run_session(binary, path, commands, expected, environment=None, arguments=None, cwd=None,
+                configuration=None):
     session_settings = tempfile.TemporaryDirectory(prefix="editor-pro-smoke-settings-")
     settings_root = Path(session_settings.name)
     master, slave = pty.openpty()
@@ -41,7 +42,7 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
             os.environ.pop(name, None)
         settings = Path(os.environ["XDG_CONFIG_HOME"]) / "editor-pro/config.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('{"lsp":{"auto_install":false}}\n')
+        settings.write_text(json.dumps({"lsp": {"auto_install": False}, **(configuration or {})}) + "\n")
         if environment:
             os.environ.update(environment)
         if cwd is not None:
@@ -142,6 +143,9 @@ def run_session(binary, path, commands, expected, environment=None, arguments=No
         assert reaped, f"Editor did not exit: {output[-4000:]!r}"
         assert b"\x1b[?1049l" in output, "Alternate screen was not left"
         assert b"\x1b[?2004l" in output, "Bracketed paste was not disabled"
+        for mode in (1000, 1002, 1003, 1006, 1015):
+            if f"\x1b[?{mode}h".encode() in output:
+                assert f"\x1b[?{mode}l".encode() in output, f"Mouse mode {mode} was not disabled"
         assert path.read_bytes() == expected, path.read_bytes()
         return bytes(output)
     finally:
@@ -592,6 +596,59 @@ def run_lsp_warmup_sessions(binary, directory, resize, capture_dir=None):
         assert any(m.get("method") == "shutdown" for m in messages())
         if capture_dir:
             (Path(capture_dir) / f"lsp-warmup-{name}.ansi").write_bytes(output)
+
+
+def run_mouse_sessions(binary, directory, resize, capture_dir=None):
+    root = Path(directory) / "mouse"
+    root.mkdir()
+    source = root / "source.txt"
+    original = ("first\r\n\tαe\u0301界\r\nlast\r\n" + "more lines\r\n" * 30).encode()
+    source.write_bytes(original)
+    output = run_session(binary, source, [
+        # SGR coordinates are one-based; gutter width is four cells for 34 lines.
+        b"\x1b[<0;9;2M", b"\x1b[<32;6;3M", (b"VISUAL", 5), b"\x1b[<0;6;3m", b"y",
+        b"\x1b[<65;10;4M", b"gg", resize(12, 40), resize(24, 80),
+        b"\x1b[<0;6;1M", b"\x1b[<0;6;1m", b"iX", b"\x1b", b":wq\r",
+    ], original.replace(b"first", b"fXirst", 1))
+    for mode in (1000, 1002, 1003, 1006):
+        assert f"\x1b[?{mode}h".encode() in output, f"Mouse mode {mode} was not enabled"
+    if capture_dir:
+        (Path(capture_dir) / "mouse-selection.ansi").write_bytes(output)
+
+    source.write_bytes(original)
+    output = run_session(binary, source, [
+        b"\x1b[<0;9;2M", b"\x1b[<65;10;4M", b"iX", b"\x1b", b":wq\r",
+    ], b"X" + original, configuration={"mouse": {"enabled": False}})
+    for mode in (1000, 1002, 1003, 1006):
+        assert f"\x1b[?{mode}h".encode() not in output, "Disabled mouse enabled terminal capture"
+
+    (root / "pom.xml").write_text("<project/>")
+    source = root / "Main.kt"
+    original = "bad value\r\n😀 e\u0301界\r\n".encode()
+    source.write_bytes(original)
+    (root / "Other.kt").write_text("bad other\n")
+    fake = Path(__file__).parent / "lsp" / "fake_server.py"
+    log = root / "protocol.jsonl"
+    environment = {"EDITOR_PRO_KOTLIN_LSP": json.dumps([
+        sys.executable, str(fake.resolve()), "--log", str(log),
+    ])}
+    def messages():
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    output = run_session(binary, source, [
+        (lambda: any(m.get("method") == "textDocument/didOpen" for m in messages()), 10),
+        b"\x1b[<35;8;2M", (b"Documentation", 10),
+        b"\x1b[<16;8;1M",
+        (lambda: any(m.get("method") == "textDocument/didOpen" and
+                     m["params"]["textDocument"]["uri"].endswith("/Other.kt") for m in messages()), 10),
+        b"\x0f", b"i!", b"\x05", b"\x1b", b":wq\r",
+    ], original.replace(b"value", b"!value", 1), environment)
+    assert (root / "Other.kt").read_bytes() == b"bad other\n"
+    hovers = [m for m in messages() if m.get("method") == "textDocument/hover"]
+    assert len(hovers) == 1, hovers
+    assert hovers[0]["params"]["position"] == {"line": 1, "character": 5}, hovers
+    assert any(m.get("method") == "textDocument/definition" for m in messages())
+    if capture_dir:
+        (Path(capture_dir) / "mouse-hover.ansi").write_bytes(output)
 
 
 def run_diagnostic_session(binary, directory, resize, capture_dir=None):
@@ -1221,9 +1278,10 @@ def main():
         run_lsp_startup_session(binary, directory, resize, capture_dir)
         run_help_session(binary, directory, resize, capture_dir)
         run_disk_refresh_sessions(binary, directory, resize, capture_dir)
+        run_mouse_sessions(binary, directory, resize, capture_dir)
         run_ai_explain_sessions(binary, directory, resize, capture_dir)
         run_binary_snapshot_session(binary, directory, resize, capture_dir)
-    print("PASS: 69 PTY sessions; inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
+    print("PASS: 72 PTY sessions; mouse selection/scrolling, disabled capture, pointer hover and modifier definition, inline and wrapped LSP diagnostics, automatic indentation, automatic delimiter pairing/backspace/paste, colorful tree/picker/buffers in all themes, ASCII splash/startup shortcuts, JVM startup/indexing/failure/recovery, contextual Codex explanation shortcuts, disk comparison/refresh/conflicts/deletion, searchable keyboard help, file tree, ep directory/file startup, user configuration, editing, multi-step undo/redo, search, buffers, picker, themes, resize, paste, repository-relative and shortened status paths, Git keyboard navigation, review/resume/export, LSP warmup/reuse, gd/gr navigation including C# generated/decompiled sources, one-step completion with imports/multiline/commands/trailing spaces and installation controls, M6 project search/history/recent files/symbols/call hierarchy, M7 snapshots/live refresh/resume including binary assets, M8 AI preview/revisions/undo/persistence, and restoration")
     return 0
 
 

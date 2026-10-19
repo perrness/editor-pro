@@ -120,6 +120,30 @@ pub(crate) fn normal_command(sequence: &[Key]) -> Option<&'static str> {
 // navigates hunk headers in a diff. This is the canonical in-editor reference.
 const SHORTCUTS: &[Shortcut] = &[
     entry(
+        "Editing",
+        "Source / mouse",
+        "Left-click / drag / Shift-click / wheel",
+        "Position the cursor, select with Visual mode, extend a selection or scroll. Drag near an edge to scroll the selection. Right-click uses Escape. Disable capture with mouse.enabled=false in config.json.",
+    ),
+    entry(
+        "Files",
+        "Mouse",
+        "Click tree / file / [B#] / buffer row",
+        "Fold folders, open files, or open the buffer list and switch documents. Clicks never submit file-operation prompts.",
+    ),
+    entry(
+        "Navigation / LSP",
+        "Source / mouse",
+        "Rest pointer / Ctrl-click",
+        "Show floating hover documentation after mouse.hover_delay_ms (400 by default), or jump to definition. Ctrl-o returns. Use :Hover or gd if the terminal does not report these mouse events.",
+    ),
+    entry(
+        "Git",
+        "Changes / Diff / mouse",
+        "Click file / diff row / footer action",
+        "Open a changed file's diff, select an old/new row, or use visible hunk/file/layout/source/review actions.",
+    ),
+    entry(
         "Help",
         "Any view or mode",
         "F1",
@@ -858,7 +882,12 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-pub(crate) fn render(frame: &mut Frame<'_>, help: &mut Help, theme: &Theme) {
+pub(crate) fn render(
+    frame: &mut Frame<'_>,
+    help: &mut Help,
+    theme: &Theme,
+    hits: &mut crate::mouse::HitMap,
+) {
     let area = frame.area();
     let header = if area.height >= 4 { 2 } else { 0 };
     let footer = u16::from(area.height >= 2);
@@ -925,6 +954,15 @@ pub(crate) fn render(frame: &mut Frame<'_>, help: &mut Help, theme: &Theme) {
                 help.rows.len()
             )
         };
+        hits.labels(
+            Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+            &hint,
+            &[
+                ("Esc", Key::Escape),
+                ("Tab group", Key::Tab),
+                ("Ctrl-u clear", Key::Ctrl('u')),
+            ],
+        );
         frame.render_widget(
             Paragraph::new(visible_text(&hint, 0, area.width as usize))
                 .style(base.bg(theme.status)),

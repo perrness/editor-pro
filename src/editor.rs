@@ -103,6 +103,7 @@ pub struct Editor {
     pub note_edit: Option<Box<NoteEdit>>,
     pub theme: ThemeName,
     pub settings: crate::config::EditorSettings,
+    pub mouse: crate::mouse::MouseState,
     pub mode: Mode,
     pub viewport: Viewport,
     pub command: String,
@@ -139,6 +140,7 @@ impl Editor {
             note_edit: None,
             theme: ThemeName::default(),
             settings: crate::config::EditorSettings::default(),
+            mouse: crate::mouse::MouseState::default(),
             mode: Mode::Normal,
             viewport: Viewport::default(),
             command: String::new(),
@@ -158,6 +160,12 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        let preserve_viewport = self.help.is_some() || self.disk.view.is_some() || key == Key::F1;
+        let scrolled = self.mouse.scrolled;
+        self.cancel_mouse_interaction();
+        if preserve_viewport {
+            self.mouse.scrolled = scrolled;
+        }
         if let Some(help) = &mut self.help {
             if help.handle_key(key) {
                 self.help = None;
@@ -1020,7 +1028,10 @@ impl Editor {
     }
 
     pub fn paste(&mut self, text: &str) {
+        let scrolled = self.mouse.scrolled;
+        self.cancel_mouse_interaction();
         if self.help.is_some() || self.disk.view.is_some() {
+            self.mouse.scrolled = scrolled;
             return;
         }
         self.dismiss_completion();
@@ -1278,6 +1289,7 @@ impl Editor {
     }
 
     pub(crate) fn reset_context(&mut self) {
+        self.cancel_mouse_interaction();
         // Leaving an editing context ends its undo group, even when the same
         // buffer is reselected and no document swap occurs.
         self.document.buffer.commit();
@@ -1299,6 +1311,10 @@ impl Editor {
     pub(crate) fn info(&mut self, message: &str) {
         self.message = message.into();
         self.message_is_error = false;
+    }
+
+    pub(crate) fn clear_pending_input(&mut self) {
+        self.pending = Pending::default();
     }
 
     pub(crate) fn error(&mut self, message: &str) {

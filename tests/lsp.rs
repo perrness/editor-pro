@@ -134,6 +134,249 @@ fn workspace(path: &Path, edits: Vec<Value>) -> Value {
     json!({"changes":{lsp::file_uri(path).unwrap().as_str():edits}})
 }
 
+fn mouse_frame(editor: &mut Editor) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::render(frame, editor, &Theme::night()))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn mouse(kind: editor_pro::input::MouseKind, column: u16, row: u16) -> editor_pro::input::Mouse {
+    editor_pro::input::Mouse {
+        kind,
+        column,
+        row,
+        control: false,
+        shift: false,
+    }
+}
+
+#[test]
+fn mouse_hover_debounces_uses_pointer_utf16_and_preserves_keyboard_context() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.mouse.settings.hover_delay_ms = 60;
+    mouse_frame(&mut f.editor);
+    let cursor = f.editor.document.buffer.cursor();
+    let original = f.editor.document.buffer.text().to_string();
+    let message = f.editor.message.clone();
+    assert!(!f.editor.handle_mouse(mouse(MouseKind::Move, 7, 1)));
+    f.editor.tick();
+    assert!(!f.log().iter().any(|m| m["method"] == "textDocument/hover"));
+    until(&mut f.editor, |e| e.lsp.mouse_hover.visible());
+    let requests: Vec<_> = f
+        .log()
+        .into_iter()
+        .filter(|m| m["method"] == "textDocument/hover")
+        .collect();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["params"]["position"],
+        json!({"line":1,"character":5})
+    );
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.mode, Mode::Normal);
+    assert_eq!(f.editor.document.buffer.cursor(), cursor);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+    assert_eq!(f.editor.message, message);
+    let frame = mouse_frame(&mut f.editor);
+    let text: String = frame.content.iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("Documentation 界"), "{text}");
+    // Both terminal cells of the same wide symbol share the completed request.
+    assert!(!f.editor.handle_mouse(mouse(MouseKind::Move, 8, 1)));
+    settle(&mut f.editor);
+    assert_eq!(
+        f.log()
+            .iter()
+            .filter(|m| m["method"] == "textDocument/hover")
+            .count(),
+        1
+    );
+    f.editor.handle_key(Key::Char('l'));
+    assert!(!f.editor.lsp.mouse_hover.visible());
+    assert_eq!(f.editor.document.buffer.cursor(), 1);
+    f.command("Hover");
+    assert_eq!(f.editor.view, View::Lsp);
+    assert_eq!(f.editor.lsp.panel.as_ref().unwrap().title, "Documentation");
+}
+
+#[test]
+fn mouse_hover_cancels_and_ignores_late_responses_after_pointer_edit_and_view_changes() {
+    use editor_pro::input::MouseKind;
+    for change in ["pointer", "edit", "buffer", "help", "resize", "restart"] {
+        let mut f = Fixture::new("slow");
+        f.ready();
+        f.editor.mouse.settings.hover_delay_ms = 0;
+        mouse_frame(&mut f.editor);
+        f.editor.handle_mouse(mouse(MouseKind::Move, 7, 0));
+        f.wait_log("textDocument/hover", 1);
+        match change {
+            "pointer" => {
+                f.editor.handle_mouse(mouse(MouseKind::Move, 60, 20));
+            }
+            "edit" => f.editor.document.buffer.insert("changed "),
+            "buffer" => {
+                f.editor
+                    .open_buffer(&f.directory.path().join("Other.kt"))
+                    .unwrap();
+            }
+            "help" => f.editor.handle_key(Key::F1),
+            "resize" => {
+                f.editor.cancel_mouse_interaction();
+            }
+            "restart" => f.editor.execute_command("LspRestart").unwrap(),
+            _ => unreachable!(),
+        }
+        settle(&mut f.editor);
+        assert!(!f.editor.lsp.mouse_hover.visible(), "{change}");
+        if change == "help" {
+            f.editor.handle_key(Key::Escape);
+            settle(&mut f.editor);
+        }
+        assert_eq!(f.editor.view, View::Editing, "{change}");
+        assert!(!f.editor.lsp.mouse_hover.visible(), "{change}");
+    }
+}
+
+#[test]
+fn mouse_hover_disabled_unsupported_and_timeout_cases_stay_quiet() {
+    use editor_pro::input::MouseKind;
+    for scenario in ["normal", "unsupported", "timeout"] {
+        let mut f = Fixture::new(scenario);
+        f.ready();
+        f.editor.mouse.settings.hover_delay_ms = 0;
+        f.editor.mouse.settings.hover_enabled = scenario != "normal";
+        f.editor.lsp.config.request_timeout = Duration::from_millis(30);
+        mouse_frame(&mut f.editor);
+        let message = f.editor.message.clone();
+        f.editor.handle_mouse(mouse(MouseKind::Move, 7, 0));
+        settle(&mut f.editor);
+        if scenario == "timeout" {
+            until(&mut f.editor, |e| !e.lsp.pending);
+        }
+        assert!(!f.editor.lsp.mouse_hover.visible());
+        assert_eq!(f.editor.view, View::Editing);
+        assert_eq!(f.editor.message, message, "{scenario}");
+        assert!(!f.editor.message_is_error);
+        if scenario != "timeout" {
+            assert!(!f.log().iter().any(|m| m["method"] == "textDocument/hover"));
+        }
+    }
+}
+
+#[test]
+fn resting_mouse_hover_waits_for_server_initialization_without_repeated_requests() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("initialize-held");
+    f.wait_log("initialize", 1);
+    f.editor.mouse.settings.hover_delay_ms = 0;
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(mouse(MouseKind::Move, 7, 0));
+    settle(&mut f.editor);
+    assert!(!f.log().iter().any(|m| m["method"] == "textDocument/hover"));
+    fs::write(
+        f.directory.path().join("protocol.jsonl.initialize"),
+        "ready",
+    )
+    .unwrap();
+    until(&mut f.editor, |e| e.lsp.mouse_hover.visible());
+    assert_eq!(
+        f.log()
+            .iter()
+            .filter(|m| m["method"] == "textDocument/hover")
+            .count(),
+        1
+    );
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+}
+
+#[test]
+fn modifier_click_reuses_definition_and_history_and_diagnostics_are_clickable() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("normal");
+    f.ready();
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(editor_pro::input::Mouse {
+        control: true,
+        ..mouse(MouseKind::Down, 7, 0)
+    });
+    until(&mut f.editor, |e| {
+        e.document.path().unwrap().ends_with("Other.kt")
+    });
+    f.editor.handle_key(Key::Ctrl('o'));
+    assert!(f.editor.document.path().unwrap().ends_with("Main.kt"));
+    assert_eq!(f.editor.document.buffer.cursor(), 4);
+    until(&mut f.editor, |e| e.current_diagnostics().is_some());
+    f.command("Diagnostics");
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(mouse(MouseKind::Down, 5, 1));
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.cursor(), 0);
+    assert!(!f.editor.document.buffer.is_modified());
+    let frame = mouse_frame(&mut f.editor);
+    // The diagnostic panel header opens the existing full diagnostic list.
+    let row = frame
+        .content
+        .chunks(80)
+        .position(|row| {
+            row.iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .starts_with("Diagnostics")
+        })
+        .unwrap();
+    f.editor.handle_mouse(mouse(MouseKind::Down, 5, row as u16));
+    assert_eq!(f.editor.view, View::Lsp);
+}
+
+#[test]
+fn completion_popup_click_accepts_and_edit_preview_click_only_selects() {
+    use editor_pro::input::MouseKind;
+    let mut f = Fixture::new("normal");
+    f.ready();
+    f.editor.handle_key(Key::Char('i'));
+    f.editor.handle_key(Key::Char('g'));
+    until(&mut f.editor, |e| e.lsp.completion.is_some());
+    let frame = mouse_frame(&mut f.editor);
+    let row = frame
+        .content
+        .chunks(80)
+        .position(|row| {
+            row.iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .contains(" good")
+        })
+        .unwrap();
+    let column = frame.content[row * 80..(row + 1) * 80]
+        .iter()
+        .position(|c| c.symbol() == "g")
+        .unwrap();
+    f.editor
+        .handle_mouse(mouse(MouseKind::Down, column as u16, row as u16));
+    until(&mut f.editor, |e| !e.lsp.pending);
+    assert!(
+        f.editor
+            .document
+            .buffer
+            .text()
+            .to_string()
+            .starts_with("good ")
+    );
+    f.editor.handle_key(Key::Escape);
+    f.command("Format");
+    let original = f.editor.document.buffer.text().to_string();
+    mouse_frame(&mut f.editor);
+    f.editor.handle_mouse(mouse(MouseKind::Down, 5, 1));
+    assert_eq!(f.editor.view, View::Lsp);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+    f.editor.handle_mouse(mouse(MouseKind::RightDown, 5, 1));
+    assert_eq!(f.editor.view, View::Editing);
+    assert_eq!(f.editor.document.buffer.text().to_string(), original);
+}
+
 fn current_versions(editor: &Editor) -> Vec<Versioned> {
     let path = editor.document.path().unwrap().to_path_buf();
     vec![Versioned {
